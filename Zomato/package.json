@@ -1,0 +1,25 @@
+{
+  "name": "zomato-luxe-platform",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Production-style Zomato-inspired food delivery monorepo",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -n client,server -c red,cyan \"npm run dev -w client\" \"npm run dev -w server\"",
+    "build": "npm run build -w client && npm run build -w server",
+    "lint": "npm run lint -w client && npm run lint -w server",
+    "db:generate": "npm run prisma:generate -w server",
+    "db:migrate": "npm run prisma:migrate -w server",
+    "db:push": "npm run prisma:push -w server",
+    "db:seed": "npm run prisma:seed -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
