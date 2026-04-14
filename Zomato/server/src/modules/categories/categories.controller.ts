@@ -47,3 +47,60 @@ export const deleteMenuCategory = asyncHandler(async (req, res) => {
     message: "Menu category deleted successfully",
   });
 });
+
+export const createCuisine = asyncHandler(async (req, res) => {
+  const cuisine = await categoriesService.createCuisine(req.body);
+
+  return sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: "Cuisine created successfully",
+    data: { cuisine },
+  });
+});
+
+export const updateCuisine = asyncHandler(async (req, res) => {
+  const cuisine = await categoriesService.updateCuisine(Number(req.params.cuisineId), req.body);
+
+  return sendSuccess(res, {
+    message: "Cuisine updated successfully",
+    data: { cuisine },
+  });
+});
+
+export const deleteCuisine = asyncHandler(async (req, res) => {
+  await categoriesService.removeCuisine(Number(req.params.cuisineId));
+
+  return sendSuccess(res, {
+    message: "Cuisine deleted successfully",
+  });
+});
+
+export const createRestaurantCategory = asyncHandler(async (req, res) => {
+  const category = await categoriesService.createRestaurantCategory(req.body);
+
+  return sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: "Restaurant category created successfully",
+    data: { category },
+  });
+});
+
+export const updateRestaurantCategory = asyncHandler(async (req, res) => {
+  const category = await categoriesService.updateRestaurantCategory(
+    Number(req.params.restaurantCategoryId),
+    req.body,
+  );
+
+  return sendSuccess(res, {
+    message: "Restaurant category updated successfully",
+    data: { category },
+  });
+});
+
+export const deleteRestaurantCategory = asyncHandler(async (req, res) => {
+  await categoriesService.removeRestaurantCategory(Number(req.params.restaurantCategoryId));
+
+  return sendSuccess(res, {
+    message: "Restaurant category deleted successfully",
+  });
+});

@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+export const adminReviewsQuerySchema = {
+  query: z.object({
+    restaurantId: z.coerce.number().int().positive().optional(),
+    rating: z.coerce.number().int().min(1).max(5).optional(),
+    search: z.string().trim().optional(),
+  }),
+};
+
 export const createReviewSchema = {
   body: z.object({
     restaurantId: z.coerce.number().int().positive(),

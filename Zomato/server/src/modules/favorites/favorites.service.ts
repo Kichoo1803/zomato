@@ -18,6 +18,19 @@ export const favoritesService = {
             avgDeliveryTime: true,
             costForTwo: true,
             area: true,
+            addressLine: true,
+            city: true,
+            state: true,
+            cuisineMappings: {
+              select: {
+                cuisine: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -53,6 +66,23 @@ export const favoritesService = {
             name: true,
             slug: true,
             coverImage: true,
+            avgRating: true,
+            avgDeliveryTime: true,
+            costForTwo: true,
+            area: true,
+            addressLine: true,
+            city: true,
+            state: true,
+            cuisineMappings: {
+              select: {
+                cuisine: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+            },
           },
         },
       },

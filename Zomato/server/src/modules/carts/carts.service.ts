@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { OfferScope } from "../../constants/enums.js";
+import { CatalogItemType, OfferScope } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
@@ -42,14 +42,62 @@ const cartInclude = {
           restaurantId: true,
         },
       },
+      combo: {
+        select: {
+          id: true,
+          name: true,
+          description: true,
+          image: true,
+          basePrice: true,
+          offerPrice: true,
+          categoryTag: true,
+          isAvailable: true,
+          isActive: true,
+          items: {
+            orderBy: { id: "asc" },
+            select: {
+              quantity: true,
+              menuItem: {
+                select: {
+                  id: true,
+                  name: true,
+                  image: true,
+                },
+              },
+            },
+          },
+        },
+      },
       addons: {
         include: {
-          addon: true,
+          addon: {
+            select: {
+              id: true,
+              name: true,
+              description: true,
+              addonType: true,
+              price: true,
+              menuItemId: true,
+              comboId: true,
+            },
+          },
         },
       },
     },
   },
 } satisfies Prisma.CartInclude;
+
+const parseSnapshot = (value: string | null | undefined) => {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
 
 const mapCart = (cart: Prisma.CartGetPayload<{ include: typeof cartInclude }>) => {
   const subtotal = decimalToNumber(cart.totalAmount);
@@ -59,6 +107,10 @@ const mapCart = (cart: Prisma.CartGetPayload<{ include: typeof cartInclude }>) =
 
   return {
     ...cart,
+    items: cart.items.map((item) => ({
+      ...item,
+      snapshot: parseSnapshot(item.itemSnapshot),
+    })),
     summary: {
       subtotal,
       deliveryFee,
@@ -81,6 +133,33 @@ const getOwnedCart = async (userId: number, cartId: number) => {
 
   return cart;
 };
+
+const buildComboSnapshot = (
+  combo: Prisma.ComboGetPayload<{
+    include: {
+      items: {
+        include: {
+          menuItem: {
+            select: {
+              id: true;
+              name: true;
+              image: true;
+            };
+          };
+        };
+      };
+    };
+  }>,
+) =>
+  JSON.stringify({
+    includedItems: combo.items.map((item) => ({
+      menuItemId: item.menuItem.id,
+      name: item.menuItem.name,
+      image: item.menuItem.image,
+      quantity: item.quantity,
+    })),
+    categoryTag: combo.categoryTag,
+  });
 
 const recalculateCart = async (tx: Prisma.TransactionClient, cartId: number) => {
   const cart = await tx.cart.findUnique({
@@ -158,33 +237,76 @@ export const cartsService = {
     userId: number,
     input: {
       restaurantId: number;
-      menuItemId: number;
+      menuItemId?: number;
+      comboId?: number;
       quantity: number;
       addonIds?: number[];
       specialInstructions?: string;
     },
   ) {
-    const menuItem = await prisma.menuItem.findFirst({
-      where: {
-        id: input.menuItemId,
-        restaurantId: input.restaurantId,
-        isAvailable: true,
-      },
-      include: {
-        addons: {
-          where: {
-            isActive: true,
-          },
-        },
-      },
-    });
+    if (Boolean(input.menuItemId) === Boolean(input.comboId)) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Choose either a menu item or a combo.",
+        "INVALID_CART_ITEM",
+      );
+    }
 
-    if (!menuItem) {
-      throw new AppError(StatusCodes.NOT_FOUND, "Menu item is unavailable", "MENU_ITEM_UNAVAILABLE");
+    const menuItem = input.menuItemId
+      ? await prisma.menuItem.findFirst({
+          where: {
+            id: input.menuItemId,
+            restaurantId: input.restaurantId,
+            isAvailable: true,
+          },
+          include: {
+            addons: {
+              where: {
+                isActive: true,
+              },
+            },
+          },
+        })
+      : null;
+
+    const combo = input.comboId
+      ? await prisma.combo.findFirst({
+          where: {
+            id: input.comboId,
+            restaurantId: input.restaurantId,
+            isActive: true,
+            isAvailable: true,
+          },
+          include: {
+            items: {
+              include: {
+                menuItem: {
+                  select: {
+                    id: true,
+                    name: true,
+                    image: true,
+                  },
+                },
+              },
+            },
+            addons: {
+              where: { isActive: true },
+            },
+          },
+        })
+      : null;
+
+    if (!menuItem && !combo) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "The selected item is unavailable.",
+        "CATALOG_ITEM_UNAVAILABLE",
+      );
     }
 
     const addonIds = input.addonIds ?? [];
-    const selectedAddons = menuItem.addons.filter((addon) => addonIds.includes(addon.id));
+    const availableAddons = menuItem?.addons ?? combo?.addons ?? [];
+    const selectedAddons = availableAddons.filter((addon) => addonIds.includes(addon.id));
     if (selectedAddons.length !== addonIds.length) {
       throw new AppError(StatusCodes.BAD_REQUEST, "Some selected addons are invalid", "INVALID_ADDONS");
     }
@@ -206,14 +328,19 @@ export const cartsService = {
           },
         }));
 
-      const itemPrice = decimalToNumber(menuItem.discountPrice ?? menuItem.price);
+      const itemPrice = menuItem
+        ? decimalToNumber(menuItem.discountPrice ?? menuItem.price)
+        : decimalToNumber(combo?.offerPrice ?? combo?.basePrice);
       const addonTotal = selectedAddons.reduce((sum, addon) => sum + addon.price, 0);
       const totalPrice = roundMoney((itemPrice + addonTotal) * input.quantity);
 
       const cartItem = await tx.cartItem.create({
         data: {
           cartId: cart.id,
-          menuItemId: menuItem.id,
+          menuItemId: menuItem?.id,
+          comboId: combo?.id,
+          itemType: menuItem ? CatalogItemType.MENU_ITEM : CatalogItemType.COMBO,
+          itemSnapshot: combo ? buildComboSnapshot(combo) : null,
           quantity: input.quantity,
           itemPrice,
           totalPrice,
@@ -262,6 +389,24 @@ export const cartsService = {
             },
           },
         },
+        combo: {
+          include: {
+            items: {
+              include: {
+                menuItem: {
+                  select: {
+                    id: true,
+                    name: true,
+                    image: true,
+                  },
+                },
+              },
+            },
+            addons: {
+              where: { isActive: true },
+            },
+          },
+        },
       },
     });
 
@@ -269,9 +414,28 @@ export const cartsService = {
       throw new AppError(StatusCodes.NOT_FOUND, "Cart item not found", "CART_ITEM_NOT_FOUND");
     }
 
+    if (cartItem.itemType === CatalogItemType.COMBO && !cartItem.combo) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "The selected cart item is no longer available.",
+        "CART_ITEM_UNAVAILABLE",
+      );
+    }
+
+    if (cartItem.itemType === CatalogItemType.MENU_ITEM && !cartItem.menuItem) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "The selected cart item is no longer available.",
+        "CART_ITEM_UNAVAILABLE",
+      );
+    }
+
+    const availableAddons = cartItem.itemType === CatalogItemType.COMBO
+      ? cartItem.combo?.addons ?? []
+      : cartItem.menuItem?.addons ?? [];
     const selectedAddons =
       input.addonIds !== undefined
-        ? cartItem.menuItem.addons.filter((addon) => input.addonIds?.includes(addon.id))
+        ? availableAddons.filter((addon) => input.addonIds?.includes(addon.id))
         : cartItem.addons.map((addonLink) => addonLink.addon);
 
     if (input.addonIds && selectedAddons.length !== input.addonIds.length) {
@@ -279,7 +443,14 @@ export const cartsService = {
     }
 
     const quantity = input.quantity ?? cartItem.quantity;
-    const itemPrice = decimalToNumber(cartItem.menuItem.discountPrice ?? cartItem.menuItem.price);
+    const itemPrice = cartItem.itemType === CatalogItemType.COMBO
+      ? decimalToNumber(cartItem.combo?.offerPrice ?? cartItem.combo?.basePrice)
+      : decimalToNumber(cartItem.menuItem?.discountPrice ?? cartItem.menuItem?.price);
+
+    if (!Number.isFinite(itemPrice)) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "The selected cart item is no longer available.", "CART_ITEM_UNAVAILABLE");
+    }
+
     const addonTotal = selectedAddons.reduce((sum, addon) => sum + addon.price, 0);
     const totalPrice = roundMoney((itemPrice + addonTotal) * quantity);
 
@@ -290,6 +461,9 @@ export const cartsService = {
           quantity,
           itemPrice,
           totalPrice,
+          ...(cartItem.itemType === CatalogItemType.COMBO && cartItem.combo
+            ? { itemSnapshot: buildComboSnapshot(cartItem.combo) }
+            : {}),
           ...(input.specialInstructions !== undefined
             ? { specialInstructions: input.specialInstructions }
             : {}),

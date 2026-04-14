@@ -3,11 +3,34 @@ import { sendSuccess } from "../../utils/api-response.js";
 import { asyncHandler } from "../../utils/async-handler.js";
 import { menuItemsService } from "./menu-items.service.js";
 
+export const listAllMenuItems = asyncHandler(async (req, res) => {
+  const items = await menuItemsService.listAll({
+    search: req.query.search as string | undefined,
+    restaurantId: typeof req.query.restaurantId === "number" ? req.query.restaurantId : undefined,
+    categoryId: typeof req.query.categoryId === "number" ? req.query.categoryId : undefined,
+    isAvailable: typeof req.query.isAvailable === "boolean" ? req.query.isAvailable : undefined,
+  });
+
+  return sendSuccess(res, {
+    message: "Menu items fetched successfully",
+    data: { items },
+  });
+});
+
 export const listMenuItems = asyncHandler(async (req, res) => {
   const items = await menuItemsService.listByRestaurant(Number(req.params.restaurantId));
 
   return sendSuccess(res, {
     message: "Menu items fetched successfully",
+    data: { items },
+  });
+});
+
+export const listOwnerMenuItems = asyncHandler(async (req, res) => {
+  const items = await menuItemsService.listForOwner(req.user!.id);
+
+  return sendSuccess(res, {
+    message: "Owner menu items fetched successfully",
     data: { items },
   });
 });

@@ -15,6 +15,8 @@ export const adminAnalyticsService = {
       ordersByStatus,
       usersByRole,
       topRestaurants,
+      recentOrders,
+      recentUsers,
     ] = await Promise.all([
       prisma.user.count(),
       prisma.restaurant.count(),
@@ -24,7 +26,19 @@ export const adminAnalyticsService = {
       prisma.order.count({
         where: {
           status: {
-            in: [OrderStatus.PLACED, OrderStatus.ACCEPTED, OrderStatus.PREPARING, OrderStatus.OUT_FOR_DELIVERY],
+            in: [
+              OrderStatus.PLACED,
+              OrderStatus.CONFIRMED,
+              OrderStatus.ACCEPTED,
+              OrderStatus.PREPARING,
+              OrderStatus.READY_FOR_PICKUP,
+              OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
+              OrderStatus.DELIVERY_PARTNER_ASSIGNED,
+              OrderStatus.PICKED_UP,
+              OrderStatus.ON_THE_WAY,
+              OrderStatus.OUT_FOR_DELIVERY,
+              OrderStatus.DELAYED,
+            ],
           },
         },
       }),
@@ -52,6 +66,45 @@ export const adminAnalyticsService = {
           costForTwo: true,
         },
       }),
+      prisma.order.findMany({
+        where: {
+          deletedAt: null,
+        },
+        orderBy: { orderedAt: "desc" },
+        take: 6,
+        select: {
+          id: true,
+          orderNumber: true,
+          status: true,
+          totalAmount: true,
+          orderedAt: true,
+          restaurant: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+            },
+          },
+        },
+      }),
+      prisma.user.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 6,
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          role: true,
+          createdAt: true,
+          isActive: true,
+        },
+      }),
     ]);
 
     return {
@@ -73,6 +126,11 @@ export const adminAnalyticsService = {
         count: row._count._all,
       })),
       topRestaurants,
+      recentOrders: recentOrders.map((order) => ({
+        ...order,
+        totalAmount: decimalToNumber(order.totalAmount),
+      })),
+      recentUsers,
     };
   },
 };

@@ -10,3 +10,31 @@ export const listPayments = asyncHandler(async (req, res) => {
     data: { payments },
   });
 });
+
+export const listPaymentMethods = asyncHandler(async (req, res) => {
+  const paymentMethods = await paymentsService.listMethods(req.user!.id);
+
+  return sendSuccess(res, {
+    message: "Payment methods fetched successfully",
+    data: { paymentMethods },
+  });
+});
+
+export const createPaymentMethod = asyncHandler(async (req, res) => {
+  const paymentMethod = await paymentsService.createMethod(req.user!.id, req.body);
+
+  return sendSuccess(res, {
+    statusCode: 201,
+    message: "Payment method created successfully",
+    data: { paymentMethod },
+  });
+});
+
+export const updatePaymentMethod = asyncHandler(async (req, res) => {
+  const paymentMethod = await paymentsService.updateMethod(req.user!.id, Number(req.params.paymentMethodId), req.body);
+
+  return sendSuccess(res, {
+    message: "Payment method updated successfully",
+    data: { paymentMethod },
+  });
+});

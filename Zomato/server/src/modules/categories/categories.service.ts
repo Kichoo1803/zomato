@@ -95,4 +95,94 @@ export const categoriesService = {
       where: { id: categoryId },
     });
   },
+
+  async createCuisine(input: { name: string }) {
+    return prisma.cuisine.create({
+      data: {
+        name: input.name,
+      },
+    });
+  },
+
+  async updateCuisine(cuisineId: number, input: { name?: string }) {
+    const cuisine = await prisma.cuisine.findUnique({
+      where: { id: cuisineId },
+      select: { id: true },
+    });
+
+    if (!cuisine) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Cuisine not found", "CUISINE_NOT_FOUND");
+    }
+
+    return prisma.cuisine.update({
+      where: { id: cuisineId },
+      data: input,
+    });
+  },
+
+  async removeCuisine(cuisineId: number) {
+    const cuisine = await prisma.cuisine.findUnique({
+      where: { id: cuisineId },
+      select: { id: true },
+    });
+
+    if (!cuisine) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Cuisine not found", "CUISINE_NOT_FOUND");
+    }
+
+    await prisma.cuisine.delete({
+      where: { id: cuisineId },
+    });
+  },
+
+  async createRestaurantCategory(input: { name: string; description?: string }) {
+    return prisma.restaurantCategory.create({
+      data: {
+        name: input.name,
+        description: input.description,
+      },
+    });
+  },
+
+  async updateRestaurantCategory(
+    restaurantCategoryId: number,
+    input: { name?: string; description?: string },
+  ) {
+    const category = await prisma.restaurantCategory.findUnique({
+      where: { id: restaurantCategoryId },
+      select: { id: true },
+    });
+
+    if (!category) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "Restaurant category not found",
+        "RESTAURANT_CATEGORY_NOT_FOUND",
+      );
+    }
+
+    return prisma.restaurantCategory.update({
+      where: { id: restaurantCategoryId },
+      data: input,
+    });
+  },
+
+  async removeRestaurantCategory(restaurantCategoryId: number) {
+    const category = await prisma.restaurantCategory.findUnique({
+      where: { id: restaurantCategoryId },
+      select: { id: true },
+    });
+
+    if (!category) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "Restaurant category not found",
+        "RESTAURANT_CATEGORY_NOT_FOUND",
+      );
+    }
+
+    await prisma.restaurantCategory.delete({
+      where: { id: restaurantCategoryId },
+    });
+  },
 };

@@ -5,6 +5,40 @@ import { logger } from "../lib/logger.js";
 
 let io: Server | null = null;
 
+const getUserRoomNames = (payload: Record<string, unknown>) =>
+  [
+    payload.userId,
+    payload.ownerId,
+    payload.deliveryPartnerUserId,
+  ]
+    .map((value) => Number(value))
+    .filter((value, index, values) => Number.isInteger(value) && value > 0 && values.indexOf(value) === index)
+    .map((userId) => `user:${userId}`);
+
+const emitToRooms = (
+  event: string,
+  roomNames: Array<string | null | undefined>,
+  payload: Record<string, unknown>,
+) => {
+  if (!io) {
+    return;
+  }
+
+  const uniqueRoomNames = [...new Set(roomNames.filter((value): value is string => Boolean(value?.trim())))];
+  const [firstRoom, ...restRooms] = uniqueRoomNames;
+
+  if (!firstRoom) {
+    return;
+  }
+
+  let emitter = io.to(firstRoom);
+  restRooms.forEach((roomName) => {
+    emitter = emitter.to(roomName);
+  });
+
+  emitter.emit(event, payload);
+};
+
 export const createSocketServer = (httpServer: HttpServer) => {
   io = new Server(httpServer, {
     cors: {
@@ -52,6 +86,8 @@ export const getSocketServer = () => io;
 export const emitOrderStatusUpdate = (payload: {
   orderId: number;
   userId?: number;
+  ownerId?: number;
+  deliveryPartnerUserId?: number;
   status: string;
   note?: string;
 }) => {
@@ -59,11 +95,36 @@ export const emitOrderStatusUpdate = (payload: {
     return;
   }
 
-  io.to(`order:${payload.orderId}`).emit("order:status:update", payload);
+  emitToRooms(
+    "order:status:update",
+    [`order:${payload.orderId}`, ...getUserRoomNames(payload)],
+    payload,
+  );
+};
 
-  if (payload.userId) {
-    io.to(`user:${payload.userId}`).emit("order:status:update", payload);
+export const emitDeliveryLocationUpdate = (payload: {
+  orderId: number;
+  latitude: number;
+  longitude: number;
+  userId?: number;
+  ownerId?: number;
+  deliveryPartnerUserId?: number;
+  timestamp?: string;
+}) => {
+  if (!io) {
+    return;
   }
+
+  const nextPayload = {
+    ...payload,
+    timestamp: payload.timestamp ?? new Date().toISOString(),
+  };
+
+  emitToRooms(
+    "delivery:location:update",
+    [`order:${payload.orderId}`, ...getUserRoomNames(nextPayload)],
+    nextPayload,
+  );
 };
 
 export const emitNotification = (userId: number, payload: Record<string, unknown>) => {

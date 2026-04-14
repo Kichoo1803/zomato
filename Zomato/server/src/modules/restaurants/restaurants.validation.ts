@@ -16,6 +16,18 @@ export const listRestaurantsSchema = {
   }),
 };
 
+export const adminListRestaurantsSchema = {
+  query: z.object({
+    search: z.string().trim().optional(),
+    city: z.string().trim().optional(),
+    ownerId: z.coerce.number().int().positive().optional(),
+    isActive: z
+      .enum(["true", "false"])
+      .transform((value) => value === "true")
+      .optional(),
+  }),
+};
+
 const restaurantBodySchema = z.object({
   ownerId: z.coerce.number().int().positive().optional(),
   name: z.string().trim().min(2).max(191),
@@ -34,6 +46,7 @@ const restaurantBodySchema = z.object({
   pincode: z.string().trim().min(4).max(20),
   latitude: z.number().optional(),
   longitude: z.number().optional(),
+  preparationTime: z.number().int().positive().optional(),
   costForTwo: z.number().min(0).optional(),
   avgDeliveryTime: z.number().int().positive().optional(),
   isVegOnly: z.boolean().optional(),

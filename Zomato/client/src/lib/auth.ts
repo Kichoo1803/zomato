@@ -1,6 +1,6 @@
 import axios from "axios";
 import { publicApi } from "@/lib/api";
-import type { AuthUser, UserRole } from "@/types/auth";
+import type { AuthUser, MembershipStatus, MembershipTier, UserRole } from "@/types/auth";
 
 type BackendAuthUser = {
   id: number;
@@ -10,6 +10,10 @@ type BackendAuthUser = {
   profileImage?: string | null;
   role: string;
   walletBalance?: number | null;
+  membershipTier?: string | null;
+  membershipStatus?: string | null;
+  membershipStartedAt?: string | null;
+  membershipExpiresAt?: string | null;
 };
 
 type AuthResponse = {
@@ -23,8 +27,12 @@ const allowedRoles: UserRole[] = [
   "CUSTOMER",
   "RESTAURANT_OWNER",
   "DELIVERY_PARTNER",
+  "OPERATIONS_MANAGER",
   "ADMIN",
 ];
+
+const allowedMembershipTiers: MembershipTier[] = ["CLASSIC", "GOLD", "PLATINUM"];
+const allowedMembershipStatuses: MembershipStatus[] = ["ACTIVE", "INACTIVE", "EXPIRED"];
 
 export const normalizeAuthUser = (user: BackendAuthUser): AuthUser => ({
   id: user.id,
@@ -34,6 +42,14 @@ export const normalizeAuthUser = (user: BackendAuthUser): AuthUser => ({
   profileImage: user.profileImage ?? null,
   role: allowedRoles.includes(user.role as UserRole) ? (user.role as UserRole) : "CUSTOMER",
   walletBalance: user.walletBalance ?? 0,
+  membershipTier: allowedMembershipTiers.includes(user.membershipTier as MembershipTier)
+    ? (user.membershipTier as MembershipTier)
+    : "CLASSIC",
+  membershipStatus: allowedMembershipStatuses.includes(user.membershipStatus as MembershipStatus)
+    ? (user.membershipStatus as MembershipStatus)
+    : "ACTIVE",
+  membershipStartedAt: user.membershipStartedAt ?? null,
+  membershipExpiresAt: user.membershipExpiresAt ?? null,
 });
 
 const parseAuthResponse = (response: AuthResponse) => {
@@ -76,15 +92,41 @@ export const logoutFromServer = async () => {
 export const getDefaultRedirectPath = (role: UserRole) => {
   switch (role) {
     case "ADMIN":
-      return "/admin";
+      return "/admin/dashboard";
+    case "OPERATIONS_MANAGER":
+      return "/ops/dashboard";
     case "RESTAURANT_OWNER":
-      return "/partner";
+      return "/owner/dashboard";
     case "DELIVERY_PARTNER":
       return "/delivery";
     case "CUSTOMER":
     default:
       return "/";
   }
+};
+
+export const getLoginRedirectPath = (pathname: string) => {
+  if (pathname.startsWith("/admin") || pathname.startsWith("/analytics") || pathname.startsWith("/team")) {
+    return "/admin/login";
+  }
+
+  if (pathname.startsWith("/ops")) {
+    return "/ops/login";
+  }
+
+  if (pathname.startsWith("/owner")) {
+    return "/owner/login";
+  }
+
+  if (pathname.startsWith("/partner")) {
+    return "/partner/login";
+  }
+
+  if (pathname.startsWith("/delivery")) {
+    return "/delivery/login";
+  }
+
+  return "/login";
 };
 
 export const getApiErrorMessage = (error: unknown, fallback: string) => {

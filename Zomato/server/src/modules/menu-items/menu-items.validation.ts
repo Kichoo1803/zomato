@@ -17,6 +17,18 @@ const menuItemBodySchema = z.object({
   spiceLevel: z.coerce.number().int().min(1).max(5).optional(),
 });
 
+export const listMenuItemsQuerySchema = {
+  query: z.object({
+    search: z.string().trim().optional(),
+    restaurantId: z.coerce.number().int().positive().optional(),
+    categoryId: z.coerce.number().int().positive().optional(),
+    isAvailable: z
+      .enum(["true", "false"])
+      .transform((value) => value === "true")
+      .optional(),
+  }),
+};
+
 export const createMenuItemSchema = {
   body: menuItemBodySchema,
 };

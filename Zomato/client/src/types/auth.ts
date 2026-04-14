@@ -2,7 +2,11 @@ export type UserRole =
   | "CUSTOMER"
   | "RESTAURANT_OWNER"
   | "DELIVERY_PARTNER"
+  | "OPERATIONS_MANAGER"
   | "ADMIN";
+
+export type MembershipTier = "CLASSIC" | "GOLD" | "PLATINUM";
+export type MembershipStatus = "ACTIVE" | "INACTIVE" | "EXPIRED";
 
 export type AuthUser = {
   id: number;
@@ -12,6 +16,10 @@ export type AuthUser = {
   profileImage?: string | null;
   role: UserRole;
   walletBalance?: number;
+  membershipTier?: MembershipTier;
+  membershipStatus?: MembershipStatus;
+  membershipStartedAt?: string | null;
+  membershipExpiresAt?: string | null;
 };
 
 export type AuthState = {

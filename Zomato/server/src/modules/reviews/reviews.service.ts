@@ -1,6 +1,7 @@
-import { OrderStatus } from "../../constants/enums.js";
+import { OrderStatus, Role } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
+import { notificationsService } from "../notifications/notifications.service.js";
 import { AppError } from "../../utils/app-error.js";
 
 const syncRestaurantRating = async (restaurantId: number) => {
@@ -25,16 +26,103 @@ const syncRestaurantRating = async (restaurantId: number) => {
 };
 
 export const reviewsService = {
-  async listByRestaurant(restaurantId: number) {
+  async listAll(filters?: { restaurantId?: number; rating?: number; search?: string }) {
+    const search = filters?.search?.trim();
+
     return prisma.review.findMany({
-      where: { restaurantId },
+      where: {
+        ...(filters?.restaurantId ? { restaurantId: filters.restaurantId } : {}),
+        ...(filters?.rating ? { rating: filters.rating } : {}),
+        ...(search
+          ? {
+              OR: [
+                { reviewText: { contains: search } },
+                { user: { fullName: { contains: search } } },
+                { restaurant: { name: { contains: search } } },
+              ],
+            }
+          : {}),
+      },
       orderBy: { createdAt: "desc" },
       include: {
         user: {
           select: {
             id: true,
             fullName: true,
+            email: true,
             profileImage: true,
+          },
+        },
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            status: true,
+          },
+        },
+      },
+    });
+  },
+
+  async listByRestaurant(restaurantId: number) {
+    return prisma.review.findMany({
+      where: { restaurantId },
+      orderBy: { createdAt: "desc" },
+      include: {
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            ownerId: true,
+          },
+        },
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            profileImage: true,
+          },
+        },
+      },
+    });
+  },
+
+  async listForOwner(userId: number) {
+    return prisma.review.findMany({
+      where: {
+        restaurant: {
+          ownerId: userId,
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            profileImage: true,
+          },
+        },
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        order: {
+          select: {
+            id: true,
+            orderNumber: true,
+            status: true,
           },
         },
       },
@@ -52,8 +140,16 @@ export const reviewsService = {
           userId,
           restaurantId: input.restaurantId,
           status: OrderStatus.DELIVERED,
+          deletedAt: null,
         },
-        select: { id: true },
+        select: {
+          id: true,
+          review: {
+            select: {
+              id: true,
+            },
+          },
+        },
       });
 
       if (!order) {
@@ -61,6 +157,14 @@ export const reviewsService = {
           StatusCodes.BAD_REQUEST,
           "Only delivered orders can be reviewed",
           "ORDER_NOT_REVIEWABLE",
+        );
+      }
+
+      if (order.review) {
+        throw new AppError(
+          StatusCodes.CONFLICT,
+          "This delivered order has already been reviewed",
+          "REVIEW_ALREADY_EXISTS",
         );
       }
     }
@@ -74,6 +178,13 @@ export const reviewsService = {
         reviewText: input.reviewText,
       },
       include: {
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            ownerId: true,
+          },
+        },
         user: {
           select: {
             id: true,
@@ -85,6 +196,20 @@ export const reviewsService = {
     });
 
     await syncRestaurantRating(input.restaurantId);
+
+    await notificationsService.createForUser({
+      userId: review.restaurant.ownerId,
+      title: "New review received",
+      message: `${review.user.fullName} rated ${review.restaurant.name} ${review.rating}/5.${review.reviewText ? " Check the latest guest feedback." : ""}`,
+      meta: {
+        eventKey: "owner:new-review",
+        reviewId: review.id,
+        restaurantId: review.restaurant.id,
+        rating: review.rating,
+        path: "/owner/reviews",
+      },
+      dedupeWindowMinutes: 10,
+    });
 
     return review;
   },
@@ -121,9 +246,12 @@ export const reviewsService = {
     return updatedReview;
   },
 
-  async remove(userId: number, reviewId: number) {
+  async remove(user: { id: number; role: Role }, reviewId: number) {
     const review = await prisma.review.findFirst({
-      where: { id: reviewId, userId },
+      where: {
+        id: reviewId,
+        ...(user.role === Role.ADMIN ? {} : { userId: user.id }),
+      },
       select: { id: true, restaurantId: true },
     });
 

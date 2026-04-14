@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { buildAddressSearchText, geocodeAddressText } from "../../utils/geo.js";
 
 const addressSelect = {
   id: true,
@@ -27,7 +28,17 @@ const addressSelect = {
 const ensureOwnedAddress = async (userId: number, addressId: number) => {
   const address = await prisma.address.findFirst({
     where: { id: addressId, userId },
-    select: { id: true, isDefault: true },
+    select: {
+      id: true,
+      isDefault: true,
+      houseNo: true,
+      street: true,
+      landmark: true,
+      area: true,
+      city: true,
+      state: true,
+      pincode: true,
+    },
   });
 
   if (!address) {
@@ -50,6 +61,20 @@ export const addressesService = {
     const existingCount = await prisma.address.count({ where: { userId } });
     const shouldBeDefault = Boolean(input.isDefault) || existingCount === 0;
     const { isDefault: _ignored, ...addressData } = input as Prisma.AddressUncheckedCreateInput;
+    const geocodedCoordinates =
+      typeof input.latitude === "number" && typeof input.longitude === "number"
+        ? null
+        : await geocodeAddressText(
+            buildAddressSearchText([
+              input.houseNo as string | undefined,
+              input.street as string | undefined,
+              input.landmark as string | undefined,
+              input.area as string | undefined,
+              input.city as string | undefined,
+              input.state as string | undefined,
+              input.pincode as string | undefined,
+            ]),
+          );
 
     return prisma.$transaction(async (tx) => {
       if (shouldBeDefault) {
@@ -62,6 +87,12 @@ export const addressesService = {
       return tx.address.create({
         data: {
           ...addressData,
+          ...(geocodedCoordinates
+            ? {
+                latitude: geocodedCoordinates.latitude,
+                longitude: geocodedCoordinates.longitude,
+              }
+            : {}),
           userId,
           isDefault: shouldBeDefault,
         },
@@ -71,7 +102,24 @@ export const addressesService = {
   },
 
   async update(userId: number, addressId: number, input: Record<string, unknown>) {
-    await ensureOwnedAddress(userId, addressId);
+    const address = await ensureOwnedAddress(userId, addressId);
+    const shouldGeocode =
+      !("latitude" in input) &&
+      !("longitude" in input) &&
+      ["houseNo", "street", "landmark", "area", "city", "state", "pincode"].some((key) => key in input);
+    const geocodedCoordinates = shouldGeocode
+      ? await geocodeAddressText(
+          buildAddressSearchText([
+            (input.houseNo as string | undefined) ?? address.houseNo,
+            (input.street as string | undefined) ?? address.street,
+            (input.landmark as string | undefined) ?? address.landmark,
+            (input.area as string | undefined) ?? address.area,
+            (input.city as string | undefined) ?? address.city,
+            (input.state as string | undefined) ?? address.state,
+            (input.pincode as string | undefined) ?? address.pincode,
+          ]),
+        )
+      : null;
 
     return prisma.$transaction(async (tx) => {
       if (input.isDefault) {
@@ -83,7 +131,15 @@ export const addressesService = {
 
       return tx.address.update({
         where: { id: addressId },
-        data: input as Prisma.AddressUncheckedUpdateInput,
+        data: {
+          ...(input as Prisma.AddressUncheckedUpdateInput),
+          ...(geocodedCoordinates
+            ? {
+                latitude: geocodedCoordinates.latitude,
+                longitude: geocodedCoordinates.longitude,
+              }
+            : {}),
+        },
         select: addressSelect,
       });
     });

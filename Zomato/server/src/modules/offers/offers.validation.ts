@@ -17,8 +17,18 @@ const offerBodySchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+const ownerOfferBodySchema = offerBodySchema
+  .omit({ scope: true })
+  .extend({
+    restaurantId: z.coerce.number().int().positive(),
+  });
+
 export const createOfferSchema = {
   body: offerBodySchema,
+};
+
+export const createOwnerOfferSchema = {
+  body: ownerOfferBodySchema,
 };
 
 export const updateOfferSchema = {
@@ -26,4 +36,17 @@ export const updateOfferSchema = {
     offerId: z.coerce.number().int().positive(),
   }),
   body: offerBodySchema.partial(),
+};
+
+export const updateOwnerOfferSchema = {
+  params: z.object({
+    offerId: z.coerce.number().int().positive(),
+  }),
+  body: ownerOfferBodySchema.partial(),
+};
+
+export const offerIdParamSchema = {
+  params: z.object({
+    offerId: z.coerce.number().int().positive(),
+  }),
 };

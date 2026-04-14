@@ -12,8 +12,31 @@ export const listRestaurants = asyncHandler(async (req, res) => {
   });
 });
 
+export const listAdminRestaurants = asyncHandler(async (req, res) => {
+  const restaurants = await restaurantsService.listForAdmin({
+    search: req.query.search as string | undefined,
+    city: req.query.city as string | undefined,
+    ownerId: typeof req.query.ownerId === "number" ? req.query.ownerId : undefined,
+    isActive: typeof req.query.isActive === "boolean" ? req.query.isActive : undefined,
+  });
+
+  return sendSuccess(res, {
+    message: "Admin restaurants fetched successfully",
+    data: { restaurants },
+  });
+});
+
 export const getRestaurantBySlug = asyncHandler(async (req, res) => {
   const restaurant = await restaurantsService.getBySlug(String(req.params.slug));
+
+  return sendSuccess(res, {
+    message: "Restaurant fetched successfully",
+    data: { restaurant },
+  });
+});
+
+export const getRestaurantById = asyncHandler(async (req, res) => {
+  const restaurant = await restaurantsService.getAdminById(Number(req.params.restaurantId));
 
   return sendSuccess(res, {
     message: "Restaurant fetched successfully",
@@ -45,6 +68,15 @@ export const updateRestaurant = asyncHandler(async (req, res) => {
 
   return sendSuccess(res, {
     message: "Restaurant updated successfully",
+    data: { restaurant },
+  });
+});
+
+export const deleteRestaurant = asyncHandler(async (req, res) => {
+  const restaurant = await restaurantsService.archiveByAdmin(Number(req.params.restaurantId));
+
+  return sendSuccess(res, {
+    message: "Restaurant archived successfully",
     data: { restaurant },
   });
 });

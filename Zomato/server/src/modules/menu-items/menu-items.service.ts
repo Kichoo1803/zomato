@@ -21,12 +21,78 @@ const ensureRestaurantAccess = async (user: { id: number; role: Role }, restaura
 };
 
 export const menuItemsService = {
+  async listAll(filters?: {
+    search?: string;
+    restaurantId?: number;
+    categoryId?: number;
+    isAvailable?: boolean;
+  }) {
+    const search = filters?.search?.trim();
+
+    return prisma.menuItem.findMany({
+      where: {
+        ...(search
+          ? {
+              OR: [
+                { name: { contains: search } },
+                { description: { contains: search } },
+                { restaurant: { name: { contains: search } } },
+              ],
+            }
+          : {}),
+        ...(filters?.restaurantId ? { restaurantId: filters.restaurantId } : {}),
+        ...(filters?.categoryId ? { categoryId: filters.categoryId } : {}),
+        ...(filters?.isAvailable !== undefined ? { isAvailable: filters.isAvailable } : {}),
+      },
+      orderBy: [{ createdAt: "desc" }],
+      include: {
+        category: true,
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        addons: {
+          where: { isActive: true },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+  },
+
   async listByRestaurant(restaurantId: number) {
     return prisma.menuItem.findMany({
       where: { restaurantId },
       orderBy: [{ isRecommended: "desc" }, { createdAt: "desc" }],
       include: {
         category: true,
+        addons: {
+          where: { isActive: true },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+  },
+
+  async listForOwner(userId: number) {
+    return prisma.menuItem.findMany({
+      where: {
+        restaurant: {
+          ownerId: userId,
+        },
+      },
+      orderBy: [{ restaurantId: "asc" }, { isRecommended: "desc" }, { createdAt: "desc" }],
+      include: {
+        category: true,
+        restaurant: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
         addons: {
           where: { isActive: true },
           orderBy: { createdAt: "asc" },

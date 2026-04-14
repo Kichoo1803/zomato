@@ -2,6 +2,7 @@ export const Role = {
   CUSTOMER: "CUSTOMER",
   RESTAURANT_OWNER: "RESTAURANT_OWNER",
   DELIVERY_PARTNER: "DELIVERY_PARTNER",
+  OPERATIONS_MANAGER: "OPERATIONS_MANAGER",
   ADMIN: "ADMIN",
 } as const;
 export type Role = (typeof Role)[keyof typeof Role];
@@ -20,6 +21,22 @@ export const FoodType = {
 } as const;
 export type FoodType = (typeof FoodType)[keyof typeof FoodType];
 
+export const CatalogItemType = {
+  MENU_ITEM: "MENU_ITEM",
+  COMBO: "COMBO",
+} as const;
+export type CatalogItemType = (typeof CatalogItemType)[keyof typeof CatalogItemType];
+
+export const AddonType = {
+  EXTRA: "EXTRA",
+  UPGRADE: "UPGRADE",
+  DIP: "DIP",
+  DRINK: "DRINK",
+  SIDE: "SIDE",
+  DESSERT: "DESSERT",
+} as const;
+export type AddonType = (typeof AddonType)[keyof typeof AddonType];
+
 export const DiscountType = {
   PERCENTAGE: "PERCENTAGE",
   FLAT: "FLAT",
@@ -34,8 +51,15 @@ export type OfferScope = (typeof OfferScope)[keyof typeof OfferScope];
 
 export const OrderStatus = {
   PLACED: "PLACED",
+  CONFIRMED: "CONFIRMED",
   ACCEPTED: "ACCEPTED",
   PREPARING: "PREPARING",
+  READY_FOR_PICKUP: "READY_FOR_PICKUP",
+  LOOKING_FOR_DELIVERY_PARTNER: "LOOKING_FOR_DELIVERY_PARTNER",
+  DELIVERY_PARTNER_ASSIGNED: "DELIVERY_PARTNER_ASSIGNED",
+  PICKED_UP: "PICKED_UP",
+  ON_THE_WAY: "ON_THE_WAY",
+  DELAYED: "DELAYED",
   OUT_FOR_DELIVERY: "OUT_FOR_DELIVERY",
   DELIVERED: "DELIVERED",
   CANCELLED: "CANCELLED",

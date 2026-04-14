@@ -12,6 +12,7 @@ export const placeOrderSchema = {
       PaymentMethod.WALLET,
       PaymentMethod.NET_BANKING,
     ]),
+    tipAmount: z.coerce.number().min(0).max(500).optional(),
     specialInstructions: z.string().trim().max(500).optional(),
   }),
 };

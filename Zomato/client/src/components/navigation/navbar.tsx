@@ -1,6 +1,7 @@
 import { Link, NavLink } from "react-router-dom";
-import { Search, ShoppingBag, UserRound } from "lucide-react";
+import { Bell, Search, ShoppingBag, UserRound } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { useNotificationInbox } from "@/hooks/use-notification-inbox";
 import { getDefaultRedirectPath } from "@/lib/auth";
 import { cn } from "@/utils/cn";
 
@@ -12,6 +13,11 @@ const navItems = [
 
 export const Navbar = () => {
   const { isAuthenticated, user } = useAuth();
+  const isCustomerSession = isAuthenticated && user?.role === "CUSTOMER";
+  const { unreadCount } = useNotificationInbox({
+    enabled: isCustomerSession,
+    userId: user?.id,
+  });
   const accountPath =
     isAuthenticated && user
       ? user.role === "CUSTOMER"
@@ -60,6 +66,16 @@ export const Navbar = () => {
           <Link to="/cart" className="rounded-full bg-accent p-3 text-white shadow-soft">
             <ShoppingBag className="h-4 w-4" />
           </Link>
+          {isCustomerSession ? (
+            <Link to="/notifications" className="relative rounded-full border border-accent/10 bg-white p-3 text-ink shadow-soft">
+              <Bell className="h-4 w-4" />
+              {unreadCount ? (
+                <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold text-white shadow-soft">
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              ) : null}
+            </Link>
+          ) : null}
           <Link to={accountPath} className="rounded-full border border-accent/10 bg-white p-3 text-ink shadow-soft">
             <UserRound className="h-4 w-4" />
           </Link>

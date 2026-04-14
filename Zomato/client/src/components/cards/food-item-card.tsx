@@ -8,9 +8,19 @@ type FoodItemCardProps = {
   price: string;
   badge?: string;
   image: string;
+  buttonLabel?: string;
+  onAdd?: () => void;
 };
 
-export const FoodItemCard = ({ name, description, price, badge, image }: FoodItemCardProps) => {
+export const FoodItemCard = ({
+  name,
+  description,
+  price,
+  badge,
+  image,
+  buttonLabel = "Add",
+  onAdd,
+}: FoodItemCardProps) => {
   return (
     <article className="overflow-hidden rounded-[2rem] border border-white/70 bg-white/85 shadow-soft">
       <div className="grid gap-4 p-5 md:grid-cols-[1fr_180px] md:items-center">
@@ -22,9 +32,9 @@ export const FoodItemCard = ({ name, description, price, badge, image }: FoodIte
           </div>
           <div className="flex items-center justify-between gap-3">
             <p className="text-lg font-semibold text-ink">{price}</p>
-            <Button className="gap-2" type="button">
+            <Button className="gap-2" type="button" onClick={onAdd}>
               <Plus className="h-4 w-4" />
-              Add
+              {buttonLabel}
             </Button>
           </div>
         </div>

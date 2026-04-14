@@ -1,5 +1,7 @@
 import type { PropsWithChildren } from "react";
+import { X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
+import { Button } from "./button";
 import { cn } from "@/utils/cn";
 
 type DrawerProps = PropsWithChildren<{
@@ -31,7 +33,16 @@ export const Drawer = ({ open, onClose, title, className, children }: DrawerProp
               className,
             )}
           >
-            {title ? <h3 className="font-display text-3xl font-semibold text-ink">{title}</h3> : null}
+            <Button
+              type="button"
+              variant="ghost"
+              className="absolute right-4 top-4 h-10 w-10 p-0"
+              onClick={onClose}
+              aria-label="Close drawer"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+            {title ? <h3 className="pr-12 font-display text-3xl font-semibold text-ink">{title}</h3> : null}
             <div className={cn(title && "mt-4")}>{children}</div>
           </motion.aside>
         </motion.div>

@@ -1,5 +1,20 @@
 import { PrismaClient } from "@prisma/client";
-import { AddressType, DeliveryAvailabilityStatus, DiscountType, DocumentStatus, FoodType, NotificationType, OfferScope, OrderStatus, PaymentMethod, PaymentStatus, ReservationStatus, Role, VehicleType } from "../src/constants/enums.js";
+import {
+  AddonType,
+  AddressType,
+  DeliveryAvailabilityStatus,
+  DiscountType,
+  DocumentStatus,
+  FoodType,
+  NotificationType,
+  OfferScope,
+  OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
+  ReservationStatus,
+  Role,
+  VehicleType,
+} from "../src/constants/enums.js";
 import bcrypt from "bcrypt";
 import dayjs from "dayjs";
 
@@ -14,6 +29,20 @@ type UserSeed = {
   phone: string;
   role: Role;
   walletBalance?: number;
+};
+
+type RegionAssignmentSeed = {
+  userKey: string;
+  state: string;
+  district?: string;
+  notes?: string;
+};
+
+type OperationsRegionNoteSeed = {
+  state: string;
+  district?: string;
+  title: string;
+  message: string;
 };
 
 type AddressSeed = {
@@ -38,6 +67,27 @@ type AddressSeed = {
 type AddonSeed = {
   name: string;
   price: number;
+  description?: string;
+  addonType?: AddonType;
+};
+
+type ComboItemSeed = {
+  itemName: string;
+  quantity: number;
+};
+
+type ComboSeed = {
+  restaurantSlug: string;
+  name: string;
+  description: string;
+  image?: string;
+  basePrice: number;
+  offerPrice?: number;
+  categoryTag?: string;
+  isAvailable?: boolean;
+  isActive?: boolean;
+  items: ComboItemSeed[];
+  addons?: AddonSeed[];
 };
 
 type MenuItemSeed = {
@@ -268,6 +318,14 @@ const adminSeed: UserSeed = {
   role: Role.ADMIN,
 };
 
+const operationsSeed: UserSeed = {
+  key: "ananya_rao_ops",
+  fullName: "Ananya Rao",
+  email: "ops@zomatoluxe.dev",
+  phone: "+919840000401",
+  role: Role.OPERATIONS_MANAGER,
+};
+
 const ownerSeeds: UserSeed[] = [
   {
     key: "aarav_mehta",
@@ -402,6 +460,96 @@ const customerSeeds: UserSeed[] = [
   { key: "arjun_sethi", fullName: "Arjun Sethi", email: "arjun.sethi@zomatoluxe.dev", phone: "+919830000308", role: Role.CUSTOMER, walletBalance: 770 },
   { key: "neha_kulkarni", fullName: "Neha Kulkarni", email: "neha.kulkarni@zomatoluxe.dev", phone: "+919830000309", role: Role.CUSTOMER, walletBalance: 1340 },
   { key: "dev_patel", fullName: "Dev Patel", email: "dev.patel@zomatoluxe.dev", phone: "+919830000310", role: Role.CUSTOMER, walletBalance: 510 },
+];
+
+const regionAssignmentSeeds: RegionAssignmentSeed[] = [
+  {
+    userKey: "aarav_mehta",
+    state: "Karnataka",
+    district: "Bengaluru Urban",
+    notes: "Anchor owner for premium Bengaluru restaurant operations.",
+  },
+  {
+    userKey: "rhea_kapoor",
+    state: "Karnataka",
+    district: "Mysuru",
+    notes: "Track weekend order spikes and staffing readiness.",
+  },
+  {
+    userKey: "vihaan_sharma",
+    state: "Tamil Nadu",
+    district: "Chennai",
+    notes: "Prioritize owner onboarding and district-level escalation support.",
+  },
+  {
+    userKey: "sana_iyer",
+    state: "Tamil Nadu",
+    district: "Coimbatore",
+    notes: "Monitor partner coverage during evening demand surges.",
+  },
+  {
+    userKey: "kabir_malhotra",
+    state: "Telangana",
+    district: "Hyderabad",
+    notes: "Weekly follow-up on regional restaurant expansion readiness.",
+  },
+  {
+    userKey: "naina_rao",
+    state: "Maharashtra",
+    district: "Pune",
+    notes: "Keep launch checklist and local compliance reminders visible.",
+  },
+  {
+    userKey: "ravi_kumar",
+    state: "Karnataka",
+    district: "Bengaluru Urban",
+    notes: "Priority rider for central city handoffs and escalations.",
+  },
+  {
+    userKey: "imran_sheikh",
+    state: "Karnataka",
+    district: "Mysuru",
+    notes: "Coverage backup for late-night peak windows.",
+  },
+  {
+    userKey: "deepak_nair",
+    state: "Tamil Nadu",
+    district: "Chennai",
+    notes: "Assigned for high-volume premium delivery coverage.",
+  },
+  {
+    userKey: "pooja_yadav",
+    state: "Telangana",
+    district: "Hyderabad",
+    notes: "Pending verification follow-up and route readiness review.",
+  },
+  {
+    userKey: "salman_ansari",
+    state: "Maharashtra",
+    district: "Pune",
+    notes: "Support rider utilization planning across core zones.",
+  },
+];
+
+const operationsRegionNoteSeeds: OperationsRegionNoteSeed[] = [
+  {
+    state: "Karnataka",
+    district: "Bengaluru Urban",
+    title: "Weekend premium order watch",
+    message: "Keep extra partner coverage ready for late dinner demand around Indiranagar and Koramangala.",
+  },
+  {
+    state: "Tamil Nadu",
+    district: "Chennai",
+    title: "Owner onboarding checklist",
+    message: "Review new restaurant owner readiness, menu setup, and first-week order support before launch.",
+  },
+  {
+    state: "Telangana",
+    district: "Hyderabad",
+    title: "Partner verification follow-up",
+    message: "Complete pending rider verification and confirm district-level backup capacity before peak hours.",
+  },
 ];
 
 const addressSeedGroupA: AddressSeed[] = [
@@ -1605,12 +1753,432 @@ const restaurantSeedGroupE: RestaurantSeed[] = [
     ],
   },
 ];
+
+const restaurantSeedGroupF: RestaurantSeed[] = [
+  {
+    ownerKey: "vihaan_sharma",
+    name: "Anna Nagar Tiffin Room",
+    slug: "anna-nagar-tiffin-room",
+    description:
+      "A polished Chennai kitchen built around tiffin favourites, biryani comfort, and premium late-evening delivery.",
+    email: "hello@annanagartiffinroom.in",
+    phone: "+919900010111",
+    coverImage:
+      "https://images.unsplash.com/photo-1512058564366-18510be2db19?auto=format&fit=crop&w=1200&q=80",
+    logoText: "ATR",
+    licenseNumber: "FSSAI-ATR-600040",
+    openingTime: "08:00",
+    closingTime: "23:00",
+    addressLine: "4th Avenue",
+    area: "Anna Nagar",
+    city: "Chennai",
+    state: "Tamil Nadu",
+    pincode: "600040",
+    latitude: 13.0851,
+    longitude: 80.2101,
+    costForTwo: 820,
+    avgDeliveryTime: 28,
+    isVegOnly: false,
+    isFeatured: true,
+    categories: ["Casual Dining", "Premium Delivery"],
+    cuisines: ["South Indian", "Biryani", "North Indian"],
+    linkedOffers: ["LUXE50", "FIRSTFEAST"],
+    menuCategories: [
+      { name: "Tiffin Signatures", description: "Breakfast-style classics available through the day.", sortOrder: 1 },
+      { name: "Biryani & Bowls", description: "Hearty rice dishes and Chennai-style comfort plates.", sortOrder: 2 },
+      { name: "Desserts & Drinks", description: "Sweet finishes and quick sips.", sortOrder: 3 },
+    ],
+    menuItems: [
+      {
+        categoryName: "Tiffin Signatures",
+        name: "Ghee Podi Idli Stack",
+        description: "Mini idlis tossed with podi, ghee, curry leaves, and a side of coconut chutney.",
+        price: 205,
+        foodType: FoodType.VEG,
+        preparationTime: 11,
+        calories: 290,
+      },
+      {
+        categoryName: "Tiffin Signatures",
+        name: "Anna Nagar Paneer Ghee Roast Dosa",
+        description: "A crisp dosa with paneer masala, roast chilli paste, and butter-finished edges.",
+        price: 285,
+        foodType: FoodType.VEG,
+        isRecommended: true,
+        preparationTime: 16,
+        calories: 430,
+        addons: [{ name: "Extra Potato Masala", price: 35 }],
+      },
+      {
+        categoryName: "Biryani & Bowls",
+        name: "Chennai Pepper Chicken Biryani",
+        description: "Seeraga samba biryani with pepper-forward masala, mint raita, and onion salan.",
+        price: 395,
+        foodType: FoodType.NON_VEG,
+        preparationTime: 24,
+        calories: 710,
+        addons: [{ name: "Raita Tub", price: 40 }],
+      },
+      {
+        categoryName: "Desserts & Drinks",
+        name: "Filter Kaapi Tres Leches",
+        description: "Coffee-soaked sponge layered with milk cream and chicory caramel.",
+        price: 175,
+        foodType: FoodType.VEG,
+        preparationTime: 8,
+        calories: 260,
+      },
+    ],
+  },
+  {
+    ownerKey: "vihaan_sharma",
+    name: "Marina Curry Club",
+    slug: "marina-curry-club",
+    description:
+      "A refined coastal kitchen serving Chennai seafood staples, dosa plates, and rich supper-friendly curries.",
+    email: "hello@marinacurryclub.in",
+    phone: "+919900010112",
+    coverImage:
+      "https://images.unsplash.com/photo-1559847844-5315695dadae?auto=format&fit=crop&w=1200&q=80",
+    logoText: "MCC",
+    licenseNumber: "FSSAI-MCC-600020",
+    openingTime: "11:30",
+    closingTime: "23:30",
+    addressLine: "LB Road",
+    area: "Adyar",
+    city: "Chennai",
+    state: "Tamil Nadu",
+    pincode: "600020",
+    latitude: 13.0067,
+    longitude: 80.2573,
+    costForTwo: 1260,
+    avgDeliveryTime: 34,
+    isVegOnly: false,
+    categories: ["Fine Dining", "Premium Delivery"],
+    cuisines: ["Coastal", "South Indian", "Biryani"],
+    linkedOffers: ["DATEDELIGHT"],
+    menuCategories: [
+      { name: "Seafood Starters", description: "Sea-facing small plates with bold spice profiles.", sortOrder: 1 },
+      { name: "Curries & Rice", description: "Comfort-led mains for lunch and late dinners.", sortOrder: 2 },
+      { name: "Finishers", description: "Desserts and drinks with a coastal twist.", sortOrder: 3 },
+    ],
+    menuItems: [
+      {
+        categoryName: "Seafood Starters",
+        name: "Adyar Prawn Pepper Fry",
+        description: "Wok-roasted prawns with black pepper, fennel, and curry leaf ghee.",
+        price: 425,
+        foodType: FoodType.NON_VEG,
+        preparationTime: 17,
+        calories: 410,
+      },
+      {
+        categoryName: "Curries & Rice",
+        name: "Marina Fish Curry Meal",
+        description: "Seared fish in tamarind curry with steamed rice and beetroot poriyal.",
+        price: 395,
+        foodType: FoodType.NON_VEG,
+        isRecommended: true,
+        preparationTime: 21,
+        calories: 560,
+      },
+      {
+        categoryName: "Curries & Rice",
+        name: "Kothu Parotta Supper Bowl",
+        description: "Layered parotta chopped with salna, egg ribbons, and roasted onion masala.",
+        price: 325,
+        foodType: FoodType.EGG,
+        preparationTime: 18,
+        calories: 630,
+      },
+      {
+        categoryName: "Finishers",
+        name: "Elaneer Falooda Cup",
+        description: "Tender coconut falooda with basil seeds, chilled rabri, and rose jelly.",
+        price: 190,
+        foodType: FoodType.VEG,
+        preparationTime: 9,
+        calories: 310,
+      },
+    ],
+  },
+  {
+    ownerKey: "sana_iyer",
+    name: "Kongu Stone Pot",
+    slug: "kongu-stone-pot",
+    description:
+      "A Coimbatore kitchen spotlighting Kongu flavours, balanced bowls, and slow-cooked stone-pot comforts.",
+    email: "hello@kongustonepot.in",
+    phone: "+919900010113",
+    coverImage:
+      "https://images.unsplash.com/photo-1515003197210-e0cd71810b5f?auto=format&fit=crop&w=1200&q=80",
+    logoText: "KSP",
+    licenseNumber: "FSSAI-KSP-641002",
+    openingTime: "09:00",
+    closingTime: "22:30",
+    addressLine: "DB Road",
+    area: "RS Puram",
+    city: "Coimbatore",
+    state: "Tamil Nadu",
+    pincode: "641002",
+    latitude: 11.0086,
+    longitude: 76.9518,
+    costForTwo: 880,
+    avgDeliveryTime: 29,
+    isVegOnly: false,
+    categories: ["Casual Dining", "Healthy Kitchen"],
+    cuisines: ["South Indian", "Healthy"],
+    linkedOffers: ["HEALTHY25"],
+    menuCategories: [
+      { name: "Kongu Plates", description: "Comfort-first signature mains from the region.", sortOrder: 1 },
+      { name: "Tiffin & Bowls", description: "Lighter meals and everyday favourites.", sortOrder: 2 },
+      { name: "Sweets", description: "Finishing notes with local warmth.", sortOrder: 3 },
+    ],
+    menuItems: [
+      {
+        categoryName: "Kongu Plates",
+        name: "Coimbatore Kozhi Milagu Kuzhambu",
+        description: "Pepper-forward chicken gravy served with kal dosa and onion pachadi.",
+        price: 385,
+        foodType: FoodType.NON_VEG,
+        isRecommended: true,
+        preparationTime: 23,
+        calories: 620,
+      },
+      {
+        categoryName: "Kongu Plates",
+        name: "Stone Pot Mushroom Choru",
+        description: "Fragrant rice layered with mushrooms, seared shallots, and coriander ghee.",
+        price: 315,
+        foodType: FoodType.VEG,
+        preparationTime: 19,
+        calories: 450,
+      },
+      {
+        categoryName: "Tiffin & Bowls",
+        name: "Kambu Kichadi Comfort Bowl",
+        description: "Pearl millet kichadi with coconut chutney, tempered vegetables, and podi oil.",
+        price: 245,
+        foodType: FoodType.VEG,
+        preparationTime: 13,
+        calories: 340,
+      },
+      {
+        categoryName: "Sweets",
+        name: "Arachuvitta Payasam Cup",
+        description: "A smooth jaggery payasam with roasted coconut paste and cashew crumble.",
+        price: 155,
+        foodType: FoodType.VEG,
+        preparationTime: 8,
+        calories: 240,
+      },
+    ],
+  },
+  {
+    ownerKey: "kabir_malhotra",
+    name: "Charminar Smoke House",
+    slug: "charminar-smoke-house",
+    description:
+      "A Hyderabad-led premium delivery kitchen pairing dum biryani, kebab smoke, and supper-time comfort.",
+    email: "hello@charminarsmokehouse.in",
+    phone: "+919900010114",
+    coverImage:
+      "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1200&q=80",
+    logoText: "CSH",
+    licenseNumber: "FSSAI-CSH-500034",
+    openingTime: "12:00",
+    closingTime: "23:45",
+    addressLine: "Road No. 12",
+    area: "Banjara Hills",
+    city: "Hyderabad",
+    state: "Telangana",
+    pincode: "500034",
+    latitude: 17.4175,
+    longitude: 78.4386,
+    costForTwo: 1180,
+    avgDeliveryTime: 33,
+    isVegOnly: false,
+    categories: ["Premium Delivery", "Casual Dining"],
+    cuisines: ["Biryani", "Mughlai", "North Indian"],
+    linkedOffers: ["DATEDELIGHT", "FIRSTFEAST"],
+    menuCategories: [
+      { name: "Kebabs", description: "Charred starters and skewers with smoky finish.", sortOrder: 1 },
+      { name: "Biryani House", description: "Dum-led mains and late-night classics.", sortOrder: 2 },
+      { name: "Desserts", description: "Rich endings made for generous sharing.", sortOrder: 3 },
+    ],
+    menuItems: [
+      {
+        categoryName: "Kebabs",
+        name: "Banjara Lamb Seekh",
+        description: "Lamb seekh kebabs finished over charcoal with mint yoghurt and onion laccha.",
+        price: 445,
+        foodType: FoodType.NON_VEG,
+        preparationTime: 18,
+        calories: 470,
+      },
+      {
+        categoryName: "Biryani House",
+        name: "Hyderabadi Dum Chicken Biryani",
+        description: "Long-grain biryani layered with saffron milk, mint, fried onion, and salan.",
+        price: 425,
+        foodType: FoodType.NON_VEG,
+        isRecommended: true,
+        preparationTime: 24,
+        calories: 760,
+        addons: [{ name: "Mirchi Ka Salan", price: 45 }],
+      },
+      {
+        categoryName: "Biryani House",
+        name: "Bagara Baingan Rice Plate",
+        description: "Slow-braised baingan in sesame-peanut gravy with fragrant bagara rice.",
+        price: 305,
+        foodType: FoodType.VEG,
+        preparationTime: 18,
+        calories: 430,
+      },
+      {
+        categoryName: "Desserts",
+        name: "Qubani Double Ka Meetha Jar",
+        description: "Apricot compote layered with bread pudding cream and pistachio dust.",
+        price: 185,
+        foodType: FoodType.VEG,
+        preparationTime: 8,
+        calories: 320,
+      },
+    ],
+  },
+];
+
 const restaurantSeeds = [
   ...restaurantSeedGroupA,
   ...restaurantSeedGroupB,
   ...restaurantSeedGroupC,
   ...restaurantSeedGroupD,
   ...restaurantSeedGroupE,
+  ...restaurantSeedGroupF,
+];
+
+const comboSeeds: ComboSeed[] = [
+  {
+    restaurantSlug: "ember-grill-house",
+    name: "Burger + Fries Feast Combo",
+    description: "A comfort-led grill combo with the house smash burger and truffle fries.",
+    basePrice: 677,
+    offerPrice: 579,
+    categoryTag: "Meal Combo",
+    items: [
+      { itemName: "Double Smash Luxe Burger", quantity: 1 },
+      { itemName: "Parmesan Truffle Fries", quantity: 1 },
+    ],
+    addons: [
+      { name: "Pepsi Can", price: 60, addonType: AddonType.DRINK },
+      { name: "Garlic Dip", price: 35, addonType: AddonType.DIP },
+      { name: "Extra Cheese", price: 45, addonType: AddonType.UPGRADE },
+      { name: "Molten Pecan Brownie", price: 170, addonType: AddonType.DESSERT },
+    ],
+  },
+  {
+    restaurantSlug: "kuro-flame",
+    name: "Tokyo Fire Bowl Combo",
+    description: "A bold bowl-and-bites combo with optional drinks and sauces for late cravings.",
+    basePrice: 687,
+    offerPrice: 599,
+    categoryTag: "Bestseller Combo",
+    items: [
+      { itemName: "Tokyo Fire Chicken Bowl", quantity: 1 },
+      { itemName: "Miso Corn Crisps", quantity: 1 },
+    ],
+    addons: [
+      { name: "Yuzu Soda", price: 75, addonType: AddonType.DRINK },
+      { name: "Wasabi Mayo", price: 35, addonType: AddonType.DIP },
+      { name: "Grilled Chicken Skewers", price: 110, addonType: AddonType.UPGRADE },
+    ],
+  },
+  {
+    restaurantSlug: "saffron-story",
+    name: "Royal Biryani Combo",
+    description: "A luxe biryani set with dessert and easy add-on upgrades for fuller dinners.",
+    basePrice: 674,
+    offerPrice: 599,
+    categoryTag: "Family Meal",
+    items: [
+      { itemName: "Dum Gosht Biryani Royale", quantity: 1 },
+      { itemName: "Saffron Phirni Jar", quantity: 1 },
+    ],
+    addons: [
+      { name: "Extra Chicken Piece", price: 90, addonType: AddonType.UPGRADE },
+      { name: "Garlic Dip", price: 30, addonType: AddonType.DIP },
+      { name: "Masala Cola", price: 55, addonType: AddonType.DRINK },
+    ],
+  },
+  {
+    restaurantSlug: "coastal-copper",
+    name: "Coastal Curry Meal Combo",
+    description: "Curry, dosa, and coastal comfort bundled into a full meal combo.",
+    basePrice: 643,
+    offerPrice: 569,
+    categoryTag: "Chef Combo",
+    items: [
+      { itemName: "Malabar Prawn Curry", quantity: 1 },
+      { itemName: "Neer Dosa Fold", quantity: 1 },
+    ],
+    addons: [
+      { name: "Lime Soda", price: 50, addonType: AddonType.DRINK },
+      { name: "Coconut Dip", price: 30, addonType: AddonType.DIP },
+      { name: "Extra Prawn Piece", price: 95, addonType: AddonType.UPGRADE },
+    ],
+  },
+  {
+    restaurantSlug: "verdant-bowl-club",
+    name: "Power Bowl Combo",
+    description: "A balanced bowl combo with a smoothie and wellness-friendly optional sides.",
+    basePrice: 597,
+    offerPrice: 529,
+    categoryTag: "Healthy Combo",
+    items: [
+      { itemName: "Harissa Falafel Power Bowl", quantity: 1 },
+      { itemName: "Almond Date Protein Smoothie", quantity: 1 },
+    ],
+    addons: [
+      { name: "Extra Hummus", price: 45, addonType: AddonType.SIDE },
+      { name: "Grilled Halloumi", price: 95, addonType: AddonType.UPGRADE },
+      { name: "Choco Protein Bites", price: 80, addonType: AddonType.DESSERT },
+    ],
+  },
+  {
+    restaurantSlug: "millet-and-spice",
+    name: "South Comfort Combo",
+    description: "An everyday breakfast-style combo with dosa, idli bites, and a sweet finish.",
+    basePrice: 492,
+    offerPrice: 429,
+    categoryTag: "Breakfast Combo",
+    items: [
+      { itemName: "Mysore Masala Dosa Deluxe", quantity: 1 },
+      { itemName: "Gunpowder Idli Bites", quantity: 1 },
+    ],
+    addons: [
+      { name: "Filter Coffee Can", price: 45, addonType: AddonType.DRINK },
+      { name: "Extra Potato Palya", price: 35, addonType: AddonType.UPGRADE },
+      { name: "Elaneer Payasam Cup", price: 70, addonType: AddonType.DESSERT },
+    ],
+  },
+  {
+    restaurantSlug: "truffle-theory",
+    name: "Woodfire Date Night Combo",
+    description: "Pizza and dessert in a polished shareable combo with premium extras.",
+    basePrice: 742,
+    offerPrice: 649,
+    categoryTag: "Dinner Combo",
+    items: [
+      { itemName: "Four Cheese Bianca Pizza", quantity: 1 },
+      { itemName: "Tiramisu Cloud Slice", quantity: 1 },
+    ],
+    addons: [
+      { name: "Sparkling Lemonade", price: 70, addonType: AddonType.DRINK },
+      { name: "Extra Burrata Spoon", price: 90, addonType: AddonType.UPGRADE },
+      { name: "Wild Rocket Salad", price: 85, addonType: AddonType.SIDE },
+    ],
+  },
 ];
 
 const favoriteSeeds: Array<[string, string]> = [
@@ -2240,6 +2808,7 @@ async function clearDatabase() {
   await prisma.order.deleteMany();
   await prisma.favoriteRestaurant.deleteMany();
   await prisma.restaurantOffer.deleteMany();
+  await prisma.operationsRegionNote.deleteMany();
   await prisma.deliveryDocument.deleteMany();
   await prisma.deliveryPartner.deleteMany();
   await prisma.itemAddon.deleteMany();
@@ -2261,6 +2830,7 @@ async function main() {
   await clearDatabase();
 
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);
+  const regionAssignmentMap = new Map(regionAssignmentSeeds.map((assignment) => [assignment.userKey, assignment]));
   const userMap = new Map<string, Awaited<ReturnType<typeof prisma.user.create>>>();
   const addressMap = new Map<string, Awaited<ReturnType<typeof prisma.address.create>>>();
   const restaurantMap = new Map<string, Awaited<ReturnType<typeof prisma.restaurant.create>>>();
@@ -2272,8 +2842,9 @@ async function main() {
   const menuItemMap = new Map<string, Awaited<ReturnType<typeof prisma.menuItem.create>>>();
   const addonMap = new Map<string, Awaited<ReturnType<typeof prisma.itemAddon.create>>>();
 
-  const allUsers = [adminSeed, ...ownerSeeds, ...deliveryPartnerSeeds, ...customerSeeds];
+  const allUsers = [adminSeed, operationsSeed, ...ownerSeeds, ...deliveryPartnerSeeds, ...customerSeeds];
   for (const [index, userSeed] of allUsers.entries()) {
+    const assignment = regionAssignmentMap.get(userSeed.key);
     const user = await prisma.user.create({
       data: {
         fullName: userSeed.fullName,
@@ -2282,6 +2853,9 @@ async function main() {
         passwordHash,
         profileImage: avatarUrl(userSeed.email),
         role: userSeed.role,
+        opsState: assignment?.state,
+        opsDistrict: assignment?.district,
+        opsNotes: assignment?.notes,
         isActive: true,
         emailVerified: true,
         phoneVerified: true,
@@ -2291,6 +2865,18 @@ async function main() {
     });
 
     userMap.set(userSeed.key, user);
+  }
+
+  for (const noteSeed of operationsRegionNoteSeeds) {
+    await prisma.operationsRegionNote.create({
+      data: {
+        state: noteSeed.state,
+        district: noteSeed.district,
+        title: noteSeed.title,
+        message: noteSeed.message,
+        updatedById: userMap.get(operationsSeed.key)!.id,
+      },
+    });
   }
 
   for (const addressSeed of addressSeeds) {
@@ -2456,8 +3042,11 @@ async function main() {
       for (const addonSeed of menuItemSeed.addons ?? []) {
         const addon = await prisma.itemAddon.create({
           data: {
+            restaurantId: restaurant.id,
             menuItemId: menuItem.id,
             name: addonSeed.name,
+            description: addonSeed.description,
+            addonType: addonSeed.addonType ?? AddonType.EXTRA,
             price: decimal(addonSeed.price),
             isActive: true,
           },
@@ -2474,6 +3063,47 @@ async function main() {
           offerId: offerMap.get(offerCode)!.id,
         },
       });
+    }
+  }
+
+  for (const comboSeed of comboSeeds) {
+    const restaurant = restaurantMap.get(comboSeed.restaurantSlug)!;
+    const combo = await prisma.combo.create({
+      data: {
+        restaurantId: restaurant.id,
+        name: comboSeed.name,
+        description: comboSeed.description,
+        image: comboSeed.image ?? restaurant.coverImage,
+        basePrice: decimal(comboSeed.basePrice),
+        offerPrice: comboSeed.offerPrice ? decimal(comboSeed.offerPrice) : null,
+        categoryTag: comboSeed.categoryTag,
+        isAvailable: comboSeed.isAvailable ?? true,
+        isActive: comboSeed.isActive ?? true,
+      },
+    });
+
+    await prisma.comboItem.createMany({
+      data: comboSeed.items.map((item) => ({
+        comboId: combo.id,
+        menuItemId: menuItemMap.get(`${comboSeed.restaurantSlug}:${item.itemName}`)!.id,
+        quantity: item.quantity,
+      })),
+    });
+
+    for (const addonSeed of comboSeed.addons ?? []) {
+      const addon = await prisma.itemAddon.create({
+        data: {
+          restaurantId: restaurant.id,
+          comboId: combo.id,
+          name: addonSeed.name,
+          description: addonSeed.description,
+          addonType: addonSeed.addonType ?? AddonType.EXTRA,
+          price: decimal(addonSeed.price),
+          isActive: true,
+        },
+      });
+
+      addonMap.set(`${comboSeed.restaurantSlug}:${comboSeed.name}:${addonSeed.name}`, addon);
     }
   }
 

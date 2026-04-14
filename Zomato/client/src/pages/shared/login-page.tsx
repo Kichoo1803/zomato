@@ -45,12 +45,46 @@ type SignupFormValues = z.infer<typeof signupSchema>;
 type LocationState = {
   from?: {
     pathname?: string;
+    search?: string;
+    hash?: string;
   };
 };
 
-type AuthVariant = "customer" | "partner" | "delivery" | "admin";
+type AuthVariant = "customer" | "partner" | "owner" | "delivery" | "ops" | "admin";
+
+const getOwnerAliasPath = (pathname: string) => {
+  if (pathname === "/partner" || pathname === "/partner/") {
+    return "/owner/dashboard";
+  }
+
+  if (pathname.startsWith("/partner/menu")) {
+    return "/owner/menu";
+  }
+
+  if (pathname.startsWith("/partner/orders")) {
+    return "/owner/orders";
+  }
+
+  if (pathname.startsWith("/partner/reviews")) {
+    return "/owner/reviews";
+  }
+
+  if (pathname.startsWith("/partner/earnings")) {
+    return "/owner/analytics";
+  }
+
+  if (pathname.startsWith("/partner/settings")) {
+    return "/owner/profile";
+  }
+
+  return "/owner/dashboard";
+};
 
 const getAuthVariant = (pathname: string): AuthVariant => {
+  if (pathname.startsWith("/owner")) {
+    return "owner";
+  }
+
   if (pathname.startsWith("/partner")) {
     return "partner";
   }
@@ -61,6 +95,10 @@ const getAuthVariant = (pathname: string): AuthVariant => {
 
   if (pathname.startsWith("/admin")) {
     return "admin";
+  }
+
+  if (pathname.startsWith("/ops")) {
+    return "ops";
   }
 
   return "customer";
@@ -90,11 +128,23 @@ const authCopy: Record<
     description: "Sign in with a restaurant owner account and continue into the partner dashboard flow already wired to the backend auth module.",
     credentials: ["aarav.mehta@zomatoluxe.dev / Password@123"],
   },
+  owner: {
+    eyebrow: "Owner access",
+    title: "Restaurant owner login",
+    description: "Sign in with a restaurant owner account and continue into the new owner dashboard wired to your restaurant-scoped backend data.",
+    credentials: ["aarav.mehta@zomatoluxe.dev / Password@123"],
+  },
   delivery: {
     eyebrow: "Delivery access",
     title: "Delivery partner login",
     description: "Use a seeded delivery partner account to enter the operations dashboard without changing the current auth design.",
     credentials: ["ravi.kumar@zomatoluxe.dev / Password@123"],
+  },
+  ops: {
+    eyebrow: "Operations access",
+    title: "India operations login",
+    description: "Authenticate with a seeded operations manager account and continue into the regional India control room built on the current premium auth flow.",
+    credentials: ["ops@zomatoluxe.dev / Password@123"],
   },
   admin: {
     eyebrow: "Admin access",
@@ -107,6 +157,9 @@ const authCopy: Record<
 const resolveNextPath = (role: UserRole, state: LocationState | null) => {
   const fallbackPath = getDefaultRedirectPath(role);
   const requestedPath = state?.from?.pathname;
+  const requestedSearch = state?.from?.search ?? "";
+  const requestedHash = state?.from?.hash ?? "";
+  const requestedLocation = requestedPath ? `${requestedPath}${requestedSearch}${requestedHash}` : null;
 
   if (!requestedPath || requestedPath === "/login" || requestedPath === "/signup") {
     return fallbackPath;
@@ -124,7 +177,19 @@ const resolveNextPath = (role: UserRole, state: LocationState | null) => {
     return fallbackPath;
   }
 
-  if (requestedPath.startsWith("/partner") && !["ADMIN", "RESTAURANT_OWNER"].includes(role)) {
+  if (requestedPath.startsWith("/partner")) {
+    if (role === "RESTAURANT_OWNER") {
+      return getOwnerAliasPath(requestedPath);
+    }
+
+    return fallbackPath;
+  }
+
+  if (requestedPath.startsWith("/owner") && role !== "RESTAURANT_OWNER") {
+    return fallbackPath;
+  }
+
+  if (requestedPath.startsWith("/ops") && role !== "OPERATIONS_MANAGER") {
     return fallbackPath;
   }
 
@@ -132,7 +197,30 @@ const resolveNextPath = (role: UserRole, state: LocationState | null) => {
     return fallbackPath;
   }
 
-  return requestedPath;
+  if (
+    [
+      "/restaurants",
+      "/search",
+      "/offers",
+      "/membership",
+      "/cart",
+      "/checkout",
+      "/payment",
+      "/order-success",
+      "/favorites",
+      "/track-order",
+      "/orders",
+      "/notifications",
+      "/profile",
+      "/addresses",
+      "/wallet",
+    ].some((path) => requestedPath === path || requestedPath.startsWith(`${path}/`)) &&
+    role !== "CUSTOMER"
+  ) {
+    return fallbackPath;
+  }
+
+  return requestedLocation ?? fallbackPath;
 };
 
 const LoginForm = () => {

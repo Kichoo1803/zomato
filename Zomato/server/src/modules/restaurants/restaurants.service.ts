@@ -3,6 +3,7 @@ import { FoodType, Role } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { buildAddressSearchText, geocodeAddressText } from "../../utils/geo.js";
 import { getPagination, getPaginationMeta } from "../../utils/pagination.js";
 import { slugify } from "../../utils/slug.js";
 
@@ -13,12 +14,15 @@ const listSelect = {
   description: true,
   coverImage: true,
   logoImage: true,
+  addressLine: true,
   area: true,
   city: true,
+  state: true,
   avgRating: true,
   totalReviews: true,
   costForTwo: true,
   avgDeliveryTime: true,
+  preparationTime: true,
   isVegOnly: true,
   isFeatured: true,
   cuisineMappings: {
@@ -90,6 +94,38 @@ const detailSelect = {
       },
     },
   },
+  combos: {
+    where: { isActive: true },
+    orderBy: [{ isAvailable: "desc" }, { createdAt: "desc" }],
+    include: {
+      items: {
+        orderBy: { id: "asc" },
+        include: {
+          menuItem: {
+            select: {
+              id: true,
+              name: true,
+              image: true,
+              price: true,
+              discountPrice: true,
+              foodType: true,
+              isAvailable: true,
+              category: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+      },
+      addons: {
+        where: { isActive: true },
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  },
   reviews: {
     orderBy: { createdAt: "desc" },
     take: 15,
@@ -101,6 +137,86 @@ const detailSelect = {
           profileImage: true,
         },
       },
+    },
+  },
+} satisfies Prisma.RestaurantSelect;
+
+const adminListSelect = {
+  id: true,
+  ownerId: true,
+  name: true,
+  slug: true,
+  description: true,
+  addressLine: true,
+  city: true,
+  state: true,
+  pincode: true,
+  area: true,
+  coverImage: true,
+  avgRating: true,
+  totalReviews: true,
+  avgDeliveryTime: true,
+  preparationTime: true,
+  latitude: true,
+  longitude: true,
+  isVegOnly: true,
+  isFeatured: true,
+  isActive: true,
+  costForTwo: true,
+  createdAt: true,
+  owner: {
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+    },
+  },
+  categoryMappings: {
+    select: {
+      category: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+  },
+  cuisineMappings: {
+    select: {
+      cuisine: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+  },
+  _count: {
+    select: {
+      menuItems: true,
+      orders: true,
+      reviews: true,
+    },
+  },
+} satisfies Prisma.RestaurantSelect;
+
+const adminDetailSelect = {
+  ...detailSelect,
+  owner: {
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      profileImage: true,
+    },
+  },
+  _count: {
+    select: {
+      menuItems: true,
+      orders: true,
+      reviews: true,
     },
   },
 } satisfies Prisma.RestaurantSelect;
@@ -129,6 +245,10 @@ const buildListWhere = (query: Record<string, unknown>): Prisma.RestaurantWhereI
     clauses.push({
       OR: [
         { name: { contains: search } },
+        { area: { contains: search } },
+        { city: { contains: search } },
+        { state: { contains: search } },
+        { addressLine: { contains: search } },
         { cuisineMappings: { some: { cuisine: { name: { contains: search } } } } },
         { menuItems: { some: { name: { contains: search } } } },
       ],
@@ -265,6 +385,35 @@ export const restaurantsService = {
     };
   },
 
+  async listForAdmin(query: {
+    search?: string;
+    city?: string;
+    ownerId?: number;
+    isActive?: boolean;
+  }) {
+    const search = query.search?.trim();
+    const city = query.city?.trim();
+
+    return prisma.restaurant.findMany({
+      where: {
+        ...(search
+          ? {
+              OR: [
+                { name: { contains: search } },
+                { slug: { contains: search } },
+                { area: { contains: search } },
+              ],
+            }
+          : {}),
+        ...(city ? { city: { contains: city } } : {}),
+        ...(query.ownerId ? { ownerId: query.ownerId } : {}),
+        ...(query.isActive !== undefined ? { isActive: query.isActive } : {}),
+      },
+      select: adminListSelect,
+      orderBy: { createdAt: "desc" },
+    });
+  },
+
   async getBySlug(slug: string) {
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug },
@@ -290,6 +439,18 @@ export const restaurantsService = {
     const ownerId =
       user.role === Role.ADMIN && typeof input.ownerId === "number" ? input.ownerId : user.id;
     const slug = await generateUniqueSlug(String(input.name));
+    const geocodedCoordinates =
+      typeof input.latitude === "number" && typeof input.longitude === "number"
+        ? null
+        : await geocodeAddressText(
+            buildAddressSearchText([
+              input.addressLine as string | undefined,
+              input.area as string | undefined,
+              input.city as string | undefined,
+              input.state as string | undefined,
+              input.pincode as string | undefined,
+            ]),
+          );
 
     const restaurant = await prisma.$transaction(async (tx) => {
       const created = await tx.restaurant.create({
@@ -310,10 +471,18 @@ export const restaurantsService = {
           city: String(input.city),
           state: String(input.state),
           pincode: String(input.pincode),
-          latitude: typeof input.latitude === "number" ? input.latitude : undefined,
-          longitude: typeof input.longitude === "number" ? input.longitude : undefined,
+          latitude:
+            typeof input.latitude === "number"
+              ? input.latitude
+              : geocodedCoordinates?.latitude,
+          longitude:
+            typeof input.longitude === "number"
+              ? input.longitude
+              : geocodedCoordinates?.longitude,
           costForTwo: typeof input.costForTwo === "number" ? input.costForTwo : 0,
           avgDeliveryTime: typeof input.avgDeliveryTime === "number" ? input.avgDeliveryTime : 30,
+          preparationTime:
+            typeof input.preparationTime === "number" ? input.preparationTime : 20,
           isVegOnly: Boolean(input.isVegOnly),
           isActive: input.isActive === undefined ? true : Boolean(input.isActive),
           isFeatured: Boolean(input.isFeatured),
@@ -363,10 +532,39 @@ export const restaurantsService = {
   },
 
   async update(user: { id: number; role: Role }, restaurantId: number, input: Record<string, unknown>) {
-    await ensureRestaurantAccess(user, restaurantId);
+    const restaurant = await ensureRestaurantAccess(user, restaurantId);
 
     const slug =
       typeof input.name === "string" ? await generateUniqueSlug(input.name, restaurantId) : undefined;
+    const shouldGeocode =
+      !("latitude" in input) &&
+      !("longitude" in input) &&
+      ["addressLine", "area", "city", "state", "pincode"].some((key) => key in input);
+    const currentRestaurant =
+      shouldGeocode
+        ? await prisma.restaurant.findUnique({
+            where: { id: restaurant.id },
+            select: {
+              addressLine: true,
+              area: true,
+              city: true,
+              state: true,
+              pincode: true,
+            },
+          })
+        : null;
+    const geocodedCoordinates =
+      shouldGeocode && currentRestaurant
+        ? await geocodeAddressText(
+            buildAddressSearchText([
+              (input.addressLine as string | undefined) ?? currentRestaurant.addressLine,
+              (input.area as string | undefined) ?? currentRestaurant.area,
+              (input.city as string | undefined) ?? currentRestaurant.city,
+              (input.state as string | undefined) ?? currentRestaurant.state,
+              (input.pincode as string | undefined) ?? currentRestaurant.pincode,
+            ]),
+          )
+        : null;
 
     await prisma.$transaction(async (tx) => {
       await tx.restaurant.update({
@@ -388,8 +586,17 @@ export const restaurantsService = {
           ...(input.pincode !== undefined ? { pincode: input.pincode as string } : {}),
           ...(typeof input.latitude === "number" ? { latitude: input.latitude } : {}),
           ...(typeof input.longitude === "number" ? { longitude: input.longitude } : {}),
+          ...(geocodedCoordinates
+            ? {
+                latitude: geocodedCoordinates.latitude,
+                longitude: geocodedCoordinates.longitude,
+              }
+            : {}),
           ...(typeof input.costForTwo === "number" ? { costForTwo: input.costForTwo } : {}),
           ...(typeof input.avgDeliveryTime === "number" ? { avgDeliveryTime: input.avgDeliveryTime } : {}),
+          ...(typeof input.preparationTime === "number"
+            ? { preparationTime: input.preparationTime }
+            : {}),
           ...(input.isVegOnly !== undefined ? { isVegOnly: Boolean(input.isVegOnly) } : {}),
           ...(input.isActive !== undefined ? { isActive: Boolean(input.isActive) } : {}),
           ...(input.isFeatured !== undefined ? { isFeatured: Boolean(input.isFeatured) } : {}),
@@ -421,6 +628,19 @@ export const restaurantsService = {
           });
         }
       }
+
+      if (input.openingTime !== undefined || input.closingTime !== undefined) {
+        await tx.restaurantHour.updateMany({
+          where: {
+            restaurantId,
+            isClosed: false,
+          },
+          data: {
+            ...(input.openingTime !== undefined ? { openTime: input.openingTime as string | undefined } : {}),
+            ...(input.closingTime !== undefined ? { closeTime: input.closingTime as string | undefined } : {}),
+          },
+        });
+      }
     });
 
     return this.getById(restaurantId);
@@ -437,5 +657,38 @@ export const restaurantsService = {
     }
 
     return restaurant;
+  },
+
+  async getAdminById(id: number) {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id },
+      select: adminDetailSelect,
+    });
+
+    if (!restaurant) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Restaurant not found", "RESTAURANT_NOT_FOUND");
+    }
+
+    return restaurant;
+  },
+
+  async archiveByAdmin(id: number) {
+    const restaurant = await prisma.restaurant.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!restaurant) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Restaurant not found", "RESTAURANT_NOT_FOUND");
+    }
+
+    await prisma.restaurant.update({
+      where: { id },
+      data: {
+        isActive: false,
+      },
+    });
+
+    return this.getAdminById(id);
   },
 };
