@@ -1,6 +1,6 @@
 import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
-import { env } from "../config/env.js";
+import { isAllowedClientOrigin } from "../config/client-origins.js";
 import { logger } from "../lib/logger.js";
 
 let io: Server | null = null;
@@ -42,7 +42,14 @@ const emitToRooms = (
 export const createSocketServer = (httpServer: HttpServer) => {
   io = new Server(httpServer, {
     cors: {
-      origin: [env.CLIENT_URL, "http://localhost:5173", "http://127.0.0.1:5173"],
+      origin(origin, callback) {
+        if (isAllowedClientOrigin(origin)) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error("Origin is not allowed by CORS"));
+      },
       credentials: true,
     },
   });

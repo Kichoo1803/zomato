@@ -140,7 +140,7 @@ export const getApiErrorMessage = (error: unknown, fallback: string) => {
   }
 
   if (error.code === "ERR_NETWORK") {
-    return "Unable to reach the server. Please check that the backend is running.";
+    return "Unable to reach the server. Please check that the backend is running and reachable from this device.";
   }
 
   return fallback;

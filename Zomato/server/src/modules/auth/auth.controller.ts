@@ -9,6 +9,7 @@ import { authService } from "./auth.service.js";
 const getSessionMeta = (req: Request) => ({
   userAgent: req.get("user-agent") ?? undefined,
   ipAddress: req.ip,
+  origin: req.get("origin") ?? undefined,
 });
 
 export const register = asyncHandler(async (req, res) => {

@@ -43,6 +43,7 @@ type AuthUser = Prisma.UserGetPayload<{ select: typeof authUserSelect }>;
 type SessionMeta = {
   userAgent?: string;
   ipAddress?: string;
+  origin?: string;
 };
 
 const createSession = async (user: PublicUser, meta?: SessionMeta) => {
@@ -90,9 +91,11 @@ export const authService = {
     },
     meta?: SessionMeta,
   ) {
+    const email = input.email.trim().toLowerCase();
+
     const existingUser = await prisma.user.findFirst({
       where: {
-        OR: [{ email: input.email }, ...(input.phone ? [{ phone: input.phone }] : [])],
+        OR: [{ email }, ...(input.phone ? [{ phone: input.phone }] : [])],
       },
       select: {
         id: true,
@@ -111,7 +114,7 @@ export const authService = {
     const user = await prisma.user.create({
       data: {
         fullName: input.fullName,
-        email: input.email,
+        email,
         phone: input.phone,
         passwordHash,
         role: input.role,
@@ -142,31 +145,73 @@ export const authService = {
   },
 
   async login(input: { email: string; password: string }, meta?: SessionMeta) {
-    const user = await prisma.user.findUnique({
-      where: { email: input.email },
-      select: authUserSelect,
+    const email = input.email.trim().toLowerCase();
+
+    logger.info("Login attempt received", {
+      email,
+      ipAddress: meta?.ipAddress,
+      origin: meta?.origin,
     });
 
-    ensureActiveUser(user);
+    try {
+      const user = await prisma.user.findUnique({
+        where: { email },
+        select: authUserSelect,
+      });
 
-    const isPasswordValid = await bcrypt.compare(input.password, user.passwordHash);
-    if (!isPasswordValid) {
-      throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials", "INVALID_CREDENTIALS");
+      ensureActiveUser(user);
+
+      const isPasswordValid = await bcrypt.compare(input.password, user.passwordHash);
+      if (!isPasswordValid) {
+        throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials", "INVALID_CREDENTIALS");
+      }
+
+      const { passwordHash: _passwordHash, ...safeUser } = user;
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+      });
+
+      const session = await createSession(safeUser, meta);
+
+      logger.info("Login successful", {
+        userId: safeUser.id,
+        email,
+        role: safeUser.role,
+        ipAddress: meta?.ipAddress,
+        origin: meta?.origin,
+      });
+
+      return {
+        user: safeUser,
+        ...session,
+      };
+    } catch (error) {
+      if (error instanceof AppError) {
+        logger.warn("Login request rejected", {
+          email,
+          code: error.code,
+          statusCode: error.statusCode,
+          ipAddress: meta?.ipAddress,
+          origin: meta?.origin,
+        });
+        throw error;
+      }
+
+      logger.error("Unexpected login failure", {
+        email,
+        ipAddress: meta?.ipAddress,
+        origin: meta?.origin,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+
+      throw new AppError(
+        StatusCodes.INTERNAL_SERVER_ERROR,
+        "Unable to sign in right now",
+        "LOGIN_FAILED",
+      );
     }
-
-    const { passwordHash: _passwordHash, ...safeUser } = user;
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lastLoginAt: new Date() },
-    });
-
-    const session = await createSession(safeUser, meta);
-
-    return {
-      user: safeUser,
-      ...session,
-    };
   },
 
   async refresh(refreshToken: string, meta?: SessionMeta) {

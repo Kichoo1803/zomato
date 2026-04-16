@@ -1,5 +1,6 @@
 import { io, type Socket } from "socket.io-client";
 import type { AppNotification } from "@/lib/notifications";
+import { resolveRealtimeServerUrl } from "@/lib/runtime-urls";
 
 export type RealtimeNotification = AppNotification;
 
@@ -24,24 +25,6 @@ export type RealtimeDeliveryLocationUpdate = {
 
 let socket: Socket | null = null;
 let socketUserId: number | null = null;
-
-const resolveRealtimeServerUrl = () => {
-  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
-
-  if (typeof window === "undefined") {
-    return apiBaseUrl ?? "";
-  }
-
-  if (!apiBaseUrl) {
-    return window.location.origin;
-  }
-
-  try {
-    return new URL(apiBaseUrl, window.location.origin).origin;
-  } catch {
-    return window.location.origin;
-  }
-};
 
 export const getRealtimeSocket = (userId?: number | null) => {
   if (!userId) {

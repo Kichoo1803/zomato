@@ -10,6 +10,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: "0.0.0.0",
     // Keep the dev client pinned to 5173 because the server dev config expects this origin.
     port: 5173,
     strictPort: true,

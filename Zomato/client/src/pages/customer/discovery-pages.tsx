@@ -1007,6 +1007,19 @@ export const RestaurantDetailsPage = () => {
     setSelection(nextSelection);
   };
 
+  const handleUnavailableDemoAdd = (itemName: string) => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to add items to cart.",
+        wrongRoleMessage: "Sign in with a customer account to add items to cart.",
+      })
+    ) {
+      return;
+    }
+
+    toast.error(`Live menu data for ${itemName} is unavailable right now.`);
+  };
+
   if (isLoading) {
     return null;
   }
@@ -1282,7 +1295,7 @@ export const RestaurantDetailsPage = () => {
             <h3 className="font-display text-4xl font-semibold text-ink">{category.category}</h3>
             <div className="grid gap-5">
               {category.items.map((item) => (
-                <FoodItemCard key={item.name} {...item} />
+                <FoodItemCard key={item.name} {...item} onAdd={() => handleUnavailableDemoAdd(item.name)} />
               ))}
             </div>
           </div>

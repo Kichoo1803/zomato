@@ -25,11 +25,28 @@ export const durationToMs = (duration: string) => {
 
 export const REFRESH_COOKIE_NAME = "zl_refresh_token";
 
+const getCookieDomain = () => {
+  const normalizedDomain = env.COOKIE_DOMAIN?.trim();
+  if (!normalizedDomain) {
+    return undefined;
+  }
+
+  if (["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(normalizedDomain)) {
+    return undefined;
+  }
+
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(normalizedDomain)) {
+    return undefined;
+  }
+
+  return normalizedDomain;
+};
+
 export const getRefreshCookieOptions = (): CookieOptions => ({
   httpOnly: true,
   secure: env.isProduction,
   sameSite: env.isProduction ? "none" : "lax",
-  domain: env.COOKIE_DOMAIN || undefined,
+  domain: getCookieDomain(),
   path: "/",
   maxAge: durationToMs(env.JWT_REFRESH_EXPIRES_IN),
 });
@@ -38,6 +55,6 @@ export const getClearRefreshCookieOptions = (): CookieOptions => ({
   httpOnly: true,
   secure: env.isProduction,
   sameSite: env.isProduction ? "none" : "lax",
-  domain: env.COOKIE_DOMAIN || undefined,
+  domain: getCookieDomain(),
   path: "/",
 });

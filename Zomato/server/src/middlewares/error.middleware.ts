@@ -31,7 +31,28 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     return;
   }
 
+  if (error instanceof Error && error.message === "Origin is not allowed by CORS") {
+    res.status(StatusCodes.FORBIDDEN).json({
+      success: false,
+      code: "CORS_NOT_ALLOWED",
+      message: "This frontend origin is not allowed to access the API",
+    });
+    return;
+  }
+
   if (error instanceof ZodError) {
+    const isAuthRequest = req.originalUrl.startsWith("/api/v1/auth/");
+
+    if (isAuthRequest) {
+      res.status(StatusCodes.BAD_REQUEST).json({
+        success: false,
+        code: "BAD_REQUEST",
+        message: "Request validation failed",
+        details: error.flatten(),
+      });
+      return;
+    }
+
     res.status(StatusCodes.UNPROCESSABLE_ENTITY).json({
       success: false,
       code: "VALIDATION_ERROR",
