@@ -15,8 +15,10 @@
     "build": "npm run build -w client && npm run build -w server",
     "lint": "npm run lint -w client && npm run lint -w server",
     "db:generate": "npm run prisma:generate -w server",
-    "db:migrate": "npm run prisma:migrate -w server",
-    "db:push": "npm run prisma:push -w server",
+    "db:sync": "npm run prisma:sync -w server",
+    "db:push": "npm run prisma:sync -w server",
+    "db:migrate": "npm run prisma:migrate:deploy -w server",
+    "db:migrate:deploy": "npm run prisma:migrate:deploy -w server",
     "db:seed": "npm run prisma:seed -w server"
   },
   "devDependencies": {

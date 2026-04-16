@@ -26,6 +26,8 @@ export default defineConfig({
     seed: "tsx prisma/seed.ts",
   },
   engine: "js",
+  // The libSQL adapter is the runtime datasource source for this SQLite setup.
+  // `schema.prisma` still keeps DATABASE_URL for Prisma schema validation and tooling.
   adapter: async () =>
     new PrismaLibSQL({
       url: resolveDatabaseUrl(process.env.DATABASE_URL ?? "file:./dev.db"),

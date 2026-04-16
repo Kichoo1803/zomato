@@ -73,7 +73,7 @@ const getLoginServerError = (error: unknown) => {
     return new AppError(
       StatusCodes.INTERNAL_SERVER_ERROR,
       env.isDevelopment
-        ? "Sign-in failed because the database schema is missing required auth tables or columns. Run `npm run prisma:migrate` and restart the server."
+        ? "Sign-in failed because the database schema is missing required auth tables or columns. Run `npm run prisma:sync` for local SQLite development, or `npm run prisma:migrate:deploy` for a migrated deployment target, then restart the server."
         : genericLoginFailureMessage,
       "DATABASE_SCHEMA_NOT_READY",
       env.isDevelopment ? error.meta : undefined,

@@ -7,7 +7,7 @@ Zomato Luxe now uses SQLite for local development, so no PostgreSQL installation
 ```bash
 npm install
 cp server/.env.example server/.env
-npm run prisma:migrate -w server
+npm run prisma:sync -w server
 npm run prisma:generate -w server
 npm run prisma:seed -w server
 npm run dev -w server
@@ -23,18 +23,21 @@ If you are using PowerShell on Windows, replace `cp` with `Copy-Item` and use `n
 - PostgreSQL-specific `Decimal` fields were converted to `Float`.
 - PostgreSQL-specific `Json` fields were converted to `String` and serialized where needed.
 - Prisma CLI uses `prisma.config.ts` with the libSQL adapter so SQLite schema setup works reliably in this environment.
+- The datasource `url` in `schema.prisma` is still required for Prisma schema tooling, but the libSQL adapter in `prisma.config.ts` provides the actual runtime connection URL.
 
 ## Common Commands
 
 ```bash
-npm run prisma:migrate -w server
+npm run prisma:sync -w server
 npm run prisma:generate -w server
 npm run prisma:seed -w server
-npm run prisma:push -w server
+npm run prisma:migrate:deploy -w server
 npm run dev -w server
 ```
 
-Use `npm run prisma:push -w server` if you want to rebuild or resync the local SQLite schema directly from `schema.prisma` during development.
+Use `npm run prisma:sync -w server` to rebuild or resync the local SQLite schema directly from `schema.prisma` during development.
+
+Use `npm run prisma:migrate:deploy -w server` only for migrated deployment targets. It should not run automatically on every local dev start against an already-populated SQLite database.
 
 ## API Overview
 

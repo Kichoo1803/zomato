@@ -114,7 +114,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
         success: false,
         code: error.code,
         message: env.isDevelopment
-          ? "The database schema is out of date. Run `npm run prisma:migrate` and restart the server."
+          ? "The database schema is out of date. Run `npm run prisma:sync` for local SQLite development, or `npm run prisma:migrate:deploy` for a migrated deployment target, then restart the server."
           : "A database request failed",
         details: env.isDevelopment ? error.meta : undefined,
       });
