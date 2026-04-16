@@ -259,6 +259,17 @@ const isDeliveredOrder = (status?: string | null) => status?.trim().toUpperCase(
 
 const canReviewOrder = (order?: CustomerOrder | null) => Boolean(order && isDeliveredOrder(order.status));
 
+const syncCustomerOrderStatus = (order: CustomerOrder, status?: string | null): CustomerOrder => {
+  if (!status || order.status === status) {
+    return order;
+  }
+
+  return {
+    ...order,
+    status,
+  };
+};
+
 const syncCustomerOrderReview = (
   order: CustomerOrder,
   review: NonNullable<CustomerOrder["review"]>,
@@ -2389,9 +2400,15 @@ export const OrderSuccessPage = () => {
         description="Your live order has been placed successfully and the kitchen has everything it needs."
         actions={
           <>
-            <Link to={`/track-order/${order.id}`} className={linkButtonClassName}>
-              Track live order
-            </Link>
+            {isActiveTrackedOrder(order.status) ? (
+              <Link to={`/track-order/${order.id}`} className={linkButtonClassName}>
+                Track live order
+              </Link>
+            ) : (
+              <Link to={`/orders/${order.id}`} className={linkButtonClassName}>
+                View order details
+              </Link>
+            )}
             <Link
               to="/orders"
               className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-5 py-3 text-sm font-semibold text-ink shadow-soft"
@@ -2556,6 +2573,7 @@ export const OrderTrackingPage = () => {
     orderIds: [parsedOrderId],
     onOrderStatusUpdate: (payload) => {
       if (payload.orderId === parsedOrderId) {
+        setOrder((currentOrder) => (currentOrder ? syncCustomerOrderStatus(currentOrder, payload.status) : currentOrder));
         void loadOrder({ quietly: true });
       }
     },
@@ -2565,7 +2583,9 @@ export const OrderTrackingPage = () => {
       }
 
       setOrder((currentOrder) =>
-        currentOrder ? mergeCustomerOrderLocation(currentOrder, payload) : currentOrder,
+        currentOrder && isActiveTrackedOrder(currentOrder.status)
+          ? mergeCustomerOrderLocation(currentOrder, payload)
+          : currentOrder,
       );
     },
   });
@@ -3055,6 +3075,7 @@ export const OrderDetailsPage = () => {
     orderIds: [parsedOrderId],
     onOrderStatusUpdate: (payload) => {
       if (payload.orderId === parsedOrderId) {
+        setOrder((currentOrder) => (currentOrder ? syncCustomerOrderStatus(currentOrder, payload.status) : currentOrder));
         void loadOrder({ quietly: true });
       }
     },
@@ -3064,7 +3085,9 @@ export const OrderDetailsPage = () => {
       }
 
       setOrder((currentOrder) =>
-        currentOrder ? mergeCustomerOrderLocation(currentOrder, payload) : currentOrder,
+        currentOrder && isActiveTrackedOrder(currentOrder.status)
+          ? mergeCustomerOrderLocation(currentOrder, payload)
+          : currentOrder,
       );
     },
   });

@@ -139,16 +139,11 @@ export type CustomerCombo = {
 };
 
 export type CustomerRestaurantDetail = CustomerRestaurantSummary & {
-  ownerId: number;
-  phone?: string | null;
-  email?: string | null;
   openingTime?: string | null;
   closingTime?: string | null;
   addressLine?: string | null;
   state: string;
   pincode: string;
-  latitude?: number | null;
-  longitude?: number | null;
   categoryMappings: Array<{
     category: {
       id: number;

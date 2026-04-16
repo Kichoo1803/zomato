@@ -199,10 +199,6 @@ const resolveNextPath = (role: UserRole, state: LocationState | null) => {
 
   if (
     [
-      "/restaurants",
-      "/search",
-      "/offers",
-      "/membership",
       "/cart",
       "/checkout",
       "/payment",

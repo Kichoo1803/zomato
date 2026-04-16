@@ -51,6 +51,10 @@ export type AppNotificationMeta = {
   specialInstructions?: string | null;
 };
 
+const isDeliveredOrderStatus = (status?: string | null) => status?.trim().toUpperCase() === "DELIVERED";
+
+const isOrderDetailsPath = (path?: string | null) => path?.startsWith("/orders/") ?? false;
+
 export const parseNotificationMeta = (meta?: string | null): AppNotificationMeta | null => {
   if (!meta?.trim()) {
     return null;
@@ -70,13 +74,17 @@ export const getNotificationHref = (
   const meta = parseNotificationMeta(notification.meta);
 
   if (meta?.path) {
+    if (role === "CUSTOMER" && meta.orderId && isDeliveredOrderStatus(meta.status)) {
+      return `/orders/${meta.orderId}`;
+    }
+
     return meta.path;
   }
 
   if (meta?.orderId) {
     switch (role) {
       case "CUSTOMER":
-        return `/track-order/${meta.orderId}`;
+        return isDeliveredOrderStatus(meta.status) ? `/orders/${meta.orderId}` : `/track-order/${meta.orderId}`;
       case "RESTAURANT_OWNER":
         return `/owner/orders?orderId=${meta.orderId}`;
       case "DELIVERY_PARTNER":
@@ -139,7 +147,7 @@ export const getNotificationActionLabel = (
   if (meta?.orderId) {
     switch (role) {
       case "CUSTOMER":
-        return "Track order";
+        return isDeliveredOrderStatus(meta.status) || isOrderDetailsPath(meta.path) ? "View order" : "Track order";
       case "RESTAURANT_OWNER":
         return "Open orders";
       case "DELIVERY_PARTNER":

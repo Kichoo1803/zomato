@@ -20,6 +20,7 @@ import { OfferCard } from "@/components/cards/offer-card";
 import { RestaurantCard } from "@/components/cards/restaurant-card";
 import { ReviewCard } from "@/components/cards/review-card";
 import { useAuth } from "@/hooks/use-auth";
+import { useCustomerActionGuard } from "@/hooks/use-customer-action-guard";
 import { getApiErrorMessage } from "@/lib/auth";
 import {
   addCustomerCartItem,
@@ -127,6 +128,7 @@ const demoRestaurantCards: RestaurantCardData[] = demoRestaurants.map((restauran
 
 const useCustomerFavorites = () => {
   const { user } = useAuth();
+  const { canUseCustomerActions, requireCustomerAccess } = useCustomerActionGuard();
   const [favoriteRestaurantIds, setFavoriteRestaurantIds] = useState<number[]>([]);
   const [favoriteCards, setFavoriteCards] = useState<RestaurantCardData[]>([]);
   const [hasResolved, setHasResolved] = useState(false);
@@ -150,7 +152,7 @@ const useCustomerFavorites = () => {
   };
 
   useEffect(() => {
-    if (!user?.id) {
+    if (!canUseCustomerActions || !user?.id) {
       setFavoriteRestaurantIds([]);
       setFavoriteCards([]);
       setHasResolved(true);
@@ -158,12 +160,21 @@ const useCustomerFavorites = () => {
     }
 
     void loadFavorites();
-  }, [user?.id]);
+  }, [canUseCustomerActions, user?.id]);
 
   const favoriteIdSet = useMemo(() => new Set(favoriteRestaurantIds), [favoriteRestaurantIds]);
 
   const toggleFavorite = async (restaurant: RestaurantCardData) => {
     if (!restaurant.id) {
+      return;
+    }
+
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to save restaurants.",
+        wrongRoleMessage: "Sign in with a customer account to save restaurants.",
+      })
+    ) {
       return;
     }
 
@@ -904,8 +915,8 @@ export const SearchResultsPage = () => {
 
 export const RestaurantDetailsPage = () => {
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
   const { slug } = useParams();
+  const { requireCustomerAccess } = useCustomerActionGuard();
   const [liveRestaurant, setLiveRestaurant] = useState<CustomerRestaurantDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [selection, setSelection] = useState<CatalogItemSelection | null>(null);
@@ -962,9 +973,12 @@ export const RestaurantDetailsPage = () => {
     addonIds?: number[];
     specialInstructions?: string;
   }) => {
-    if (!isAuthenticated || user?.role !== "CUSTOMER") {
-      toast.error("Sign in with a customer account to place live orders.");
-      navigate("/login");
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to add items to cart.",
+        wrongRoleMessage: "Sign in with a customer account to add items to cart.",
+      })
+    ) {
       return;
     }
 
@@ -978,6 +992,19 @@ export const RestaurantDetailsPage = () => {
     } finally {
       setIsAddingToCart(false);
     }
+  };
+
+  const handleStartCartSelection = (nextSelection: CatalogItemSelection) => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to add items to cart.",
+        wrongRoleMessage: "Sign in with a customer account to add items to cart.",
+      })
+    ) {
+      return;
+    }
+
+    setSelection(nextSelection);
   };
 
   if (isLoading) {
@@ -1101,7 +1128,7 @@ export const RestaurantDetailsPage = () => {
                     image={combo.image ?? liveRestaurant.coverImage ?? "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1200&q=80"}
                     buttonLabel="Add combo"
                     onAdd={() =>
-                      setSelection({
+                      handleStartCartSelection({
                         type: "COMBO",
                         restaurantId: liveRestaurant.id,
                         item: combo,
@@ -1133,7 +1160,7 @@ export const RestaurantDetailsPage = () => {
                       badge={item.isRecommended ? "Recommended" : item.foodType}
                       image={item.image ?? liveRestaurant.coverImage ?? "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1200&q=80"}
                       onAdd={() =>
-                        setSelection({
+                        handleStartCartSelection({
                           type: "MENU_ITEM",
                           restaurantId: liveRestaurant.id,
                           item,
@@ -1385,9 +1412,6 @@ const offerFilterOptions: Array<{ value: OfferFilter; label: string }> = [
   { value: "ELIGIBLE", label: "Eligible now" },
 ];
 
-const isLiveCustomerRole = (isAuthenticated: boolean, role?: string | null) =>
-  isAuthenticated && role === "CUSTOMER";
-
 const formatOfferDiscountLabel = (offer: CustomerOffer) =>
   offer.discountType === "PERCENTAGE" ? `${offer.discountValue}% off` : `${formatCurrency(offer.discountValue)} off`;
 
@@ -1512,7 +1536,8 @@ const matchesOfferFilter = (offer: CustomerOffer, filter: OfferFilter, carts: Cu
 
 export const OffersPage = () => {
   const navigate = useNavigate();
-  const { isAuthenticated, user } = useAuth();
+  const { user } = useAuth();
+  const { canUseCustomerActions, requireCustomerAccess } = useCustomerActionGuard();
   const [offers, setOffers] = useState<CustomerOffer[]>([]);
   const [isLoadingOffers, setIsLoadingOffers] = useState(true);
   const [isUsingFallbackOffers, setIsUsingFallbackOffers] = useState(false);
@@ -1521,7 +1546,7 @@ export const OffersPage = () => {
   const [carts, setCarts] = useState<CustomerCart[]>([]);
   const [isLoadingCarts, setIsLoadingCarts] = useState(false);
   const [isApplyingOffer, setIsApplyingOffer] = useState(false);
-  const canApplyOffers = isLiveCustomerRole(isAuthenticated, user?.role);
+  const canApplyOffers = canUseCustomerActions;
 
   useEffect(() => {
     let isMounted = true;
@@ -1619,6 +1644,15 @@ export const OffersPage = () => {
   };
 
   const handleApplyOffer = async (offer: CustomerOffer) => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to apply offers.",
+        wrongRoleMessage: "Sign in with a customer account to apply offers.",
+      })
+    ) {
+      return;
+    }
+
     if (!offer.code || !eligibleCart) {
       toast.error("Keep an eligible cart ready before applying this offer.");
       return;
@@ -1641,6 +1675,15 @@ export const OffersPage = () => {
   };
 
   const handleUseOffer = (offer: CustomerOffer) => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to use offers.",
+        wrongRoleMessage: "Sign in with a customer account to use offers.",
+      })
+    ) {
+      return;
+    }
+
     if (!offer.code) {
       toast.error("This offer does not have a coupon code yet.");
       return;
@@ -1850,7 +1893,9 @@ export const OffersPage = () => {
                         ? "Checking your carts for eligibility."
                         : "No eligible cart is ready yet for this offer."}
                 </p>
-              ) : null}
+              ) : (
+                <p>Login required to continue with applying, claiming, or saving this offer.</p>
+              )}
               {isUsingFallbackOffers ? (
                 <p>These offer details are currently using the existing fallback showcase because live offer data was not available.</p>
               ) : null}
@@ -1865,14 +1910,20 @@ export const OffersPage = () => {
                   Copy coupon
                 </Button>
               ) : null}
-              {canApplyOffers && selectedOffer.code ? (
+              {selectedOffer.code ? (
                 <Button
                   type="button"
                   variant="secondary"
                   onClick={() => handleUseOffer(selectedOffer)}
                   disabled={isApplyingOffer || isUsingFallbackOffers}
                 >
-                  {appliedCart ? "Use in payment" : eligibleCart ? "Use coupon" : "Save for later"}
+                  {canApplyOffers
+                    ? appliedCart
+                      ? "Use in payment"
+                      : eligibleCart
+                        ? "Use coupon"
+                        : "Save for later"
+                    : "Use coupon"}
                 </Button>
               ) : null}
               {appliedCart && !isUsingFallbackOffers ? (
@@ -1883,13 +1934,19 @@ export const OffersPage = () => {
                 >
                   {isApplyingOffer ? "Removing..." : "Remove coupon"}
                 </Button>
-              ) : canApplyOffers && selectedOffer.code && !isUsingFallbackOffers ? (
+              ) : selectedOffer.code && !isUsingFallbackOffers ? (
                 <Button
                   type="button"
                   onClick={() => void handleApplyOffer(selectedOffer)}
-                  disabled={isApplyingOffer || !eligibleCart}
+                  disabled={isApplyingOffer || (canApplyOffers && !eligibleCart)}
                 >
-                  {isApplyingOffer ? "Applying..." : eligibleCart ? "Apply to cart" : "Add eligible cart first"}
+                  {isApplyingOffer
+                    ? "Applying..."
+                    : canApplyOffers
+                      ? eligibleCart
+                        ? "Apply to cart"
+                        : "Add eligible cart first"
+                      : "Apply to cart"}
                 </Button>
               ) : null}
             </div>
@@ -1901,11 +1958,12 @@ export const OffersPage = () => {
 };
 
 export const MembershipPage = () => {
+  const { canUseCustomerActions, requireCustomerAccess } = useCustomerActionGuard();
   const { accessToken, setSession, user } = useAuth();
   const [selectedPlan, setSelectedPlan] = useState<MembershipPlan | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [savedPaymentMethods, setSavedPaymentMethods] = useState<CustomerPaymentMethod[]>([]);
-  const [isLoadingPaymentMethods, setIsLoadingPaymentMethods] = useState(true);
+  const [isLoadingPaymentMethods, setIsLoadingPaymentMethods] = useState(false);
   const [paymentMethodsError, setPaymentMethodsError] = useState<string | null>(null);
   const [selectedPaymentMode, setSelectedPaymentMode] = useState<MembershipPaymentMode>("CARD");
   const [selectedPaymentMethodId, setSelectedPaymentMethodId] = useState<number | null>(null);
@@ -1953,6 +2011,13 @@ export const MembershipPage = () => {
     : "No payment needed";
 
   const loadPaymentMethods = async ({ quietly = false }: { quietly?: boolean } = {}) => {
+    if (!canUseCustomerActions) {
+      setSavedPaymentMethods([]);
+      setPaymentMethodsError(null);
+      setIsLoadingPaymentMethods(false);
+      return [];
+    }
+
     if (!quietly) {
       setIsLoadingPaymentMethods(true);
     }
@@ -1975,8 +2040,15 @@ export const MembershipPage = () => {
   };
 
   useEffect(() => {
+    if (!canUseCustomerActions) {
+      setSavedPaymentMethods([]);
+      setPaymentMethodsError(null);
+      setIsLoadingPaymentMethods(false);
+      return;
+    }
+
     void loadPaymentMethods();
-  }, []);
+  }, [canUseCustomerActions]);
 
   useEffect(() => {
     if (!selectedPlan || !isPaidMembershipTier(selectedPlan.tier)) {
@@ -2016,6 +2088,15 @@ export const MembershipPage = () => {
   }, [savedPaymentMethods, selectedPaymentMode, selectedPlan]);
 
   const handleSaveCardDetails = async (values: MembershipCardDetailsFormValues) => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to upgrade membership.",
+        wrongRoleMessage: "Sign in with a customer account to upgrade membership.",
+      })
+    ) {
+      return;
+    }
+
     setIsSavingPaymentDetails(true);
 
     try {
@@ -2056,6 +2137,15 @@ export const MembershipPage = () => {
   };
 
   const handleSaveUpiDetails = async (values: MembershipUpiDetailsFormValues) => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to upgrade membership.",
+        wrongRoleMessage: "Sign in with a customer account to upgrade membership.",
+      })
+    ) {
+      return;
+    }
+
     setIsSavingPaymentDetails(true);
 
     try {
@@ -2090,6 +2180,15 @@ export const MembershipPage = () => {
   };
 
   const handleConfirmUpgrade = async () => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to upgrade membership.",
+        wrongRoleMessage: "Sign in with a customer account to upgrade membership.",
+      })
+    ) {
+      return;
+    }
+
     if (!selectedPlan) {
       return;
     }
@@ -2144,7 +2243,13 @@ export const MembershipPage = () => {
           <Button
             type="button"
             onClick={() => {
-              if (recommendedPlan) {
+              if (
+                recommendedPlan &&
+                requireCustomerAccess({
+                  guestMessage: "Please login to upgrade membership.",
+                  wrongRoleMessage: "Sign in with a customer account to upgrade membership.",
+                })
+              ) {
                 setSelectedPlan(recommendedPlan);
               }
             }}
@@ -2169,6 +2274,9 @@ export const MembershipPage = () => {
               />
             </div>
             <p className="text-sm leading-7 text-ink-soft">{currentPlan.summary}</p>
+            {!canUseCustomerActions ? (
+              <p className="text-sm leading-7 text-ink-soft">Login required to upgrade or manage membership.</p>
+            ) : null}
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="rounded-[1.5rem] bg-cream px-5 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Plan status</p>
@@ -2230,7 +2338,13 @@ export const MembershipPage = () => {
                   variant={isCurrentPlan ? "secondary" : "primary"}
                   disabled={isCurrentPlan || isSubmitting || Boolean(planBlockReason)}
                   onClick={() => {
-                    if (!planBlockReason) {
+                    if (
+                      !planBlockReason &&
+                      requireCustomerAccess({
+                        guestMessage: "Please login to upgrade membership.",
+                        wrongRoleMessage: "Sign in with a customer account to upgrade membership.",
+                      })
+                    ) {
                       setSelectedPlan(plan);
                     }
                   }}

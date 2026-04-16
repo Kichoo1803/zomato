@@ -50,19 +50,14 @@ const listSelect = {
   },
 } satisfies Prisma.RestaurantSelect;
 
-const detailSelect = {
+const publicDetailSelect = {
   ...listSelect,
   isActive: true,
-  ownerId: true,
-  phone: true,
-  email: true,
   openingTime: true,
   closingTime: true,
   addressLine: true,
   state: true,
   pincode: true,
-  latitude: true,
-  longitude: true,
   categoryMappings: {
     select: {
       category: {
@@ -139,6 +134,15 @@ const detailSelect = {
       },
     },
   },
+} satisfies Prisma.RestaurantSelect;
+
+const detailSelect = {
+  ...publicDetailSelect,
+  ownerId: true,
+  phone: true,
+  email: true,
+  latitude: true,
+  longitude: true,
 } satisfies Prisma.RestaurantSelect;
 
 const adminListSelect = {
@@ -417,7 +421,7 @@ export const restaurantsService = {
   async getBySlug(slug: string) {
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug },
-      select: detailSelect,
+      select: publicDetailSelect,
     });
 
     if (!restaurant || !restaurant.isActive) {

@@ -89,13 +89,13 @@ export const AppRouter = () => {
       <Routes>
         <Route element={<RootLayout />}>
           <Route path="/" element={<LandingPage />} />
+          <Route path="/restaurants" element={<RestaurantListingPage />} />
+          <Route path="/search" element={<SearchResultsPage />} />
+          <Route path="/restaurants/:slug" element={<RestaurantDetailsPage />} />
+          <Route path="/offers" element={<OffersPage />} />
+          <Route path="/membership" element={<MembershipPage />} />
 
           <Route element={<ProtectedRoute roles={["CUSTOMER"]} />}>
-            <Route path="/restaurants" element={<RestaurantListingPage />} />
-            <Route path="/search" element={<SearchResultsPage />} />
-            <Route path="/restaurants/:slug" element={<RestaurantDetailsPage />} />
-            <Route path="/offers" element={<OffersPage />} />
-            <Route path="/membership" element={<MembershipPage />} />
             <Route path="/cart" element={<CartPage />} />
             <Route path="/checkout" element={<CheckoutPage />} />
             <Route path="/payment" element={<PaymentPage />} />
