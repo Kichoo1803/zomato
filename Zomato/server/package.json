@@ -4,8 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "npm run prisma:generate && npm run prisma:migrate",
     "dev": "tsx watch src/server.ts",
+    "prebuild": "npm run prisma:generate",
     "build": "tsc -p tsconfig.json",
+    "prestart": "npm run prisma:migrate",
     "start": "node dist/src/server.js",
     "lint": "eslint . --ext ts --max-warnings 0",
     "prisma:generate": "prisma generate",

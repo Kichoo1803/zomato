@@ -15,10 +15,28 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     return;
   }
 
-  logger.error(error.message, {
+  const logLevel =
+    error instanceof AppError
+      ? error.statusCode >= StatusCodes.INTERNAL_SERVER_ERROR
+        ? "error"
+        : "warn"
+      : error instanceof ZodError ||
+          error instanceof TokenExpiredError ||
+          error instanceof JsonWebTokenError
+        ? "warn"
+        : error instanceof Prisma.PrismaClientKnownRequestError
+          ? ["P2002"].includes(error.code)
+            ? "warn"
+            : "error"
+          : error instanceof Prisma.PrismaClientInitializationError ||
+              error instanceof Prisma.PrismaClientValidationError
+            ? "error"
+            : "error";
+
+  logger[logLevel](error.message, {
     path: req.originalUrl,
     method: req.method,
-    stack: env.isProduction ? undefined : error.stack,
+    stack: env.isProduction ? undefined : error instanceof Error ? error.stack : undefined,
   });
 
   if (error instanceof AppError) {
@@ -81,17 +99,55 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   }
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    const statusCode =
-      error.code === "P2002" ? StatusCodes.CONFLICT : StatusCodes.BAD_REQUEST;
+    if (error.code === "P2002") {
+      res.status(StatusCodes.CONFLICT).json({
+        success: false,
+        code: error.code,
+        message: "A unique field conflict occurred",
+        details: error.meta,
+      });
+      return;
+    }
 
-    res.status(statusCode).json({
+    if (["P2021", "P2022"].includes(error.code)) {
+      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+        success: false,
+        code: error.code,
+        message: env.isDevelopment
+          ? "The database schema is out of date. Run `npm run prisma:migrate` and restart the server."
+          : "A database request failed",
+        details: env.isDevelopment ? error.meta : undefined,
+      });
+      return;
+    }
+
+    res.status(StatusCodes.BAD_REQUEST).json({
       success: false,
       code: error.code,
-      message:
-        error.code === "P2002"
-          ? "A unique field conflict occurred"
-          : "A database request failed",
+      message: "A database request failed",
       details: error.meta,
+    });
+    return;
+  }
+
+  if (error instanceof Prisma.PrismaClientInitializationError) {
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      code: "DATABASE_CONNECTION_FAILED",
+      message: env.isDevelopment
+        ? "The server could not connect to the database. Check DATABASE_URL and make sure the database is reachable."
+        : "A database request failed",
+    });
+    return;
+  }
+
+  if (error instanceof Prisma.PrismaClientValidationError) {
+    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      code: "PRISMA_CLIENT_OUT_OF_SYNC",
+      message: env.isDevelopment
+        ? "The Prisma client is out of sync with the schema. Run `npm run prisma:generate` and restart the server."
+        : "A database request failed",
     });
     return;
   }

@@ -46,6 +46,43 @@ type SessionMeta = {
   origin?: string;
 };
 
+const genericLoginFailureMessage = "The server couldn't complete sign-in right now. Please try again in a moment.";
+
+const getLoginServerError = (error: unknown) => {
+  if (error instanceof Prisma.PrismaClientInitializationError) {
+    return new AppError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      env.isDevelopment
+        ? "Sign-in failed because the database connection is unavailable. Check DATABASE_URL and confirm the database is reachable."
+        : genericLoginFailureMessage,
+      "DATABASE_CONNECTION_FAILED",
+    );
+  }
+
+  if (error instanceof Prisma.PrismaClientValidationError) {
+    return new AppError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      env.isDevelopment
+        ? "Sign-in failed because the Prisma client is out of sync with the auth schema. Run `npm run prisma:generate` and restart the server."
+        : genericLoginFailureMessage,
+      "PRISMA_CLIENT_OUT_OF_SYNC",
+    );
+  }
+
+  if (error instanceof Prisma.PrismaClientKnownRequestError && ["P2021", "P2022"].includes(error.code)) {
+    return new AppError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      env.isDevelopment
+        ? "Sign-in failed because the database schema is missing required auth tables or columns. Run `npm run prisma:migrate` and restart the server."
+        : genericLoginFailureMessage,
+      "DATABASE_SCHEMA_NOT_READY",
+      env.isDevelopment ? error.meta : undefined,
+    );
+  }
+
+  return new AppError(StatusCodes.INTERNAL_SERVER_ERROR, genericLoginFailureMessage, "LOGIN_FAILED");
+};
+
 const createSession = async (user: PublicUser, meta?: SessionMeta) => {
   const refreshToken = generateRefreshToken(user.id, crypto.randomUUID());
   const accessToken = generateAccessToken({
@@ -72,7 +109,7 @@ const createSession = async (user: PublicUser, meta?: SessionMeta) => {
 
 function ensureActiveUser<T extends { isActive: boolean }>(user: T | null): asserts user is T {
   if (!user) {
-    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials", "INVALID_CREDENTIALS");
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid email or password", "INVALID_CREDENTIALS");
   }
 
   if (!user.isActive) {
@@ -174,14 +211,13 @@ export const authService = {
       });
 
       if (!isPasswordValid) {
-        throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials", "INVALID_CREDENTIALS");
+        throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid email or password", "INVALID_CREDENTIALS");
       }
 
-      const { passwordHash: _passwordHash, ...safeUser } = user;
-
-      await prisma.user.update({
+      const safeUser = await prisma.user.update({
         where: { id: user.id },
         data: { lastLoginAt: new Date() },
+        select: publicUserSelect,
       });
 
       const session = await createSession(safeUser, meta);
@@ -221,11 +257,7 @@ export const authService = {
         error: error instanceof Error ? error.message : "Unknown error",
       });
 
-      throw new AppError(
-        StatusCodes.INTERNAL_SERVER_ERROR,
-        "The server couldn't complete sign-in right now. Please try again in a moment.",
-        "LOGIN_FAILED",
-      );
+      throw getLoginServerError(error);
     }
   },
 

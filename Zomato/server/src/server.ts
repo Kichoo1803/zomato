@@ -1,8 +1,8 @@
 import { createServer } from "node:http";
 import { env } from "./config/env.js";
 import { startCronJobs } from "./jobs/cron.js";
-import { prisma } from "./lib/prisma.js";
 import { logger } from "./lib/logger.js";
+import { connectPrisma, disconnectPrisma, prismaConnectionInfo } from "./lib/prisma.js";
 import { createSocketServer } from "./socket/index.js";
 import { app } from "./app.js";
 
@@ -23,7 +23,7 @@ const handleListenError = async (error: NodeJS.ErrnoException) => {
     port: env.PORT,
   });
 
-  await prisma.$disconnect().catch((disconnectError) => {
+  await disconnectPrisma().catch((disconnectError) => {
     logger.error("Failed to disconnect Prisma after startup error", {
       error: disconnectError instanceof Error ? disconnectError.message : "Unknown disconnect error",
     });
@@ -34,7 +34,7 @@ const handleListenError = async (error: NodeJS.ErrnoException) => {
 
 const startServer = async () => {
   try {
-    await prisma.$connect();
+    await connectPrisma();
 
     try {
       startCronJobs();
@@ -59,6 +59,7 @@ const startServer = async () => {
   } catch (error) {
     logger.error("Failed to start server", {
       error: error instanceof Error ? error.message : "Unknown error",
+      ...prismaConnectionInfo,
     });
     process.exit(1);
   }
@@ -68,7 +69,7 @@ const shutdown = async (signal: string) => {
   logger.warn(`Received ${signal}. Shutting down gracefully.`);
 
   httpServer.close(async () => {
-    await prisma.$disconnect();
+    await disconnectPrisma();
     process.exit(0);
   });
 };
