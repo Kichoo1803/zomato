@@ -50,9 +50,11 @@ const startServer = async () => {
 
     httpServer.once("error", onListenError);
 
-    httpServer.listen(env.PORT, () => {
+    httpServer.listen(env.PORT, env.HOST, () => {
       httpServer.off("error", onListenError);
-      logger.info(`Server is running on port ${env.PORT}`);
+      logger.info(`Server is running on port ${env.PORT}`, {
+        host: env.HOST ?? "default",
+      });
     });
   } catch (error) {
     logger.error("Failed to start server", {

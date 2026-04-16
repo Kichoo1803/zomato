@@ -19,9 +19,14 @@ const normalizeOrigin = (value: string) => {
 
 const getDefaultPort = (protocol: string) => (protocol === "https:" ? "443" : "80");
 
+const configuredCorsOrigins = (env.CORS_ORIGINS ?? "")
+  .split(",")
+  .map((origin) => normalizeOrigin(origin.trim()))
+  .filter((origin): origin is string => Boolean(origin));
+
 const configuredOrigins = Array.from(
   new Set(
-    [env.CLIENT_URL, ...defaultDevClientOrigins]
+    [env.CLIENT_URL, ...configuredCorsOrigins, ...defaultDevClientOrigins]
       .map(normalizeOrigin)
       .filter((origin): origin is string => Boolean(origin)),
   ),
