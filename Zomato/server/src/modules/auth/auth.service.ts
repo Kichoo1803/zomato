@@ -159,9 +159,20 @@ export const authService = {
         select: authUserSelect,
       });
 
+      logger.info("Login user lookup completed", {
+        email,
+        userFound: Boolean(user),
+      });
+
       ensureActiveUser(user);
 
       const isPasswordValid = await bcrypt.compare(input.password, user.passwordHash);
+      logger.info("Login password verification completed", {
+        email,
+        userId: user.id,
+        isPasswordValid,
+      });
+
       if (!isPasswordValid) {
         throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid credentials", "INVALID_CREDENTIALS");
       }
@@ -174,6 +185,10 @@ export const authService = {
       });
 
       const session = await createSession(safeUser, meta);
+      logger.info("Login session created", {
+        userId: safeUser.id,
+        email,
+      });
 
       logger.info("Login successful", {
         userId: safeUser.id,
@@ -208,7 +223,7 @@ export const authService = {
 
       throw new AppError(
         StatusCodes.INTERNAL_SERVER_ERROR,
-        "Unable to sign in right now",
+        "The server couldn't complete sign-in right now. Please try again in a moment.",
         "LOGIN_FAILED",
       );
     }

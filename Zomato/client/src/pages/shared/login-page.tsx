@@ -1,6 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { Eye, EyeOff } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -224,6 +225,7 @@ const LoginForm = () => {
   const location = useLocation();
   const { setSession } = useAuth();
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
@@ -259,10 +261,21 @@ const LoginForm = () => {
       />
       <Input
         label="Password"
-        type="password"
+        type={isPasswordVisible ? "text" : "password"}
         autoComplete="current-password"
         placeholder="Enter your password"
         error={form.formState.errors.password?.message}
+        trailingContent={
+          <button
+            type="button"
+            onClick={() => setIsPasswordVisible((currentValue) => !currentValue)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-ink-soft transition hover:bg-accent/5 hover:text-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+            aria-label={isPasswordVisible ? "Hide password" : "Show password"}
+            aria-pressed={isPasswordVisible}
+          >
+            {isPasswordVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        }
         {...form.register("password")}
       />
       {submitError ? (

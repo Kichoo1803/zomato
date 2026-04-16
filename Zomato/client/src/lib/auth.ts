@@ -57,7 +57,7 @@ const parseAuthResponse = (response: AuthResponse) => {
   const user = response.data?.user;
 
   if (!accessToken || !user) {
-    throw new Error("The authentication response was incomplete.");
+    throw new Error("The server returned an incomplete sign-in response. Please try again.");
   }
 
   return {
@@ -131,6 +131,10 @@ export const getLoginRedirectPath = (pathname: string) => {
 
 export const getApiErrorMessage = (error: unknown, fallback: string) => {
   if (!axios.isAxiosError(error)) {
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+
     return fallback;
   }
 
@@ -141,6 +145,10 @@ export const getApiErrorMessage = (error: unknown, fallback: string) => {
 
   if (error.code === "ERR_NETWORK") {
     return "Unable to reach the server. Please check that the backend is running and reachable from this device.";
+  }
+
+  if (error.code === "ERR_BAD_RESPONSE" || (error.response?.status ?? 0) >= 500) {
+    return "The server couldn't complete your request right now. Please try again in a moment.";
   }
 
   return fallback;
