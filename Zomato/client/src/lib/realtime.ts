@@ -23,6 +23,12 @@ export type RealtimeDeliveryLocationUpdate = {
   timestamp: string;
 };
 
+export type RealtimeDispatchQueueUpdate = {
+  orderId: number;
+  state: string;
+  userIds: number[];
+};
+
 let socket: Socket | null = null;
 let socketUserId: number | null = null;
 

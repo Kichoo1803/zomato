@@ -32,10 +32,10 @@ const OWNER_STATUS_TRANSITIONS: Record<string, string[]> = {
   CONFIRMED: ["PREPARING", "DELAYED", "CANCELLED"],
   ACCEPTED: ["PREPARING", "DELAYED", "CANCELLED"],
   PREPARING: ["READY_FOR_PICKUP", "DELAYED", "CANCELLED"],
-  READY_FOR_PICKUP: ["LOOKING_FOR_DELIVERY_PARTNER", "DELIVERY_PARTNER_ASSIGNED", "DELAYED", "CANCELLED"],
-  LOOKING_FOR_DELIVERY_PARTNER: ["DELIVERY_PARTNER_ASSIGNED", "DELAYED", "CANCELLED"],
+  READY_FOR_PICKUP: ["LOOKING_FOR_DELIVERY_PARTNER", "DELAYED", "CANCELLED"],
+  LOOKING_FOR_DELIVERY_PARTNER: ["DELAYED", "CANCELLED"],
   DELIVERY_PARTNER_ASSIGNED: ["DELAYED", "CANCELLED"],
-  DELAYED: ["PREPARING", "READY_FOR_PICKUP", "LOOKING_FOR_DELIVERY_PARTNER", "DELIVERY_PARTNER_ASSIGNED", "CANCELLED"],
+  DELAYED: ["PREPARING", "READY_FOR_PICKUP", "LOOKING_FOR_DELIVERY_PARTNER", "CANCELLED"],
   OUT_FOR_DELIVERY: ["DELIVERED"],
 };
 
@@ -206,7 +206,7 @@ export const OwnerOrdersPage = () => {
       <SectionHeading
         eyebrow="Owner orders"
         title="Kitchen queue and order-status control."
-        description="View only your own restaurant orders, inspect details, and move statuses forward with safe owner-only transitions."
+        description="View only your own restaurant orders, inspect details, and move statuses forward while nearby rider search stays automatic."
         action={<RefreshButton onClick={() => void loadOrders()} />}
       />
 
@@ -371,7 +371,7 @@ export const OwnerOrdersPage = () => {
             </SurfaceCard>
 
             <SurfaceCard className="space-y-4">
-              <SectionHeading title="Delivery details" description="Status updates are limited to your own restaurant's valid next steps." />
+              <SectionHeading title="Delivery details" description="Status updates are limited to your own restaurant's valid next steps while rider assignment remains automatic." />
               <AdminDetailsGrid
                 className="md:grid-cols-1"
                 items={[
@@ -401,7 +401,7 @@ export const OwnerOrdersPage = () => {
                   ))}
                 </Select>
                 <div className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4 text-sm leading-7 text-ink-soft">
-                  Owners can only advance orders for their own restaurants. Platform-wide changes remain restricted to admin operations.
+                  Ready orders are broadcast automatically to nearby eligible riders. Owners can monitor the assignment state, but normal rider selection no longer happens manually.
                 </div>
               </div>
               <div className="flex justify-end">

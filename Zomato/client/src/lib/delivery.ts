@@ -141,6 +141,15 @@ export type DeliveryOrder = {
     note?: string | null;
     createdAt: string;
   }>;
+  deliveryOffer?: {
+    id: number;
+    batchNumber: number;
+    radiusKm: number;
+    distanceKm?: number | null;
+    offeredAt: string;
+    expiresAt: string;
+    status: string;
+  } | null;
 };
 
 export const toDeliverySessionUser = (profile: DeliveryProfile): AuthUser =>
@@ -190,9 +199,22 @@ export const acceptDeliveryRequest = async (orderId: number) =>
     await apiClient.patch<ApiEnvelope<{ order: DeliveryOrder }>>(`/delivery-partners/requests/${orderId}/accept`),
   ).order;
 
+export const skipDeliveryRequest = async (orderId: number) =>
+  unwrapData(
+    await apiClient.patch<ApiEnvelope<void>>(`/delivery-partners/requests/${orderId}/skip`),
+  );
+
 export const getDeliveryActiveOrders = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ deliveries: DeliveryOrder[] }>>("/delivery-partners/active"))
     .deliveries;
+
+export const releaseAssignedDeliveryOrder = async (orderId: number, payload?: { note?: string }) =>
+  unwrapData(
+    await apiClient.patch<ApiEnvelope<{ order: DeliveryOrder }>>(
+      `/delivery-partners/active/${orderId}/release`,
+      payload ?? {},
+    ),
+  ).order;
 
 export const getDeliveryHistory = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ deliveries: DeliveryOrder[] }>>("/delivery-partners/history"))

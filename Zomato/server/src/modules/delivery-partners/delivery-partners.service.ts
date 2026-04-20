@@ -1,10 +1,16 @@
-import { DeliveryAvailabilityStatus, OrderStatus, Role } from "../../constants/enums.js";
+import {
+  DeliveryAvailabilityStatus,
+  DeliveryOfferStatus,
+  OrderStatus,
+  Role,
+} from "../../constants/enums.js";
 import bcrypt from "bcrypt";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
 import { emitDeliveryLocationUpdate, emitOrderStatusUpdate } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
+import { orderDispatchService } from "../orders/order-dispatch.service.js";
 
 const getPartnerByUserId = async (userId: number) => {
   const partner = await prisma.deliveryPartner.findUnique({
@@ -335,8 +341,7 @@ export const deliveryPartnersService = {
 
   async updateAvailability(userId: number, availabilityStatus: string) {
     const partner = await getPartnerByUserId(userId);
-
-    return prisma.deliveryPartner.update({
+    const updatedPartner = await prisma.deliveryPartner.update({
       where: { id: partner.id },
       data: {
         availabilityStatus: availabilityStatus as never,
@@ -346,6 +351,37 @@ export const deliveryPartnersService = {
         documents: true,
       },
     });
+
+    if (availabilityStatus !== DeliveryAvailabilityStatus.ONLINE) {
+      const pendingOffers = await prisma.deliveryAssignmentOffer.findMany({
+        where: {
+          deliveryPartnerId: partner.id,
+          status: DeliveryOfferStatus.PENDING,
+        },
+        select: {
+          orderId: true,
+        },
+      });
+
+      if (pendingOffers.length) {
+        await prisma.deliveryAssignmentOffer.updateMany({
+          where: {
+            deliveryPartnerId: partner.id,
+            status: DeliveryOfferStatus.PENDING,
+          },
+          data: {
+            status: DeliveryOfferStatus.CANCELLED,
+            respondedAt: new Date(),
+            closedReason: "PARTNER_UNAVAILABLE",
+          },
+        });
+
+        const orderIds = [...new Set(pendingOffers.map((offer) => offer.orderId))];
+        await Promise.all(orderIds.map((orderId) => orderDispatchService.syncOrder(orderId)));
+      }
+    }
+
+    return updatedPartner;
   },
 
   async updateLocation(userId: number, latitude: number, longitude: number) {
@@ -446,21 +482,16 @@ export const deliveryPartnersService = {
     return updatedPartner;
   },
 
-  async listNewRequests() {
-    return prisma.order.findMany({
-      where: {
-        deliveryPartnerId: null,
-        deletedAt: null,
-        status: {
-          in: [
-            OrderStatus.READY_FOR_PICKUP,
-            OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
-          ],
-        },
-      },
-      include: deliveryOrderInclude,
-      orderBy: { orderedAt: "desc" },
-    });
+  async listNewRequests(user: { id: number; role: Role }) {
+    return orderDispatchService.listOpenOffersForUser(user);
+  },
+
+  async declineRequest(userId: number, orderId: number) {
+    await orderDispatchService.declineOffer(userId, orderId);
+  },
+
+  async releaseAssignedOrder(userId: number, orderId: number, note?: string) {
+    return orderDispatchService.releaseAssignedOrder(userId, orderId, note);
   },
 
   async listActiveDeliveries(userId: number) {

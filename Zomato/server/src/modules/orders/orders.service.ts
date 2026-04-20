@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import {
   CatalogItemType,
   DeliveryAvailabilityStatus,
+  DeliveryOfferStatus,
   NotificationType,
   OrderStatus,
   PaymentMethod,
@@ -10,11 +11,16 @@ import {
 } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
-import { emitNotification, emitOrderStatusUpdate } from "../../socket/index.js";
+import {
+  emitDispatchQueueUpdate,
+  emitNotification,
+  emitOrderStatusUpdate,
+} from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import { generateOrderNumber } from "../../utils/order-number.js";
 import { decimalToNumber, roundMoney } from "../../utils/pricing.js";
+import { orderDispatchService } from "./order-dispatch.service.js";
 
 const orderInclude = {
   address: true,
@@ -157,23 +163,13 @@ const ownerStatusTransitions: Partial<Record<OrderStatus, OrderStatus[]>> = {
   [OrderStatus.CONFIRMED]: [OrderStatus.PREPARING, OrderStatus.DELAYED, OrderStatus.CANCELLED],
   [OrderStatus.ACCEPTED]: [OrderStatus.PREPARING, OrderStatus.DELAYED, OrderStatus.CANCELLED],
   [OrderStatus.PREPARING]: [OrderStatus.READY_FOR_PICKUP, OrderStatus.DELAYED, OrderStatus.CANCELLED],
-  [OrderStatus.READY_FOR_PICKUP]: [
-    OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
-    OrderStatus.DELIVERY_PARTNER_ASSIGNED,
-    OrderStatus.DELAYED,
-    OrderStatus.CANCELLED,
-  ],
-  [OrderStatus.LOOKING_FOR_DELIVERY_PARTNER]: [
-    OrderStatus.DELIVERY_PARTNER_ASSIGNED,
-    OrderStatus.DELAYED,
-    OrderStatus.CANCELLED,
-  ],
+  [OrderStatus.READY_FOR_PICKUP]: [OrderStatus.LOOKING_FOR_DELIVERY_PARTNER, OrderStatus.DELAYED, OrderStatus.CANCELLED],
+  [OrderStatus.LOOKING_FOR_DELIVERY_PARTNER]: [OrderStatus.DELAYED, OrderStatus.CANCELLED],
   [OrderStatus.DELIVERY_PARTNER_ASSIGNED]: [OrderStatus.DELAYED, OrderStatus.CANCELLED],
   [OrderStatus.DELAYED]: [
     OrderStatus.PREPARING,
     OrderStatus.READY_FOR_PICKUP,
     OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
-    OrderStatus.DELIVERY_PARTNER_ASSIGNED,
     OrderStatus.CANCELLED,
   ],
   [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED],
@@ -975,7 +971,21 @@ export const ordersService = {
       );
     }
 
-    await notifyAvailableDeliveryPartners(updatedOrder);
+    const shouldKeepDispatchOpen =
+      !updatedOrder.deliveryPartnerId &&
+      (orderDispatchService.claimableOrderStatuses as readonly OrderStatus[]).includes(input.status);
+
+    if (shouldKeepDispatchOpen) {
+      await orderDispatchService.syncOrder(orderId);
+    } else {
+      await orderDispatchService.closeOrderOffers(
+        orderId,
+        updatedOrder.deliveryPartnerId
+          ? DeliveryOfferStatus.MISSED
+          : DeliveryOfferStatus.CANCELLED,
+        updatedOrder.deliveryPartnerId ? "ORDER_ASSIGNED" : `ORDER_${input.status}`,
+      );
+    }
 
     emitOrderStatusUpdate({
       orderId,
@@ -1003,6 +1013,7 @@ export const ordersService = {
         availabilityStatus: true,
         currentLatitude: true,
         currentLongitude: true,
+        lastLocationUpdatedAt: true,
         user: {
           select: {
             id: true,
@@ -1038,6 +1049,38 @@ export const ordersService = {
         StatusCodes.CONFLICT,
         "Go online before accepting a delivery request",
         "DELIVERY_PARTNER_NOT_AVAILABLE",
+      );
+    }
+
+    const now = new Date();
+
+    if (
+      !deliveryPartner.lastLocationUpdatedAt ||
+      now.getTime() - new Date(deliveryPartner.lastLocationUpdatedAt).getTime() >
+        orderDispatchService.dispatchConfig.staleLocationMinutes * 60 * 1000
+    ) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "Refresh your live location before accepting a delivery request",
+        "DELIVERY_PARTNER_LOCATION_STALE",
+      );
+    }
+
+    const activeDeliveryCount = await prisma.order.count({
+      where: {
+        deletedAt: null,
+        deliveryPartnerId: deliveryPartner.id,
+        status: {
+          in: [...orderDispatchService.activeDeliveryStatuses],
+        },
+      },
+    });
+
+    if (activeDeliveryCount >= orderDispatchService.dispatchConfig.maxActiveOrders) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "Finish your active delivery before accepting another request",
+        "DELIVERY_PARTNER_AT_CAPACITY",
       );
     }
 
@@ -1094,7 +1137,45 @@ export const ordersService = {
       );
     }
 
-    const now = new Date();
+    const pendingOffer = await prisma.deliveryAssignmentOffer.findFirst({
+      where: {
+        orderId,
+        deliveryPartnerId: deliveryPartner.id,
+        status: DeliveryOfferStatus.PENDING,
+        expiresAt: {
+          gt: now,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!pendingOffer) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "This delivery request is no longer available to accept",
+        "DELIVERY_REQUEST_UNAVAILABLE",
+      );
+    }
+
+    const competingOfferUsers = await prisma.deliveryAssignmentOffer.findMany({
+      where: {
+        orderId,
+        status: DeliveryOfferStatus.PENDING,
+        id: {
+          not: pendingOffer.id,
+        },
+      },
+      select: {
+        deliveryPartner: {
+          select: {
+            userId: true,
+          },
+        },
+      },
+    });
+
     const nextStatus = OrderStatus.DELIVERY_PARTNER_ASSIGNED;
     const deliveryIntelligence = await calculateDeliveryIntelligence({
       status: nextStatus,
@@ -1104,8 +1185,39 @@ export const ordersService = {
     });
 
     await prisma.$transaction(async (tx) => {
-      await tx.order.update({
-        where: { id: orderId },
+      const claimedOffer = await tx.deliveryAssignmentOffer.updateMany({
+        where: {
+          id: pendingOffer.id,
+          status: DeliveryOfferStatus.PENDING,
+          expiresAt: {
+            gt: now,
+          },
+        },
+        data: {
+          status: DeliveryOfferStatus.ACCEPTED,
+          respondedAt: now,
+          acceptedAt: now,
+          closedReason: "PARTNER_ACCEPTED",
+        },
+      });
+
+      if (!claimedOffer.count) {
+        throw new AppError(
+          StatusCodes.CONFLICT,
+          "This delivery request is no longer available",
+          "DELIVERY_REQUEST_UNAVAILABLE",
+        );
+      }
+
+      const claimedOrder = await tx.order.updateMany({
+        where: {
+          id: orderId,
+          deletedAt: null,
+          deliveryPartnerId: null,
+          status: {
+            in: [...claimableDeliveryRequestStatuses],
+          },
+        },
         data: {
           deliveryPartnerId: deliveryPartner.id,
           status: nextStatus,
@@ -1119,12 +1231,35 @@ export const ordersService = {
         },
       });
 
+      if (!claimedOrder.count) {
+        throw new AppError(
+          StatusCodes.CONFLICT,
+          "This delivery request is no longer available",
+          "DELIVERY_REQUEST_UNAVAILABLE",
+        );
+      }
+
       await tx.orderStatusEvent.create({
         data: {
           orderId,
           actorId: user.id,
           status: nextStatus,
           note: "Delivery partner accepted the order.",
+        },
+      });
+
+      await tx.deliveryAssignmentOffer.updateMany({
+        where: {
+          orderId,
+          status: DeliveryOfferStatus.PENDING,
+          id: {
+            not: pendingOffer.id,
+          },
+        },
+        data: {
+          status: DeliveryOfferStatus.MISSED,
+          respondedAt: now,
+          closedReason: "ORDER_ASSIGNED_TO_ANOTHER_PARTNER",
         },
       });
 
@@ -1172,6 +1307,14 @@ export const ordersService = {
       },
     );
 
+    if (competingOfferUsers.length) {
+      emitDispatchQueueUpdate({
+        orderId,
+        state: DeliveryOfferStatus.MISSED,
+        userIds: [...new Set(competingOfferUsers.map((offer) => offer.deliveryPartner.userId))],
+      });
+    }
+
     emitOrderStatusUpdate({
       orderId,
       userId: acceptedOrder.userId,
@@ -1188,7 +1331,19 @@ export const ordersService = {
     user: { id: number; role: Role },
     orderId: number,
     deliveryPartnerId: number,
+    input?: {
+      emergencyOverride?: boolean;
+      overrideReason?: string;
+    },
   ) {
+    if (!input?.emergencyOverride) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "Automatic delivery assignment is enabled. Use an explicit emergency override when dispatch needs a manual fallback.",
+        "DELIVERY_ASSIGNMENT_AUTOMATIC",
+      );
+    }
+
     const order = await prisma.order.findFirst({
       where: {
         id: orderId,
@@ -1227,9 +1382,12 @@ export const ordersService = {
         id: true,
         currentLatitude: true,
         currentLongitude: true,
+        userId: true,
         user: {
           select: {
             id: true,
+            fullName: true,
+            isActive: true,
           },
         },
       },
@@ -1237,6 +1395,14 @@ export const ordersService = {
 
     if (!deliveryPartner) {
       throw new AppError(StatusCodes.NOT_FOUND, "Delivery partner not found", "DELIVERY_PARTNER_NOT_FOUND");
+    }
+
+    if (!deliveryPartner.user.isActive) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "The selected delivery partner is inactive right now",
+        "DELIVERY_PARTNER_INACTIVE",
+      );
     }
 
     const nextStatus =
@@ -1253,6 +1419,8 @@ export const ordersService = {
       deliveryPartner,
     });
     const now = new Date();
+    const overrideReason =
+      input.overrideReason?.trim() || "Emergency delivery partner override applied.";
 
     await prisma.$transaction(async (tx) => {
       await tx.order.update({
@@ -1276,10 +1444,45 @@ export const ordersService = {
             orderId,
             actorId: user.id,
             status: OrderStatus.DELIVERY_PARTNER_ASSIGNED,
-            note: "Delivery partner assigned to the order.",
+            note: overrideReason,
           },
         });
       }
+
+      const latestBatch = await tx.deliveryAssignmentOffer.findFirst({
+        where: { orderId },
+        orderBy: [{ batchNumber: "desc" }, { createdAt: "desc" }],
+        select: {
+          batchNumber: true,
+        },
+      });
+
+      await tx.deliveryAssignmentOffer.create({
+        data: {
+          orderId,
+          deliveryPartnerId,
+          batchNumber: (latestBatch?.batchNumber ?? 0) + 1,
+          status: DeliveryOfferStatus.ACCEPTED,
+          radiusKm: 0,
+          distanceKm: null,
+          expiresAt: now,
+          respondedAt: now,
+          acceptedAt: now,
+          closedReason: "EMERGENCY_OVERRIDE",
+        },
+      });
+
+      await tx.deliveryAssignmentOffer.updateMany({
+        where: {
+          orderId,
+          status: DeliveryOfferStatus.PENDING,
+        },
+        data: {
+          status: DeliveryOfferStatus.MISSED,
+          respondedAt: now,
+          closedReason: "EMERGENCY_OVERRIDE",
+        },
+      });
 
       await tx.deliveryPartner.update({
         where: { id: deliveryPartnerId },
@@ -1303,7 +1506,7 @@ export const ordersService = {
     await createOrderNotification(
       deliveryPartner.user.id,
       orderId,
-      "New delivery assigned",
+      "Emergency delivery assigned",
       [
         `${assignedOrder.orderNumber} from ${assignedOrder.restaurant.name}`,
         `Pickup ${[
@@ -1340,10 +1543,7 @@ export const ordersService = {
       ownerId: assignedOrder.restaurant.ownerId,
       deliveryPartnerUserId: getDeliveryPartnerUserId(assignedOrder.deliveryPartner),
       status: nextStatus,
-      note:
-        nextStatus === OrderStatus.DELIVERY_PARTNER_ASSIGNED
-          ? "Delivery partner assigned to the order."
-          : undefined,
+      note: nextStatus === OrderStatus.DELIVERY_PARTNER_ASSIGNED ? overrideReason : undefined,
     });
 
     return assignedOrder;

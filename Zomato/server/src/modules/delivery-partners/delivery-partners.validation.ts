@@ -69,6 +69,15 @@ export const deliveryRequestOrderIdParamSchema = {
   }),
 };
 
+export const releaseAssignedOrderSchema = {
+  params: z.object({
+    orderId: z.coerce.number().int().positive(),
+  }),
+  body: z.object({
+    note: z.string().trim().max(300).optional(),
+  }),
+};
+
 export const updateAvailabilitySchema = {
   body: z.object({
     availabilityStatus: z.enum([

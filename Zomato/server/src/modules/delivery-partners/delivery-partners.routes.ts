@@ -5,12 +5,14 @@ import { validate } from "../../middlewares/validate.middleware.js";
 import {
   acceptDeliveryRequest,
   createDeliveryPartner,
+  declineDeliveryRequest,
   deleteDeliveryPartner,
   getDeliveryProfile,
   listActiveDeliveries,
   listDeliveryHistory,
   listDeliveryPartners,
   listNewRequests,
+  releaseAssignedOrder,
   updateMyDeliveryProfile,
   updateDeliveryPartner,
   updateAvailability,
@@ -21,6 +23,7 @@ import {
   deliveryPartnerIdParamSchema,
   deliveryRequestOrderIdParamSchema,
   listDeliveryPartnersQuerySchema,
+  releaseAssignedOrderSchema,
   updateAvailabilitySchema,
   updateDeliveryPartnerSchema,
   updateLocationSchema,
@@ -66,7 +69,17 @@ deliveryPartnersRouter.patch(
   validate(deliveryRequestOrderIdParamSchema),
   acceptDeliveryRequest,
 );
+deliveryPartnersRouter.patch(
+  "/requests/:orderId/skip",
+  validate(deliveryRequestOrderIdParamSchema),
+  declineDeliveryRequest,
+);
 deliveryPartnersRouter.get("/active", listActiveDeliveries);
+deliveryPartnersRouter.patch(
+  "/active/:orderId/release",
+  validate(releaseAssignedOrderSchema),
+  releaseAssignedOrder,
+);
 deliveryPartnersRouter.get("/history", listDeliveryHistory);
 deliveryPartnersRouter.patch("/availability", validate(updateAvailabilitySchema), updateAvailability);
 deliveryPartnersRouter.patch("/location", validate(updateLocationSchema), updateLocation);

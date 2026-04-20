@@ -1,4 +1,5 @@
 import cron from "node-cron";
+import { runDeliveryDispatchCycle } from "./deliveryDispatch.job.js";
 import { logger } from "../lib/logger.js";
 import { dispatchNotificationReminders } from "./notificationReminders.job.js";
 import { cleanupArchivedOrders } from "./orderCleanup.job.js";
@@ -11,6 +12,20 @@ export const startCronJobs = () => {
   }
 
   schedulerStarted = true;
+
+  cron.schedule(
+    "*/1 * * * *",
+    () => {
+      void runDeliveryDispatchCycle().catch((error) => {
+        logger.error("Delivery dispatch cycle failed", {
+          error: error instanceof Error ? error.message : "Unknown dispatch cycle error",
+        });
+      });
+    },
+    {
+      timezone: "Asia/Kolkata",
+    },
+  );
 
   cron.schedule(
     "*/30 * * * *",
@@ -42,6 +57,11 @@ export const startCronJobs = () => {
 
   logger.info("Cron jobs started", {
     jobs: [
+      {
+        name: "deliveryDispatch",
+        schedule: "*/1 * * * *",
+        timezone: "Asia/Kolkata",
+      },
       {
         name: "notificationReminders",
         schedule: "*/30 * * * *",

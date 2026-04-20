@@ -24,7 +24,7 @@ import {
 
 export const operationsRouter = Router();
 
-operationsRouter.use(requireAuth, authorize(Role.OPERATIONS_MANAGER));
+operationsRouter.use(requireAuth, authorize(Role.OPERATIONS_MANAGER, Role.REGIONAL_MANAGER));
 operationsRouter.get("/dashboard", validate(operationsRegionQuerySchema), getOperationsDashboard);
 operationsRouter.get("/regions", validate(operationsRegionQuerySchema), getOperationsRegions);
 operationsRouter.get("/owners", validate(listOperationsOwnersQuerySchema), listOperationsOwners);

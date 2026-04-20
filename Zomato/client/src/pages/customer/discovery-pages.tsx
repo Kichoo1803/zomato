@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -19,27 +19,46 @@ import { FoodItemCard } from "@/components/cards/food-item-card";
 import { OfferCard } from "@/components/cards/offer-card";
 import { RestaurantCard } from "@/components/cards/restaurant-card";
 import { ReviewCard } from "@/components/cards/review-card";
+import { LocationPickerMap } from "@/components/maps/location-picker-map";
 import { useAuth } from "@/hooks/use-auth";
 import { useCustomerActionGuard } from "@/hooks/use-customer-action-guard";
 import { getApiErrorMessage } from "@/lib/auth";
+import {
+  areCustomerActiveLocationsEqual,
+  buildCustomerAddressSummary,
+  clearStoredCustomerActiveLocation,
+  createCustomerActiveLocationFromAddress,
+  getBrowserGeolocationPermissionState,
+  getBrowserCoordinates,
+  getCustomerLocationErrorMessage,
+  hasCustomerAddressCoordinates,
+  readStoredCustomerActiveLocation,
+  resolvePreferredCustomerActiveLocation,
+  writeStoredCustomerActiveLocation,
+  type CustomerActiveLocation,
+} from "@/lib/customer-location";
 import {
   addCustomerCartItem,
   addCustomerFavorite,
   applyCustomerCartOffer,
   clearPendingCustomerCouponSelection,
   createCustomerPaymentMethod,
+  getCustomerAddresses,
   getCustomerFavorites,
   getCustomerCarts,
   getCustomerPaymentMethods,
+  geocodeCustomerLocation,
   getPublicOffers,
   getPublicRestaurantBySlug,
   getPublicRestaurants,
   readPendingCustomerCouponSelection,
   removeCustomerFavorite,
+  reverseGeocodeCustomerLocation,
   removeCustomerCartOffer,
   updateCustomerPaymentMethod,
   updateCustomerMembership,
   writePendingCustomerCouponSelection,
+  type CustomerAddress,
   type CustomerCart,
   type CustomerFavoriteRestaurant,
   type CustomerPaymentMethod,
@@ -48,12 +67,7 @@ import {
   type CustomerRestaurantSummary,
 } from "@/lib/customer";
 import type { MembershipStatus, MembershipTier } from "@/types/auth";
-import {
-  getRestaurantBySlug,
-  membershipBenefits,
-  restaurantCategories,
-  restaurants as demoRestaurants,
-} from "@/lib/demo-data";
+import { membershipBenefits } from "@/lib/demo-data";
 
 const linkButtonClassName =
   "inline-flex items-center justify-center rounded-full bg-accent px-5 py-3 text-sm font-semibold text-white shadow-soft";
@@ -68,6 +82,7 @@ type RestaurantCardData = {
   cuisineLabel: string;
   rating: number;
   deliveryTime: number;
+  distanceKm?: number | null;
   costForTwo: string;
 };
 
@@ -84,6 +99,18 @@ const formatLocationText = (...parts: Array<string | null | undefined>) =>
     .filter((part): part is string => Boolean(part))
     .join(", ");
 
+type SelectedDiscoveryLocation = CustomerActiveLocation;
+
+const manualDiscoveryLocationSchema = z.object({
+  address: z.string().trim().min(6, "Enter a fuller address so we can find nearby restaurants.").max(240),
+});
+
+type ManualDiscoveryLocationFormValues = z.infer<typeof manualDiscoveryLocationSchema>;
+
+const getSavedAddressLabel = (address: CustomerAddress) =>
+  address.title?.trim() ||
+  (address.addressType ? `${address.addressType.slice(0, 1)}${address.addressType.slice(1).toLowerCase()}` : "Saved address");
+
 const mapLiveRestaurantCard = (restaurant: CustomerRestaurantSummary): RestaurantCardData => ({
   id: restaurant.id,
   slug: restaurant.slug,
@@ -95,6 +122,7 @@ const mapLiveRestaurantCard = (restaurant: CustomerRestaurantSummary): Restauran
     restaurant.cuisineMappings.map((mapping) => mapping.cuisine.name).join(" • ") || "Curated menu",
   rating: restaurant.avgRating,
   deliveryTime: restaurant.avgDeliveryTime,
+  distanceKm: restaurant.distanceKm ?? null,
   costForTwo: formatCurrency(restaurant.costForTwo),
 });
 
@@ -113,18 +141,6 @@ const mapFavoriteRestaurantCard = (favorite: CustomerFavoriteRestaurant): Restau
   deliveryTime: favorite.restaurant.avgDeliveryTime,
   costForTwo: formatCurrency(favorite.restaurant.costForTwo),
 });
-
-const demoRestaurantCards: RestaurantCardData[] = demoRestaurants.map((restaurant) => ({
-  slug: restaurant.slug,
-  name: restaurant.name,
-  image: restaurant.image,
-  area: restaurant.area,
-  addressSummary: restaurant.address,
-  cuisineLabel: restaurant.cuisineLabel,
-  rating: restaurant.rating,
-  deliveryTime: restaurant.deliveryTime,
-  costForTwo: restaurant.costForTwo,
-}));
 
 const useCustomerFavorites = () => {
   const { user } = useAuth();
@@ -673,16 +689,661 @@ const MembershipUpiDetailsModal = ({
   );
 };
 
-const useRestaurantCatalogue = (search?: string) => {
+type DiscoveryLocationNoticeProps = {
+  canManageSavedLocation: boolean;
+  errorMessage?: string;
+  isBootstrappingLocation?: boolean;
+  isResolvingCurrentLocation: boolean;
+  onEditAddress: () => void;
+  onUseCurrentLocation: () => void;
+  selectedLocation: SelectedDiscoveryLocation | null;
+};
+
+const DiscoveryLocationNotice = ({
+  canManageSavedLocation,
+  errorMessage,
+  isBootstrappingLocation,
+  isResolvingCurrentLocation,
+  onEditAddress,
+  onUseCurrentLocation,
+  selectedLocation,
+}: DiscoveryLocationNoticeProps) => {
+  const statusLabel = selectedLocation
+    ? selectedLocation.source === "gps"
+      ? "Current location"
+      : selectedLocation.source === "map"
+        ? "Map pin"
+        : selectedLocation.source === "default"
+          ? "Default address"
+          : selectedLocation.source === "saved"
+            ? "Saved address"
+            : "Temporary address"
+    : isBootstrappingLocation
+      ? "Checking addresses"
+      : "Location required";
+  const title = selectedLocation
+    ? selectedLocation.source === "default"
+      ? "Nearby restaurants are loading from your default delivery address."
+      : "Restaurants are filtered from your selected delivery location."
+    : isBootstrappingLocation
+      ? "Checking your saved delivery addresses before asking for a new location."
+      : "Choose a delivery location before browsing restaurants.";
+  const description = selectedLocation
+    ? selectedLocation.address
+    : isBootstrappingLocation
+      ? "If a default or previously selected address is available, nearby restaurants will load automatically."
+      : "Use a saved address, your current location, or enter an address manually. Restaurants stay hidden until a location is selected.";
+  const helperText = isBootstrappingLocation
+    ? "Saved delivery locations are checked first so you do not have to choose an address every time."
+    : "Nearby restaurants appear only after the delivery area is resolved.";
+
+  return (
+    <SurfaceCard>
+      <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="space-y-3">
+          <StatusPill label={statusLabel} tone={selectedLocation ? "info" : "warning"} />
+          <div className="space-y-2">
+            <p className="text-sm font-semibold text-ink">{title}</p>
+            <p className="text-sm leading-7 text-ink-soft">{description}</p>
+            <p className="text-xs uppercase tracking-[0.2em] text-ink-muted">
+              {helperText}
+            </p>
+          </div>
+          {errorMessage ? <p className="text-sm font-medium text-accent-soft">{errorMessage}</p> : null}
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Button type="button" onClick={onUseCurrentLocation} disabled={isResolvingCurrentLocation}>
+            {isResolvingCurrentLocation ? "Locating..." : "Use current location"}
+          </Button>
+          <Button type="button" variant="secondary" onClick={onEditAddress}>
+            {selectedLocation ? "Change location" : "Select location"}
+          </Button>
+          {canManageSavedLocation ? (
+            <Link
+              to="/addresses"
+              className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-5 py-3 text-sm font-semibold text-ink shadow-soft"
+            >
+              Manage addresses
+            </Link>
+          ) : null}
+        </div>
+      </div>
+    </SurfaceCard>
+  );
+};
+
+type LocationSelectionModalProps = {
+  canManageSavedLocation: boolean;
+  initialAddress?: string;
+  initialCoordinates?: {
+    latitude: number;
+    longitude: number;
+  } | null;
+  isLoadingSavedAddresses: boolean;
+  isResolvingCurrentLocation: boolean;
+  isSavingManualLocation: boolean;
+  isSavingMapLocation: boolean;
+  onClose: () => void;
+  onSubmitManualAddress: (address: string) => Promise<boolean>;
+  onUseCurrentLocation: () => Promise<boolean>;
+  onUseMapLocation: (coordinates: { latitude: number; longitude: number }) => Promise<boolean>;
+  onUseSavedAddress: (address: CustomerAddress) => Promise<boolean>;
+  open: boolean;
+  savedAddresses: CustomerAddress[];
+  selectedLocationAddressId?: number | null;
+  selectedLocationSource?: SelectedDiscoveryLocation["source"];
+};
+
+const LocationSelectionModal = ({
+  canManageSavedLocation,
+  initialAddress,
+  initialCoordinates,
+  isLoadingSavedAddresses,
+  isResolvingCurrentLocation,
+  isSavingManualLocation,
+  isSavingMapLocation,
+  onClose,
+  onSubmitManualAddress,
+  onUseCurrentLocation,
+  onUseMapLocation,
+  onUseSavedAddress,
+  open,
+  savedAddresses,
+  selectedLocationAddressId,
+  selectedLocationSource,
+}: LocationSelectionModalProps) => {
+  const [activeTab, setActiveTab] = useState<"saved" | "current" | "map" | "manual">("current");
+  const [mapCoordinates, setMapCoordinates] = useState(() => initialCoordinates ?? { latitude: 20.5937, longitude: 78.9629 });
+  const [hasTouchedMap, setHasTouchedMap] = useState(Boolean(initialCoordinates));
+  const form = useForm<ManualDiscoveryLocationFormValues>({
+    resolver: zodResolver(manualDiscoveryLocationSchema),
+    defaultValues: {
+      address: initialAddress ?? "",
+    },
+  });
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    form.reset({
+      address: initialAddress ?? "",
+    });
+    setActiveTab(
+      savedAddresses.length
+        ? selectedLocationSource === "gps"
+          ? "current"
+          : selectedLocationSource === "map"
+            ? "map"
+            : selectedLocationSource === "manual"
+              ? "manual"
+              : "saved"
+        : initialCoordinates
+          ? "map"
+          : initialAddress
+            ? "manual"
+            : "current",
+    );
+    setMapCoordinates(initialCoordinates ?? { latitude: 20.5937, longitude: 78.9629 });
+    setHasTouchedMap(Boolean(initialCoordinates));
+  }, [form, initialAddress, initialCoordinates, open, savedAddresses.length, selectedLocationSource]);
+
+  const handleSubmit = form.handleSubmit(async (values) => {
+    const shouldClose = await onSubmitManualAddress(values.address.trim());
+
+    if (shouldClose) {
+      onClose();
+    }
+  });
+
+  const handleUseCurrentLocation = async () => {
+    const shouldClose = await onUseCurrentLocation();
+
+    if (shouldClose) {
+      onClose();
+    }
+  };
+
+  const handleUseMapLocation = async () => {
+    const shouldClose = await onUseMapLocation(mapCoordinates);
+
+    if (shouldClose) {
+      onClose();
+    }
+  };
+
+  const handleUseSavedAddress = async (address: CustomerAddress) => {
+    const shouldClose = await onUseSavedAddress(address);
+
+    if (shouldClose) {
+      onClose();
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Select delivery location" className="max-w-3xl">
+      <div className="space-y-5">
+        <Tabs
+          items={[
+            ...(canManageSavedLocation ? [{ value: "saved", label: "Saved" }] : []),
+            { value: "current", label: "Current" },
+            { value: "map", label: "Map" },
+            { value: "manual", label: "Manual" },
+          ]}
+          value={activeTab}
+          onChange={(value) => setActiveTab(value as "saved" | "current" | "map" | "manual")}
+        />
+
+        {activeTab === "saved" ? (
+          <div className="space-y-5">
+            <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
+              Your default or last selected saved address is used automatically on load when coordinates are available. Choose another saved address here only when you want to switch delivery areas.
+            </div>
+
+            {isLoadingSavedAddresses ? (
+              <div className="rounded-[1.5rem] bg-cream px-5 py-4 text-sm leading-7 text-ink-soft">
+                Loading your saved delivery addresses.
+              </div>
+            ) : savedAddresses.length ? (
+              <div className="grid gap-4">
+                {savedAddresses.map((address) => {
+                  const isSelected = selectedLocationAddressId === address.id;
+                  const isUsable = hasCustomerAddressCoordinates(address);
+
+                  return (
+                    <div
+                      key={address.id}
+                      className={`rounded-[1.5rem] border px-4 py-4 ${
+                        isSelected ? "border-accent/20 bg-white shadow-soft" : "border-accent/10 bg-white"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-semibold text-ink">{getSavedAddressLabel(address)}</p>
+                            {address.isDefault ? <StatusPill label="Default" tone="info" /> : null}
+                            {isSelected ? <StatusPill label="Selected" tone="success" /> : null}
+                            {!isUsable ? <StatusPill label="Location needed" tone="warning" /> : null}
+                          </div>
+                          <p className="text-sm leading-7 text-ink-soft">
+                            {buildCustomerAddressSummary(address) || formatLocationText(address.area, address.city, address.state) || "Saved delivery address"}
+                          </p>
+                        </div>
+                        {isUsable ? (
+                          <Button
+                            type="button"
+                            variant={isSelected ? "secondary" : "primary"}
+                            className="px-4 py-2 text-xs"
+                            onClick={() => void handleUseSavedAddress(address)}
+                            disabled={isSelected}
+                          >
+                            {isSelected ? "Using this address" : "Use this address"}
+                          </Button>
+                        ) : (
+                          <Link
+                            to="/addresses"
+                            className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
+                          >
+                            Fix in manage addresses
+                          </Link>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-[1.5rem] border border-accent/10 bg-white px-4 py-4">
+                <div>
+                  <p className="font-semibold text-ink">No saved addresses yet</p>
+                  <p className="mt-2 text-sm leading-7 text-ink-soft">
+                    Add a default delivery address to skip location selection the next time you open restaurant discovery.
+                  </p>
+                </div>
+                {canManageSavedLocation ? (
+                  <Link
+                    to="/addresses"
+                    className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
+                  >
+                    Manage addresses
+                  </Link>
+                ) : null}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {activeTab === "current" ? (
+          <div className="space-y-5">
+            <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
+              Use your device GPS to set the active delivery location. If location access fails, you can switch to map or manual entry.
+            </div>
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button type="button" variant="secondary" onClick={onClose} disabled={isResolvingCurrentLocation}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={() => void handleUseCurrentLocation()} disabled={isResolvingCurrentLocation}>
+                {isResolvingCurrentLocation ? "Locating..." : "Use current location"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === "map" ? (
+          <div className="space-y-5">
+            <LocationPickerMap
+              value={mapCoordinates}
+              onChange={(coordinates) => {
+                setMapCoordinates(coordinates);
+                setHasTouchedMap(true);
+              }}
+            />
+            <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
+              Tap the map or drag the pin to the exact delivery point. Restaurants will refresh from this pin location after you confirm it.
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-[1.25rem] bg-cream px-4 py-3 text-sm text-ink-soft">
+                <span className="font-semibold text-ink">Latitude:</span> {mapCoordinates.latitude.toFixed(5)}
+              </div>
+              <div className="rounded-[1.25rem] bg-cream px-4 py-3 text-sm text-ink-soft">
+                <span className="font-semibold text-ink">Longitude:</span> {mapCoordinates.longitude.toFixed(5)}
+              </div>
+            </div>
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button type="button" variant="secondary" onClick={onClose} disabled={isSavingMapLocation}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={() => void handleUseMapLocation()} disabled={isSavingMapLocation || !hasTouchedMap}>
+                {isSavingMapLocation ? "Saving..." : "Use map location"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {activeTab === "manual" ? (
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <Input
+              label="Delivery address"
+              placeholder="Street, area, city, and pincode"
+              error={form.formState.errors.address?.message}
+              {...form.register("address")}
+            />
+            <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
+              This address is stored temporarily for nearby restaurant discovery. It will not replace your saved checkout addresses.
+            </div>
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button type="button" variant="secondary" onClick={onClose} disabled={isSavingManualLocation}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isSavingManualLocation}>
+                {isSavingManualLocation ? "Saving..." : initialAddress ? "Save temporary address" : "Use this address"}
+              </Button>
+            </div>
+          </form>
+        ) : null}
+      </div>
+    </Modal>
+  );
+};
+
+const useDiscoveryLocation = () => {
+  const { user } = useAuth();
+  const hasAttemptedAutoCurrentLocation = useRef(false);
+  const [selectedLocation, setSelectedLocation] = useState<SelectedDiscoveryLocation | null>(() =>
+    readStoredCustomerActiveLocation(),
+  );
+  const [savedAddresses, setSavedAddresses] = useState<CustomerAddress[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string>();
+  const [hasResolvedInitialLocation, setHasResolvedInitialLocation] = useState(Boolean(readStoredCustomerActiveLocation()));
+  const [isLoadingSavedAddresses, setIsLoadingSavedAddresses] = useState(false);
+  const [isResolvingCurrentLocation, setIsResolvingCurrentLocation] = useState(false);
+  const [isSavingManualLocation, setIsSavingManualLocation] = useState(false);
+  const [isSavingMapLocation, setIsSavingMapLocation] = useState(false);
+
+  const clearLocation = () => {
+    setSelectedLocation(null);
+    clearStoredCustomerActiveLocation();
+  };
+
+  const persistSavedAddressLocation = (address: CustomerAddress) => {
+    const nextLocation = createCustomerActiveLocationFromAddress(
+      address,
+      address.isDefault ? "default" : "saved",
+    );
+
+    if (!nextLocation) {
+      return null;
+    }
+
+    setSelectedLocation(nextLocation);
+    setErrorMessage(undefined);
+    writeStoredCustomerActiveLocation(nextLocation);
+    return nextLocation;
+  };
+
+  const persistLocation = (location: Omit<SelectedDiscoveryLocation, "updatedAt">) => {
+    const nextLocation: SelectedDiscoveryLocation = {
+      ...location,
+      updatedAt: new Date().toISOString(),
+    };
+
+    setSelectedLocation(nextLocation);
+    setErrorMessage(undefined);
+    writeStoredCustomerActiveLocation(nextLocation);
+    return nextLocation;
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    hasAttemptedAutoCurrentLocation.current = false;
+
+    if (!user?.id || user.role !== "CUSTOMER") {
+      setSavedAddresses([]);
+      setIsLoadingSavedAddresses(false);
+      setHasResolvedInitialLocation(true);
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    setIsLoadingSavedAddresses(true);
+    if (!selectedLocation) {
+      setHasResolvedInitialLocation(false);
+    }
+
+    void getCustomerAddresses()
+      .then((addresses) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setSavedAddresses(addresses);
+      })
+      .catch(() => {
+        if (isMounted) {
+          setSavedAddresses([]);
+        }
+        // Default address loading is a convenience path; manual selection still remains available.
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoadingSavedAddresses(false);
+          setHasResolvedInitialLocation(true);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.id, user?.role]);
+
+  useEffect(() => {
+    if (isLoadingSavedAddresses) {
+      return;
+    }
+
+    const latestStoredLocation = readStoredCustomerActiveLocation();
+    const preferredLocation = resolvePreferredCustomerActiveLocation(savedAddresses, latestStoredLocation);
+
+    if (preferredLocation) {
+      if (!areCustomerActiveLocationsEqual(selectedLocation, preferredLocation)) {
+        setSelectedLocation(preferredLocation);
+      }
+
+      if (!areCustomerActiveLocationsEqual(latestStoredLocation, preferredLocation)) {
+        writeStoredCustomerActiveLocation(preferredLocation);
+      }
+
+      return;
+    }
+
+    if (selectedLocation?.source === "default" || selectedLocation?.source === "saved") {
+      clearLocation();
+    }
+  }, [isLoadingSavedAddresses, savedAddresses, selectedLocation]);
+
+  const useCurrentLocation = async ({ silently = false }: { silently?: boolean } = {}) => {
+    setIsResolvingCurrentLocation(true);
+    setErrorMessage(undefined);
+
+    try {
+      const coordinates = await getBrowserCoordinates();
+      const resolvedLocation = await reverseGeocodeCustomerLocation(coordinates).catch(() => null);
+
+      persistLocation({
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude,
+        address:
+          resolvedLocation?.address?.trim() ||
+          `Location near ${coordinates.latitude.toFixed(4)}, ${coordinates.longitude.toFixed(4)}`,
+        isTemporary: true,
+        source: "gps",
+      });
+
+      if (!silently) {
+        toast.success("Using your current location for nearby restaurants.");
+      }
+
+      return true;
+    } catch (error) {
+      const message = getCustomerLocationErrorMessage(error);
+      setErrorMessage(message);
+
+      if (!silently) {
+        toast.error(message);
+      }
+
+      return false;
+    } finally {
+      setIsResolvingCurrentLocation(false);
+    }
+  };
+
+  const saveManualLocation = async (address: string) => {
+    setIsSavingManualLocation(true);
+    setErrorMessage(undefined);
+
+    try {
+      const resolvedLocation = await geocodeCustomerLocation(address);
+
+      persistLocation({
+        latitude: resolvedLocation.latitude,
+        longitude: resolvedLocation.longitude,
+        address: resolvedLocation.address.trim() || address.trim(),
+        isTemporary: true,
+        source: "manual",
+      });
+      toast.success("Nearby restaurants updated for the selected address.");
+      return true;
+    } catch (error) {
+      const message = getApiErrorMessage(error, "Unable to resolve this address right now.");
+      setErrorMessage(message);
+      toast.error(message);
+      return false;
+    } finally {
+      setIsSavingManualLocation(false);
+    }
+  };
+
+  const saveMapLocation = async (coordinates: { latitude: number; longitude: number }) => {
+    setIsSavingMapLocation(true);
+    setErrorMessage(undefined);
+
+    try {
+      const resolvedLocation = await reverseGeocodeCustomerLocation(coordinates).catch(() => null);
+
+      persistLocation({
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude,
+        address:
+          resolvedLocation?.address?.trim() ||
+          `Pinned location near ${coordinates.latitude.toFixed(4)}, ${coordinates.longitude.toFixed(4)}`,
+        isTemporary: true,
+        source: "map",
+      });
+      toast.success("Nearby restaurants updated for the selected map location.");
+      return true;
+    } catch (error) {
+      const message = getApiErrorMessage(error, "Unable to use this map location right now.");
+      setErrorMessage(message);
+      toast.error(message);
+      return false;
+    } finally {
+      setIsSavingMapLocation(false);
+    }
+  };
+
+  const useSavedAddress = async (address: CustomerAddress) => {
+    if (!hasCustomerAddressCoordinates(address)) {
+      const message = "This saved address needs location details before it can be used for nearby restaurant search.";
+      setErrorMessage(message);
+      toast.error(message);
+      return false;
+    }
+
+    persistSavedAddressLocation(address);
+    toast.success(
+      address.isDefault
+        ? "Nearby restaurants updated from your default saved address."
+        : "Nearby restaurants updated from the selected saved address.",
+    );
+    return true;
+  };
+
+  useEffect(() => {
+    if (
+      !user?.id ||
+      user.role !== "CUSTOMER" ||
+      isLoadingSavedAddresses ||
+      selectedLocation ||
+      !hasResolvedInitialLocation ||
+      hasAttemptedAutoCurrentLocation.current
+    ) {
+      return;
+    }
+
+    hasAttemptedAutoCurrentLocation.current = true;
+    let isMounted = true;
+
+    void getBrowserGeolocationPermissionState().then((permissionState) => {
+      if (!isMounted || permissionState !== "granted") {
+        return;
+      }
+
+      void useCurrentLocation({ silently: true });
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [hasResolvedInitialLocation, isLoadingSavedAddresses, selectedLocation, user?.id, user?.role]);
+
+  return {
+    canManageSavedLocation: user?.role === "CUSTOMER" && Boolean(user.id),
+    errorMessage,
+    isBootstrappingLocation: !selectedLocation && !hasResolvedInitialLocation,
+    isLoadingSavedAddresses,
+    isResolvingCurrentLocation,
+    isSavingManualLocation,
+    isSavingMapLocation,
+    needsLocation: !selectedLocation && hasResolvedInitialLocation,
+    saveMapLocation,
+    saveManualLocation,
+    savedAddresses,
+    selectedLocation,
+    useSavedAddress,
+    useCurrentLocation,
+  };
+};
+
+const useRestaurantCatalogue = (
+  search?: string,
+  selectedLocation?: SelectedDiscoveryLocation | null,
+) => {
   const [liveRestaurants, setLiveRestaurants] = useState<CustomerRestaurantSummary[] | null>(null);
-  const [hasResolved, setHasResolved] = useState(false);
+  const [hasResolvedRestaurants, setHasResolvedRestaurants] = useState(false);
   const normalizedSearch = search?.trim() ?? "";
 
   useEffect(() => {
     let isMounted = true;
-    setHasResolved(false);
 
-    void getPublicRestaurants(normalizedSearch ? { search: normalizedSearch } : undefined)
+    if (!selectedLocation) {
+      setLiveRestaurants([]);
+      setHasResolvedRestaurants(true);
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    setLiveRestaurants([]);
+    setHasResolvedRestaurants(false);
+
+    void getPublicRestaurants({
+      ...(normalizedSearch ? { search: normalizedSearch } : {}),
+      latitude: selectedLocation.latitude,
+      longitude: selectedLocation.longitude,
+    })
       .then((rows) => {
         if (isMounted) {
           setLiveRestaurants(rows);
@@ -695,25 +1356,17 @@ const useRestaurantCatalogue = (search?: string) => {
       })
       .finally(() => {
         if (isMounted) {
-          setHasResolved(true);
+          setHasResolvedRestaurants(true);
         }
       });
 
     return () => {
       isMounted = false;
     };
-  }, [normalizedSearch]);
+  }, [normalizedSearch, selectedLocation?.latitude, selectedLocation?.longitude, selectedLocation?.updatedAt]);
 
-  const hasLiveData = Boolean(liveRestaurants?.length);
-  const shouldUseDemoFallback = !normalizedSearch && hasResolved && !hasLiveData;
-
-  const restaurantCards = hasLiveData
-    ? (liveRestaurants ?? []).map(mapLiveRestaurantCard)
-    : shouldUseDemoFallback
-      ? demoRestaurantCards
-      : [];
-
-  const categories = hasLiveData
+  const restaurantCards = (liveRestaurants ?? []).map(mapLiveRestaurantCard);
+  const categories = restaurantCards.length
     ? [
         "All",
         ...Array.from(
@@ -724,22 +1377,36 @@ const useRestaurantCatalogue = (search?: string) => {
           ),
         ),
       ]
-    : shouldUseDemoFallback
-      ? restaurantCategories
-      : ["All"];
+    : ["All"];
 
   return {
     restaurantCards,
     categories,
-    hasLiveData,
-    isLoading: !hasResolved,
+    isLoading: Boolean(selectedLocation) && !hasResolvedRestaurants,
   };
 };
 
 export const RestaurantListingPage = () => {
   const [searchInput, setSearchInput] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
-  const { restaurantCards, categories, isLoading } = useRestaurantCatalogue(appliedSearch);
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
+  const {
+    canManageSavedLocation,
+    errorMessage,
+    isBootstrappingLocation,
+    isLoadingSavedAddresses,
+    isResolvingCurrentLocation,
+    isSavingManualLocation,
+    isSavingMapLocation,
+    needsLocation,
+    saveMapLocation,
+    saveManualLocation,
+    savedAddresses,
+    selectedLocation,
+    useSavedAddress,
+    useCurrentLocation,
+  } = useDiscoveryLocation();
+  const { restaurantCards, categories, isLoading } = useRestaurantCatalogue(appliedSearch, selectedLocation);
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
   const [activeCategory, setActiveCategory] = useState("All");
   const [page, setPage] = useState(1);
@@ -782,44 +1449,69 @@ export const RestaurantListingPage = () => {
         </Link>
       }
     >
-      <SurfaceCard>
-        <div className="space-y-5">
-          <form
-            className="flex flex-col gap-3 sm:flex-row"
-            onSubmit={(event) => {
-              event.preventDefault();
-              setAppliedSearch(searchInput.trim());
-              setPage(1);
-            }}
-          >
-            <SearchBar
-              className="flex-1"
-              value={searchInput}
-              onChange={(event) => setSearchInput(event.target.value)}
-              placeholder="Search by restaurant, cuisine, dish, city, state, or locality"
-            />
-            <Button type="submit" className="shrink-0" disabled={isLoading}>
-              Search
-            </Button>
-          </form>
-          <div className="flex flex-wrap gap-3">
-            {categories.map((category) => (
-              <Chip
-                key={category}
-                active={activeCategory === category}
-                onClick={() => {
-                  setActiveCategory(category);
-                  setPage(1);
-                }}
-              >
-                {category}
-              </Chip>
-            ))}
-          </div>
-        </div>
-      </SurfaceCard>
+      <DiscoveryLocationNotice
+        canManageSavedLocation={canManageSavedLocation}
+        errorMessage={errorMessage}
+        isBootstrappingLocation={isBootstrappingLocation}
+        isResolvingCurrentLocation={isResolvingCurrentLocation}
+        onEditAddress={() => setIsLocationModalOpen(true)}
+        onUseCurrentLocation={() => void useCurrentLocation()}
+        selectedLocation={selectedLocation}
+      />
 
-      {filteredRestaurants.length ? (
+      {!needsLocation ? (
+        <SurfaceCard>
+          <div className="space-y-5">
+            <form
+              className="flex flex-col gap-3 sm:flex-row"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setAppliedSearch(searchInput.trim());
+                setPage(1);
+              }}
+            >
+              <SearchBar
+                className="flex-1"
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+                placeholder="Search by restaurant, cuisine, dish, city, state, or locality"
+              />
+              <Button type="submit" className="shrink-0" disabled={isLoading}>
+                Search
+              </Button>
+            </form>
+            <div className="flex flex-wrap gap-3">
+              {categories.map((category) => (
+                <Chip
+                  key={category}
+                  active={activeCategory === category}
+                  onClick={() => {
+                    setActiveCategory(category);
+                    setPage(1);
+                  }}
+                >
+                  {category}
+                </Chip>
+              ))}
+            </div>
+          </div>
+        </SurfaceCard>
+      ) : null}
+
+      {isBootstrappingLocation ? (
+        <SurfaceCard>
+          <p className="text-sm leading-7 text-ink-soft">Checking your default and saved delivery addresses.</p>
+        </SurfaceCard>
+      ) : needsLocation ? (
+        <EmptyState
+          title="Select a location to browse nearby restaurants"
+          description="Use a saved address, your current location, or enter a delivery address manually. Nearby restaurants will appear only after the address is resolved."
+        />
+      ) : isLoading && !filteredRestaurants.length ? (
+        <SurfaceCard>
+          <p className="text-sm leading-7 text-ink-soft">Finding the restaurants that can serve your nearby area.</p>
+        </SurfaceCard>
+      ) : filteredRestaurants.length ? (
         <>
           <div className="grid gap-6 lg:grid-cols-2">
             {paginatedRestaurants.map((restaurant) => (
@@ -838,10 +1530,40 @@ export const RestaurantListingPage = () => {
         </>
       ) : (
         <EmptyState
-          title="No restaurants matched that search"
-          description="Try a broader cuisine, restaurant name, city, state, or clear the search field to see the full catalogue."
+          title={appliedSearch ? "No nearby restaurants matched that search" : "No nearby restaurants found in your area"}
+          description={
+            appliedSearch
+              ? "Try a broader restaurant name or cuisine while staying within the current nearby delivery area."
+              : "We couldn't find restaurants close to this location right now. Change the temporary delivery address or try your current location again."
+          }
         />
       )}
+
+      <LocationSelectionModal
+        canManageSavedLocation={canManageSavedLocation}
+        open={isLocationModalOpen}
+        initialAddress={selectedLocation?.address}
+        initialCoordinates={
+          selectedLocation
+            ? {
+                latitude: selectedLocation.latitude,
+                longitude: selectedLocation.longitude,
+              }
+            : null
+        }
+        isLoadingSavedAddresses={isLoadingSavedAddresses}
+        isResolvingCurrentLocation={isResolvingCurrentLocation}
+        isSavingManualLocation={isSavingManualLocation}
+        isSavingMapLocation={isSavingMapLocation}
+        onClose={() => setIsLocationModalOpen(false)}
+        onSubmitManualAddress={saveManualLocation}
+        onUseCurrentLocation={useCurrentLocation}
+        onUseMapLocation={saveMapLocation}
+        onUseSavedAddress={useSavedAddress}
+        savedAddresses={savedAddresses}
+        selectedLocationAddressId={selectedLocation?.addressId ?? null}
+        selectedLocationSource={selectedLocation?.source}
+      />
     </PageShell>
   );
 };
@@ -850,7 +1572,24 @@ export const SearchResultsPage = () => {
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState(params.get("q") ?? "");
   const activeQuery = params.get("q")?.trim() ?? "";
-  const { restaurantCards, isLoading } = useRestaurantCatalogue(activeQuery);
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
+  const {
+    canManageSavedLocation,
+    errorMessage,
+    isBootstrappingLocation,
+    isLoadingSavedAddresses,
+    isResolvingCurrentLocation,
+    isSavingManualLocation,
+    isSavingMapLocation,
+    needsLocation,
+    saveMapLocation,
+    saveManualLocation,
+    savedAddresses,
+    selectedLocation,
+    useSavedAddress,
+    useCurrentLocation,
+  } = useDiscoveryLocation();
+  const { restaurantCards, isLoading } = useRestaurantCatalogue(activeQuery, selectedLocation);
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
   const results = restaurantCards;
 
@@ -876,21 +1615,54 @@ export const SearchResultsPage = () => {
         </Button>
       }
     >
-      <SurfaceCard>
-        <SearchBar
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Try 'Chennai', 'biryani', 'Anna Nagar', or 'croissant'"
-        />
-      </SurfaceCard>
+      <DiscoveryLocationNotice
+        canManageSavedLocation={canManageSavedLocation}
+        errorMessage={errorMessage}
+        isBootstrappingLocation={isBootstrappingLocation}
+        isResolvingCurrentLocation={isResolvingCurrentLocation}
+        onEditAddress={() => setIsLocationModalOpen(true)}
+        onUseCurrentLocation={() => void useCurrentLocation()}
+        selectedLocation={selectedLocation}
+      />
+
+      {!needsLocation ? (
+        <SurfaceCard>
+          <SearchBar
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Try 'Chennai', 'biryani', 'Anna Nagar', or 'croissant'"
+          />
+        </SurfaceCard>
+      ) : null}
 
       <SectionHeading
         eyebrow="Search results"
         title={params.get("q") ? `Results for "${params.get("q")}"` : "Start with a dish, cuisine, restaurant, or location"}
-        description={`${results.length} curated matches in the current catalogue.`}
+        description={
+          needsLocation
+            ? isBootstrappingLocation
+              ? "Checking your saved delivery addresses before loading the nearby catalogue."
+              : "Choose a delivery location first, then search only within the nearby restaurants for that address."
+            : isLoading
+              ? "Looking up the nearby catalogue for this location."
+              : `${results.length} nearby matches in the current catalogue.`
+        }
       />
 
-      {isLoading ? null : results.length ? (
+      {isBootstrappingLocation ? (
+        <SurfaceCard>
+          <p className="text-sm leading-7 text-ink-soft">Checking your saved delivery addresses for nearby restaurant search.</p>
+        </SurfaceCard>
+      ) : needsLocation ? (
+        <EmptyState
+          title="Set a location before searching restaurants"
+          description="Search results stay empty until a saved or temporary delivery address is selected."
+        />
+      ) : isLoading ? (
+        <SurfaceCard>
+          <p className="text-sm leading-7 text-ink-soft">Fetching nearby restaurants for the selected delivery area.</p>
+        </SurfaceCard>
+      ) : results.length ? (
         <div className="grid gap-6 lg:grid-cols-2">
           {results.map((restaurant) => (
             <RestaurantCard
@@ -905,10 +1677,40 @@ export const SearchResultsPage = () => {
         </div>
       ) : (
         <EmptyState
-          title="No restaurants matched that search"
-          description="Try a broader cuisine, restaurant name, location, or a dish like biryani, burrata, or croissant."
+          title={activeQuery ? "No nearby restaurants matched that search" : "No nearby restaurants found in your area"}
+          description={
+            activeQuery
+              ? "Try a broader cuisine, restaurant name, or dish while staying inside the nearby delivery radius."
+              : "Change the temporary delivery address or refresh your current location to search a different nearby area."
+          }
         />
       )}
+
+      <LocationSelectionModal
+        canManageSavedLocation={canManageSavedLocation}
+        open={isLocationModalOpen}
+        initialAddress={selectedLocation?.address}
+        initialCoordinates={
+          selectedLocation
+            ? {
+                latitude: selectedLocation.latitude,
+                longitude: selectedLocation.longitude,
+              }
+            : null
+        }
+        isLoadingSavedAddresses={isLoadingSavedAddresses}
+        isResolvingCurrentLocation={isResolvingCurrentLocation}
+        isSavingManualLocation={isSavingManualLocation}
+        isSavingMapLocation={isSavingMapLocation}
+        onClose={() => setIsLocationModalOpen(false)}
+        onSubmitManualAddress={saveManualLocation}
+        onUseCurrentLocation={useCurrentLocation}
+        onUseMapLocation={saveMapLocation}
+        onUseSavedAddress={useSavedAddress}
+        savedAddresses={savedAddresses}
+        selectedLocationAddressId={selectedLocation?.addressId ?? null}
+        selectedLocationSource={selectedLocation?.source}
+      />
     </PageShell>
   );
 };
@@ -919,8 +1721,26 @@ export const RestaurantDetailsPage = () => {
   const { requireCustomerAccess } = useCustomerActionGuard();
   const [liveRestaurant, setLiveRestaurant] = useState<CustomerRestaurantDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadErrorMessage, setLoadErrorMessage] = useState<string>();
+  const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const [selection, setSelection] = useState<CatalogItemSelection | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const {
+    canManageSavedLocation,
+    errorMessage,
+    isBootstrappingLocation,
+    isLoadingSavedAddresses,
+    isResolvingCurrentLocation,
+    isSavingManualLocation,
+    isSavingMapLocation,
+    needsLocation,
+    saveMapLocation,
+    saveManualLocation,
+    savedAddresses,
+    selectedLocation,
+    useSavedAddress,
+    useCurrentLocation,
+  } = useDiscoveryLocation();
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
 
   const handleCloseDetails = () => {
@@ -935,23 +1755,48 @@ export const RestaurantDetailsPage = () => {
   useEffect(() => {
     if (!slug) {
       setLiveRestaurant(null);
+      setLoadErrorMessage(undefined);
+      setIsLoading(false);
+      return;
+    }
+
+    if (isBootstrappingLocation) {
+      setLiveRestaurant(null);
+      setLoadErrorMessage(undefined);
+      setIsLoading(true);
+      return;
+    }
+
+    if (!selectedLocation) {
+      setLiveRestaurant(null);
+      setLoadErrorMessage(undefined);
       setIsLoading(false);
       return;
     }
 
     let isMounted = true;
     setLiveRestaurant(null);
+    setLoadErrorMessage(undefined);
     setIsLoading(true);
 
-    void getPublicRestaurantBySlug(slug)
+    void getPublicRestaurantBySlug(slug, {
+      latitude: selectedLocation.latitude,
+      longitude: selectedLocation.longitude,
+    })
       .then((restaurant) => {
         if (isMounted) {
           setLiveRestaurant(restaurant);
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (isMounted) {
           setLiveRestaurant(null);
+          setLoadErrorMessage(
+            getApiErrorMessage(
+              error,
+              "We couldn't load this restaurant for the selected delivery location right now.",
+            ),
+          );
         }
       })
       .finally(() => {
@@ -963,7 +1808,7 @@ export const RestaurantDetailsPage = () => {
     return () => {
       isMounted = false;
     };
-  }, [slug]);
+  }, [isBootstrappingLocation, selectedLocation, slug]);
 
   const handleAddToCart = async (payload: {
     restaurantId: number;
@@ -1007,21 +1852,8 @@ export const RestaurantDetailsPage = () => {
     setSelection(nextSelection);
   };
 
-  const handleUnavailableDemoAdd = (itemName: string) => {
-    if (
-      !requireCustomerAccess({
-        guestMessage: "Please login to add items to cart.",
-        wrongRoleMessage: "Sign in with a customer account to add items to cart.",
-      })
-    ) {
-      return;
-    }
-
-    toast.error(`Live menu data for ${itemName} is unavailable right now.`);
-  };
-
-  if (isLoading) {
-    return null;
+  if (!slug) {
+    return <Navigate to="/404" replace />;
   }
 
   if (liveRestaurant) {
@@ -1069,6 +1901,16 @@ export const RestaurantDetailsPage = () => {
             </>
           }
         >
+          <DiscoveryLocationNotice
+            canManageSavedLocation={canManageSavedLocation}
+            errorMessage={errorMessage}
+            isBootstrappingLocation={isBootstrappingLocation}
+            isResolvingCurrentLocation={isResolvingCurrentLocation}
+            onEditAddress={() => setIsLocationModalOpen(true)}
+            onUseCurrentLocation={() => void useCurrentLocation()}
+            selectedLocation={selectedLocation}
+          />
+
           <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
             <SurfaceCard className="overflow-hidden p-0">
               <img
@@ -1206,6 +2048,32 @@ export const RestaurantDetailsPage = () => {
           </div>
         </PageShell>
 
+        <LocationSelectionModal
+          canManageSavedLocation={canManageSavedLocation}
+          open={isLocationModalOpen}
+          initialAddress={selectedLocation?.address}
+          initialCoordinates={
+            selectedLocation
+              ? {
+                  latitude: selectedLocation.latitude,
+                  longitude: selectedLocation.longitude,
+                }
+              : null
+          }
+          isLoadingSavedAddresses={isLoadingSavedAddresses}
+          isResolvingCurrentLocation={isResolvingCurrentLocation}
+          isSavingManualLocation={isSavingManualLocation}
+          isSavingMapLocation={isSavingMapLocation}
+          onClose={() => setIsLocationModalOpen(false)}
+          onSubmitManualAddress={saveManualLocation}
+          onUseCurrentLocation={useCurrentLocation}
+          onUseMapLocation={saveMapLocation}
+          onUseSavedAddress={useSavedAddress}
+          savedAddresses={savedAddresses}
+          selectedLocationAddressId={selectedLocation?.addressId ?? null}
+          selectedLocationSource={selectedLocation?.source}
+        />
+
         <CatalogItemModal
           open={Boolean(selection)}
           selection={selection}
@@ -1217,102 +2085,98 @@ export const RestaurantDetailsPage = () => {
     );
   }
 
-  const demoRestaurant = getRestaurantBySlug(slug);
-
-  if (!demoRestaurant) {
-    return <Navigate to="/404" replace />;
-  }
+  const isOutOfAreaRestaurant = loadErrorMessage?.includes("selected delivery location") ?? false;
 
   return (
     <PageShell
-      eyebrow={demoRestaurant.area}
-      title={demoRestaurant.name}
-      description={demoRestaurant.heroNote}
+      eyebrow="Restaurant availability"
+      title={
+        isBootstrappingLocation
+          ? "Checking the delivery area for this restaurant."
+          : needsLocation
+            ? "Choose a delivery location first."
+            : isOutOfAreaRestaurant
+              ? "This restaurant is outside your current delivery area."
+              : "We couldn't open this restaurant right now."
+      }
+      description={
+        isBootstrappingLocation
+          ? "Your default or saved delivery location is checked before this menu loads."
+          : needsLocation
+            ? "Restaurant details appear only after the active delivery location is resolved."
+            : isOutOfAreaRestaurant
+              ? "Change the active delivery location to see if this restaurant serves another nearby area."
+              : "Return to nearby restaurants or retry after confirming the active delivery location."
+      }
       actions={
         <>
           <Button type="button" variant="secondary" onClick={handleCloseDetails}>
-            Close
+            Back to restaurants
           </Button>
-          <Link to="/cart" className={linkButtonClassName}>
-            Go to cart
-          </Link>
-          <Link
-            to="/favorites"
-            className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-5 py-3 text-sm font-semibold text-ink shadow-soft"
-          >
-            Save restaurant
-          </Link>
+          <Button type="button" onClick={() => setIsLocationModalOpen(true)}>
+            {selectedLocation ? "Change location" : "Select location"}
+          </Button>
         </>
       }
     >
-      <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
-        <SurfaceCard className="overflow-hidden p-0">
-          <img src={demoRestaurant.image} alt={demoRestaurant.name} className="h-[420px] w-full object-cover" />
-        </SurfaceCard>
-        <SurfaceCard className="space-y-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-sm text-ink-soft">{demoRestaurant.cuisineLabel}</p>
-              <p className="mt-3 text-sm leading-7 text-ink-soft">{demoRestaurant.description}</p>
-            </div>
-            <RatingBadge value={demoRestaurant.rating.toFixed(1)} />
-          </div>
-          <div className="flex flex-wrap gap-3">
-            {demoRestaurant.tags.map((tag) => (
-              <Chip key={tag}>{tag}</Chip>
-            ))}
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Address</p>
-              <p className="mt-2 text-sm text-ink-soft">{demoRestaurant.address}</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Hours</p>
-              <p className="mt-2 text-sm text-ink-soft">{demoRestaurant.hours}</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Delivery time</p>
-              <p className="mt-2 text-sm text-ink-soft">{demoRestaurant.deliveryTime} min average</p>
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Cost for two</p>
-              <p className="mt-2 text-sm text-ink-soft">{demoRestaurant.costForTwo}</p>
-            </div>
-          </div>
-        </SurfaceCard>
-      </div>
-
-      <SectionHeading
-        eyebrow="Menu"
-        title="Signature dishes"
-        description="A polished demo menu presentation wired to the existing card system."
+      <DiscoveryLocationNotice
+        canManageSavedLocation={canManageSavedLocation}
+        errorMessage={errorMessage}
+        isBootstrappingLocation={isBootstrappingLocation}
+        isResolvingCurrentLocation={isResolvingCurrentLocation}
+        onEditAddress={() => setIsLocationModalOpen(true)}
+        onUseCurrentLocation={() => void useCurrentLocation()}
+        selectedLocation={selectedLocation}
       />
 
-      <div className="space-y-6">
-        {demoRestaurant.menu.map((category) => (
-          <div key={category.category} className="space-y-4">
-            <h3 className="font-display text-4xl font-semibold text-ink">{category.category}</h3>
-            <div className="grid gap-5">
-              {category.items.map((item) => (
-                <FoodItemCard key={item.name} {...item} onAdd={() => handleUnavailableDemoAdd(item.name)} />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+      {isBootstrappingLocation ? (
+        <SurfaceCard>
+          <p className="text-sm leading-7 text-ink-soft">Checking your default and saved delivery addresses for this restaurant.</p>
+        </SurfaceCard>
+      ) : needsLocation ? (
+        <EmptyState
+          title="Set a location before opening restaurant details"
+          description="This menu stays hidden until a saved or temporary delivery address is selected."
+        />
+      ) : isLoading ? (
+        <SurfaceCard>
+          <p className="text-sm leading-7 text-ink-soft">Checking whether this restaurant serves the selected nearby delivery area.</p>
+        </SurfaceCard>
+      ) : (
+        <EmptyState
+          title={isOutOfAreaRestaurant ? "Restaurant unavailable for this location" : "Restaurant not available"}
+          description={
+            loadErrorMessage ??
+            "Change the delivery location or return to the nearby restaurant list to keep browsing."
+          }
+        />
+      )}
 
-      <SectionHeading
-        eyebrow="Guest sentiment"
-        title="Recent reviews"
-        description="Curated review cards replace the earlier single-screen shell and keep the premium reading rhythm intact."
+      <LocationSelectionModal
+        canManageSavedLocation={canManageSavedLocation}
+        open={isLocationModalOpen}
+        initialAddress={selectedLocation?.address}
+        initialCoordinates={
+          selectedLocation
+            ? {
+                latitude: selectedLocation.latitude,
+                longitude: selectedLocation.longitude,
+              }
+            : null
+        }
+        isLoadingSavedAddresses={isLoadingSavedAddresses}
+        isResolvingCurrentLocation={isResolvingCurrentLocation}
+        isSavingManualLocation={isSavingManualLocation}
+        isSavingMapLocation={isSavingMapLocation}
+        onClose={() => setIsLocationModalOpen(false)}
+        onSubmitManualAddress={saveManualLocation}
+        onUseCurrentLocation={useCurrentLocation}
+        onUseMapLocation={saveMapLocation}
+        onUseSavedAddress={useSavedAddress}
+        savedAddresses={savedAddresses}
+        selectedLocationAddressId={selectedLocation?.addressId ?? null}
+        selectedLocationSource={selectedLocation?.source}
       />
-
-      <div className="grid gap-5 lg:grid-cols-2">
-        {demoRestaurant.reviews.map((review) => (
-          <ReviewCard key={`${review.author}-${review.date}`} {...review} />
-        ))}
-      </div>
     </PageShell>
   );
 };

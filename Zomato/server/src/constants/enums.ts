@@ -2,6 +2,7 @@ export const Role = {
   CUSTOMER: "CUSTOMER",
   RESTAURANT_OWNER: "RESTAURANT_OWNER",
   DELIVERY_PARTNER: "DELIVERY_PARTNER",
+  REGIONAL_MANAGER: "REGIONAL_MANAGER",
   OPERATIONS_MANAGER: "OPERATIONS_MANAGER",
   ADMIN: "ADMIN",
 } as const;
@@ -100,6 +101,18 @@ export const DeliveryAvailabilityStatus = {
 } as const;
 export type DeliveryAvailabilityStatus =
   (typeof DeliveryAvailabilityStatus)[keyof typeof DeliveryAvailabilityStatus];
+
+export const DeliveryOfferStatus = {
+  PENDING: "PENDING",
+  ACCEPTED: "ACCEPTED",
+  REJECTED: "REJECTED",
+  EXPIRED: "EXPIRED",
+  MISSED: "MISSED",
+  RELEASED: "RELEASED",
+  CANCELLED: "CANCELLED",
+} as const;
+export type DeliveryOfferStatus =
+  (typeof DeliveryOfferStatus)[keyof typeof DeliveryOfferStatus];
 
 export const NotificationType = {
   ORDER: "ORDER",

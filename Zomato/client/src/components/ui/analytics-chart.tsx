@@ -9,7 +9,7 @@ type AnalyticsChartProps = {
 
 export const AnalyticsChart = ({ data, xKey, yKey, title }: AnalyticsChartProps) => {
   return (
-    <div className="rounded-[2rem] border border-white/70 bg-white/80 p-5 shadow-soft">
+    <div className="min-w-0 rounded-[2rem] border border-white/70 bg-white/80 p-5 shadow-soft">
       <h3 className="font-display text-3xl font-semibold text-ink">{title}</h3>
       <div className="mt-6 h-72">
         <ResponsiveContainer width="100%" height="100%">

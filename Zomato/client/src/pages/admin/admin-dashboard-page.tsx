@@ -37,7 +37,7 @@ export const AdminDashboardPage = () => {
 
   if (isLoading || !dashboard) {
     return (
-      <div className="space-y-8">
+      <div className="min-w-0 space-y-8">
         <SectionHeading
           eyebrow="Admin console"
           title="Platform health in one premium control room."
@@ -50,7 +50,7 @@ export const AdminDashboardPage = () => {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="min-w-0 space-y-8">
       <SectionHeading
         eyebrow="Admin console"
         title="Platform health in one premium control room."
@@ -66,7 +66,7 @@ export const AdminDashboardPage = () => {
         <DashboardStatCard label="Revenue" value={formatCurrency(dashboard.stats.grossMerchandiseValue)} hint={`${dashboard.stats.deliveredOrders} delivered orders`} />
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
         <AnalyticsChart
           data={dashboard.ordersByStatus.map((item) => ({ label: toLabel(item.status), value: item.count }))}
           xKey="label"
@@ -84,7 +84,7 @@ export const AdminDashboardPage = () => {
         </SurfaceCard>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
         <SurfaceCard className="space-y-5">
           <SectionHeading title="Recent orders" description="Fresh activity across the platform." />
           <AdminDataTable

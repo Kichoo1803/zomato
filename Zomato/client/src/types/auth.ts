@@ -2,6 +2,7 @@ export type UserRole =
   | "CUSTOMER"
   | "RESTAURANT_OWNER"
   | "DELIVERY_PARTNER"
+  | "REGIONAL_MANAGER"
   | "OPERATIONS_MANAGER"
   | "ADMIN";
 

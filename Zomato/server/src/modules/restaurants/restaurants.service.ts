@@ -1,9 +1,15 @@
 import { Prisma } from "@prisma/client";
 import { FoodType, Role } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
+import { env } from "../../config/env.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
-import { buildAddressSearchText, geocodeAddressText } from "../../utils/geo.js";
+import {
+  buildAddressSearchText,
+  geocodeAddressText,
+  hasCoordinates,
+  haversineDistanceKm,
+} from "../../utils/geo.js";
 import { getPagination, getPaginationMeta } from "../../utils/pagination.js";
 import { slugify } from "../../utils/slug.js";
 
@@ -18,6 +24,8 @@ const listSelect = {
   area: true,
   city: true,
   state: true,
+  latitude: true,
+  longitude: true,
   avgRating: true,
   totalReviews: true,
   costForTwo: true,
@@ -241,6 +249,75 @@ const getRestaurantOrderBy = (sort?: string): Prisma.RestaurantOrderByWithRelati
   }
 };
 
+const DEFAULT_DISCOVERY_RADIUS_KM = Math.min(
+  env.RESTAURANT_DISCOVERY_DEFAULT_RADIUS_KM,
+  env.RESTAURANT_DISCOVERY_MAX_RADIUS_KM,
+);
+const MAX_DISCOVERY_RADIUS_KM = Math.max(
+  env.RESTAURANT_DISCOVERY_DEFAULT_RADIUS_KM,
+  env.RESTAURANT_DISCOVERY_MAX_RADIUS_KM,
+);
+const KILOMETERS_PER_LATITUDE_DEGREE = 111.32;
+
+const isValidLatitude = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= -90 && value <= 90;
+
+const isValidLongitude = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= -180 && value <= 180;
+
+const getDiscoveryOrigin = (query: Record<string, unknown>) => {
+  if (!isValidLatitude(query.latitude) || !isValidLongitude(query.longitude)) {
+    return null;
+  }
+
+  return {
+    latitude: query.latitude,
+    longitude: query.longitude,
+  };
+};
+
+const getDiscoveryRadiusKm = (radiusKm: unknown) => {
+  const requestedRadiusKm =
+    typeof radiusKm === "number" && Number.isFinite(radiusKm) && radiusKm >= 0
+      ? radiusKm
+      : DEFAULT_DISCOVERY_RADIUS_KM;
+
+  return Math.min(requestedRadiusKm, MAX_DISCOVERY_RADIUS_KM);
+};
+
+const getNearbyRestaurantWhere = (
+  where: Prisma.RestaurantWhereInput,
+  origin: { latitude: number; longitude: number },
+  radiusKm: number,
+): Prisma.RestaurantWhereInput => {
+  const latitudeDelta = radiusKm / KILOMETERS_PER_LATITUDE_DEGREE;
+  const safeLongitudeDivisor = Math.max(
+    Math.cos((origin.latitude * Math.PI) / 180) * KILOMETERS_PER_LATITUDE_DEGREE,
+    0.01,
+  );
+  const longitudeDelta = radiusKm / safeLongitudeDivisor;
+
+  return {
+    AND: [
+      where,
+      {
+        latitude: {
+          not: null,
+          gte: origin.latitude - latitudeDelta,
+          lte: origin.latitude + latitudeDelta,
+        },
+      },
+      {
+        longitude: {
+          not: null,
+          gte: Math.max(-180, origin.longitude - longitudeDelta),
+          lte: Math.min(180, origin.longitude + longitudeDelta),
+        },
+      },
+    ],
+  };
+};
+
 const buildListWhere = (query: Record<string, unknown>): Prisma.RestaurantWhereInput => {
   const clauses: Prisma.RestaurantWhereInput[] = [{ isActive: true }];
 
@@ -367,25 +444,63 @@ export const restaurantsService = {
     });
     const where = buildListWhere(query);
     const orderBy = getRestaurantOrderBy(typeof query.sort === "string" ? query.sort : undefined);
+    const origin = getDiscoveryOrigin(query);
 
-    const [restaurants, total] = await Promise.all([
-      prisma.restaurant.findMany({
-        where,
-        select: listSelect,
-        orderBy,
-        skip: pagination.skip,
-        take: pagination.limit,
-      }),
-      prisma.restaurant.count({ where }),
-    ]);
+    if (!origin) {
+      return {
+        restaurants: [],
+        meta: {
+          ...getPaginationMeta({
+            total: 0,
+          page: pagination.page,
+          limit: pagination.limit,
+          }),
+          appliedRadiusKm: DEFAULT_DISCOVERY_RADIUS_KM,
+          isLocationFiltered: false,
+          requiresLocation: true,
+        },
+      };
+    }
+
+    const radiusKm = getDiscoveryRadiusKm(query.radiusKm);
+    const nearbyRestaurants = await prisma.restaurant.findMany({
+      where: getNearbyRestaurantWhere(where, origin, radiusKm),
+      select: listSelect,
+      orderBy,
+    });
+
+    // Use a coarse coordinate box in Prisma first, then apply exact Haversine filtering in memory.
+    const filteredRestaurants = nearbyRestaurants.flatMap((restaurant) => {
+      if (!hasCoordinates(restaurant)) {
+        return [];
+      }
+
+      const distanceKm = haversineDistanceKm(origin, restaurant);
+      if (distanceKm > radiusKm) {
+        return [];
+      }
+
+      return [
+        {
+          ...restaurant,
+          distanceKm: Number(distanceKm.toFixed(2)),
+        },
+      ];
+    });
+    const restaurants = filteredRestaurants.slice(pagination.skip, pagination.skip + pagination.limit);
+    const total = filteredRestaurants.length;
 
     return {
       restaurants,
-      meta: getPaginationMeta({
-        total,
-        page: pagination.page,
-        limit: pagination.limit,
-      }),
+      meta: {
+        ...getPaginationMeta({
+          total,
+          page: pagination.page,
+          limit: pagination.limit,
+        }),
+        appliedRadiusKm: radiusKm,
+        isLocationFiltered: true,
+      },
     };
   },
 
@@ -418,7 +533,7 @@ export const restaurantsService = {
     });
   },
 
-  async getBySlug(slug: string) {
+  async getBySlug(slug: string, query: Record<string, unknown> = {}) {
     const restaurant = await prisma.restaurant.findUnique({
       where: { slug },
       select: publicDetailSelect,
@@ -428,7 +543,34 @@ export const restaurantsService = {
       throw new AppError(StatusCodes.NOT_FOUND, "Restaurant not found", "RESTAURANT_NOT_FOUND");
     }
 
-    return restaurant;
+    const origin = getDiscoveryOrigin(query);
+    if (!origin) {
+      return restaurant;
+    }
+
+    const radiusKm = getDiscoveryRadiusKm(query.radiusKm);
+
+    if (!hasCoordinates(restaurant)) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "This restaurant is not available for the selected delivery location.",
+        "RESTAURANT_NOT_SERVICEABLE_FOR_LOCATION",
+      );
+    }
+
+    const distanceKm = haversineDistanceKm(origin, restaurant);
+    if (distanceKm > radiusKm) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "This restaurant is not available for the selected delivery location.",
+        "RESTAURANT_NOT_SERVICEABLE_FOR_LOCATION",
+      );
+    }
+
+    return {
+      ...restaurant,
+      distanceKm: Number(distanceKm.toFixed(2)),
+    };
   },
 
   async listForOwner(userId: number) {
@@ -442,6 +584,18 @@ export const restaurantsService = {
   async create(user: { id: number; role: Role }, input: Record<string, unknown>) {
     const ownerId =
       user.role === Role.ADMIN && typeof input.ownerId === "number" ? input.ownerId : user.id;
+    const owner = await prisma.user.findUnique({
+      where: { id: ownerId },
+      select: {
+        id: true,
+        regionId: true,
+      },
+    });
+
+    if (!owner) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Restaurant owner not found", "OWNER_NOT_FOUND");
+    }
+
     const slug = await generateUniqueSlug(String(input.name));
     const geocodedCoordinates =
       typeof input.latitude === "number" && typeof input.longitude === "number"
@@ -460,6 +614,7 @@ export const restaurantsService = {
       const created = await tx.restaurant.create({
         data: {
           ownerId,
+          regionId: owner.regionId,
           name: String(input.name),
           slug,
           description: input.description as string | undefined,

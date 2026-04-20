@@ -22,6 +22,10 @@ type AdminUserBase = {
   phone?: string | null;
   profileImage?: string | null;
   role: UserRole;
+  regionId?: number | null;
+  opsState?: string | null;
+  opsDistrict?: string | null;
+  opsNotes?: string | null;
   isActive: boolean;
   emailVerified: boolean;
   phoneVerified: boolean;
@@ -32,6 +36,36 @@ type AdminUserBase = {
 };
 
 export type AdminUser = AdminUserBase;
+
+export type AdminRegion = {
+  id: number;
+  name: string;
+  districtName: string;
+  stateName: string;
+  code: string;
+  slug: string;
+  notes?: string | null;
+  primaryPincode?: string | null;
+  additionalPincodes: string[];
+  isActive: boolean;
+  managerUserId?: number | null;
+  createdAt: string;
+  updatedAt: string;
+  manager?: {
+    id: number;
+    fullName: string;
+    email: string;
+    phone?: string | null;
+    profileImage?: string | null;
+    role: UserRole;
+    isActive: boolean;
+  } | null;
+  counts: {
+    restaurantsCount: number;
+    deliveryPartnersCount: number;
+    usersCount: number;
+  };
+};
 
 export type AdminDashboard = {
   stats: {
@@ -531,8 +565,12 @@ export const toSessionUser = (user: AdminUser): AuthUser =>
 export const getAdminDashboard = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<AdminDashboard>>("/admin/analytics/dashboard"));
 
-export const getUsers = async () =>
-  unwrapData(await apiClient.get<ApiEnvelope<{ users: AdminUser[] }>>("/users")).users;
+export const getUsers = async (params?: {
+  role?: UserRole;
+  search?: string;
+  isActive?: boolean;
+}) =>
+  unwrapData(await apiClient.get<ApiEnvelope<{ users: AdminUser[] }>>("/users", { params })).users;
 
 export const createUser = async (payload: {
   fullName: string;
@@ -562,6 +600,45 @@ export const updateUser = async (
 
 export const disableUser = async (userId: number) =>
   unwrapData(await apiClient.delete<ApiEnvelope<{ user: AdminUser }>>(`/users/${userId}`)).user;
+
+export const getRegionsAdmin = async (params?: {
+  search?: string;
+  isActive?: boolean;
+  assignmentStatus?: "ASSIGNED" | "UNASSIGNED";
+}) =>
+  unwrapData(await apiClient.get<ApiEnvelope<{ regions: AdminRegion[] }>>("/regions", { params })).regions;
+
+export const createRegionAdmin = async (payload: {
+  name?: string;
+  districtName: string;
+  stateName: string;
+  code?: string;
+  slug?: string;
+  notes?: string;
+  primaryPincode?: string;
+  additionalPincodes?: string[];
+  isActive?: boolean;
+  managerUserId?: number | null;
+}) =>
+  unwrapData(await apiClient.post<ApiEnvelope<{ region: AdminRegion }>>("/regions", payload)).region;
+
+export const updateRegionAdmin = async (
+  regionId: number,
+  payload: Partial<{
+    name: string;
+      districtName: string;
+      stateName: string;
+      code: string;
+      slug: string;
+      notes: string;
+      primaryPincode: string;
+      additionalPincodes: string[];
+      isActive: boolean;
+      managerUserId: number | null;
+    }>,
+) =>
+  unwrapData(await apiClient.patch<ApiEnvelope<{ region: AdminRegion }>>(`/regions/${regionId}`, payload))
+    .region;
 
 export const getRestaurants = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ restaurants: AdminRestaurant[] }>>("/restaurants/admin/all"))
@@ -667,10 +744,18 @@ export const updateOrderStatus = async (orderId: number, payload: { status: stri
     await apiClient.patch<ApiEnvelope<{ order: AdminOrder }>>(`/orders/${orderId}/status`, payload),
   ).order;
 
-export const assignDeliveryPartnerToOrder = async (orderId: number, deliveryPartnerId: number) =>
+export const assignDeliveryPartnerToOrder = async (
+  orderId: number,
+  deliveryPartnerId: number,
+  payload: {
+    emergencyOverride?: true;
+    overrideReason?: string;
+  },
+) =>
   unwrapData(
     await apiClient.patch<ApiEnvelope<{ order: AdminOrder }>>(`/orders/${orderId}/assign-delivery`, {
       deliveryPartnerId,
+      ...payload,
     }),
   ).order;
 

@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   Map,
+  MapPinned,
   MessageSquare,
   Settings,
   Shapes,
@@ -65,6 +66,7 @@ const deliveryNavItems = [
 const adminNavItems = [
   { to: "/admin/dashboard", label: "Overview", icon: LayoutDashboard },
   { to: "/admin/live-map", label: "Live map", icon: Map },
+  { to: "/admin/regions", label: "Regions", icon: MapPinned },
   { to: "/admin/users", label: "Users", icon: Users },
   { to: "/admin/restaurants", label: "Restaurants", icon: Store },
   { to: "/admin/delivery-partners", label: "Delivery", icon: Bike },
@@ -137,7 +139,7 @@ export const DashboardLayout = () => {
   const currentSection = sectionMeta[section];
   const shouldShowRealtimeNotifications = Boolean(
     user?.role &&
-      ["RESTAURANT_OWNER", "DELIVERY_PARTNER", "OPERATIONS_MANAGER", "ADMIN"].includes(user.role),
+      ["RESTAURANT_OWNER", "DELIVERY_PARTNER", "REGIONAL_MANAGER", "OPERATIONS_MANAGER", "ADMIN"].includes(user.role),
   );
   const { unreadCount } = useNotificationInbox({
     enabled: shouldShowRealtimeNotifications,
@@ -183,7 +185,7 @@ export const DashboardLayout = () => {
   return (
     <div
       className={cn(
-        "mx-auto grid min-h-screen max-w-7xl gap-6 overflow-x-hidden px-4 py-6 lg:grid-cols-[280px_minmax(0,1fr)]",
+        "mx-auto grid min-h-screen max-w-7xl gap-6 overflow-x-clip px-4 py-6 lg:grid-cols-[280px_minmax(0,1fr)]",
         section === "owner" && "lg:h-[calc(100dvh-3rem)] lg:overflow-hidden",
       )}
     >
@@ -246,11 +248,17 @@ export const DashboardLayout = () => {
       </aside>
       <main
         className={cn(
-          "glass-surface min-w-0 overflow-x-hidden rounded-[2rem] border border-white/60 p-6 shadow-soft",
+          "glass-surface min-w-0 overflow-x-clip rounded-[2rem] border border-white/60 p-6 shadow-soft",
           section === "owner" && "lg:min-h-0 lg:overflow-hidden",
         )}
       >
-        <div className={cn(section === "owner" && "lg:h-full lg:overflow-y-auto lg:pr-1")}>
+        <div
+          className={cn(
+            "w-full min-w-0",
+            section === "admin" && "overflow-x-auto pb-1",
+            section === "owner" && "lg:h-full lg:overflow-y-auto lg:pr-1",
+          )}
+        >
           <Outlet />
         </div>
       </main>

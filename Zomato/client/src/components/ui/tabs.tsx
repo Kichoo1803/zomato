@@ -17,6 +17,7 @@ export const Tabs = ({ items, value, onChange }: TabsProps) => {
       {items.map((item) => (
         <button
           key={item.value}
+          type="button"
           onClick={() => onChange(item.value)}
           className={cn(
             "rounded-full px-4 py-2 text-sm font-semibold text-ink-soft transition",

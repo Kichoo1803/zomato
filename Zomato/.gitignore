@@ -14,8 +14,12 @@ client/dist
 
 server/node_modules
 server/dist
+server/src/generated
 server/prisma/dev.db
 server/prisma/dev.db-journal
+server/prisma/backups/
+server/prisma/reports/
+server/prisma/mongo-rs/
 
 coverage
 *.log

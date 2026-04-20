@@ -6,6 +6,7 @@ import { ZodError } from "zod";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 import { AppError } from "../utils/app-error.js";
+import { getPrismaRuntimeErrorResponse } from "../utils/prisma-runtime-errors.js";
 
 const { JsonWebTokenError, TokenExpiredError } = jwt;
 
@@ -60,13 +61,32 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
 
   if (error instanceof ZodError) {
     const isAuthRequest = req.originalUrl.startsWith("/api/v1/auth/");
+    const flattenedError = error.flatten();
 
     if (isAuthRequest) {
+      const isLoginRequest = req.originalUrl === "/api/v1/auth/login";
+
+      if (isLoginRequest) {
+        const emailErrors = flattenedError.fieldErrors.email ?? [];
+        const passwordErrors = flattenedError.fieldErrors.password ?? [];
+        const hasMissingCredentials = [...emailErrors, ...passwordErrors].some((message) =>
+          message.toLowerCase().includes("required"),
+        );
+
+        res.status(StatusCodes.BAD_REQUEST).json({
+          success: false,
+          code: hasMissingCredentials ? "MISSING_CREDENTIALS" : "BAD_REQUEST",
+          message: hasMissingCredentials ? "Email and password are required" : "Request validation failed",
+          details: flattenedError,
+        });
+        return;
+      }
+
       res.status(StatusCodes.BAD_REQUEST).json({
         success: false,
         code: "BAD_REQUEST",
         message: "Request validation failed",
-        details: error.flatten(),
+        details: flattenedError,
       });
       return;
     }
@@ -75,7 +95,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       success: false,
       code: "VALIDATION_ERROR",
       message: "Request validation failed",
-      details: error.flatten(),
+      details: flattenedError,
     });
     return;
   }
@@ -98,6 +118,20 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     return;
   }
 
+  const prismaRuntimeError = getPrismaRuntimeErrorResponse(error, {
+    isDevelopment: env.isDevelopment,
+  });
+
+  if (prismaRuntimeError) {
+    res.status(prismaRuntimeError.statusCode).json({
+      success: false,
+      code: prismaRuntimeError.code,
+      message: prismaRuntimeError.message,
+      details: prismaRuntimeError.details,
+    });
+    return;
+  }
+
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === "P2002") {
       res.status(StatusCodes.CONFLICT).json({
@@ -114,7 +148,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
         success: false,
         code: error.code,
         message: env.isDevelopment
-          ? "The database schema is out of date. Run `npm run prisma:sync` for local SQLite development, or `npm run prisma:migrate:deploy` for a migrated deployment target, then restart the server."
+          ? "The database schema is out of date. Run `npm run prisma:push` and `npm run prisma:generate`, then restart the server."
           : "A database request failed",
         details: env.isDevelopment ? error.meta : undefined,
       });
@@ -126,28 +160,6 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       code: error.code,
       message: "A database request failed",
       details: error.meta,
-    });
-    return;
-  }
-
-  if (error instanceof Prisma.PrismaClientInitializationError) {
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-      success: false,
-      code: "DATABASE_CONNECTION_FAILED",
-      message: env.isDevelopment
-        ? "The server could not connect to the database. Check DATABASE_URL and make sure the database is reachable."
-        : "A database request failed",
-    });
-    return;
-  }
-
-  if (error instanceof Prisma.PrismaClientValidationError) {
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-      success: false,
-      code: "PRISMA_CLIENT_OUT_OF_SYNC",
-      message: env.isDevelopment
-        ? "The Prisma client is out of sync with the schema. Run `npm run prisma:generate` and restart the server."
-        : "A database request failed",
     });
     return;
   }

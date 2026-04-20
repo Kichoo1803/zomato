@@ -27,7 +27,10 @@ export const listAdminRestaurants = asyncHandler(async (req, res) => {
 });
 
 export const getRestaurantBySlug = asyncHandler(async (req, res) => {
-  const restaurant = await restaurantsService.getBySlug(String(req.params.slug));
+  const restaurant = await restaurantsService.getBySlug(
+    String(req.params.slug),
+    req.query as Record<string, unknown>,
+  );
 
   return sendSuccess(res, {
     message: "Restaurant fetched successfully",

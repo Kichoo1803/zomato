@@ -45,10 +45,11 @@ export const assignDeliveryPartner = asyncHandler(async (req, res) => {
     req.user!,
     Number(req.params.orderId),
     Number(req.body.deliveryPartnerId),
+    req.body,
   );
 
   return sendSuccess(res, {
-    message: "Delivery partner assigned successfully",
+    message: "Emergency delivery override applied successfully",
     data: { order },
   });
 });

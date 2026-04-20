@@ -8,6 +8,8 @@ export type RegionOptions = {
 const sortValues = (values: Iterable<string>) =>
   [...new Set(values)].sort((left, right) => left.localeCompare(right, "en-IN"));
 
+export const INDIA_PINCODE_REGEX = /^[1-9][0-9]{5}$/;
+
 export const mergeRegionOptions = (dynamicOptions?: Partial<RegionOptions> | null): RegionOptions => {
   const states = sortValues([
     ...Object.keys(INDIA_REGION_OPTIONS),
@@ -30,6 +32,9 @@ export const mergeRegionOptions = (dynamicOptions?: Partial<RegionOptions> | nul
   };
 };
 
+export const getIndianStateOptions = (dynamicOptions?: Partial<RegionOptions> | null) =>
+  mergeRegionOptions(dynamicOptions).states;
+
 export const getDistrictOptions = (state?: string | null, options?: Partial<RegionOptions> | null) => {
   if (!state) {
     return [];
@@ -37,3 +42,6 @@ export const getDistrictOptions = (state?: string | null, options?: Partial<Regi
 
   return mergeRegionOptions(options).districtsByState[state] ?? [];
 };
+
+export const isValidIndianPincode = (value?: string | null) =>
+  Boolean(value && INDIA_PINCODE_REGEX.test(value.trim()));

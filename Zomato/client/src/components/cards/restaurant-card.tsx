@@ -1,4 +1,4 @@
-import { Clock3, Heart } from "lucide-react";
+import { Clock3, Heart, MapPin } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { RatingBadge } from "@/components/ui/rating-badge";
@@ -13,6 +13,7 @@ type RestaurantCardProps = {
   cuisineLabel: string;
   rating: number;
   deliveryTime: number;
+  distanceKm?: number | null;
   costForTwo: string;
   isFavorite?: boolean;
   isFavoritePending?: boolean;
@@ -30,12 +31,18 @@ export const RestaurantCard = ({
   cuisineLabel,
   rating,
   deliveryTime,
+  distanceKm,
   costForTwo,
   isFavorite = false,
   isFavoritePending = false,
   favoriteActionLabel,
   onFavoriteToggle,
 }: RestaurantCardProps) => {
+  const distanceLabel =
+    typeof distanceKm === "number" && Number.isFinite(distanceKm)
+      ? `${distanceKm < 10 ? distanceKm.toFixed(1) : distanceKm.toFixed(0)} km away`
+      : null;
+
   return (
     <div className="relative">
       {id != null && onFavoriteToggle ? (
@@ -80,9 +87,17 @@ export const RestaurantCard = ({
             </div>
             {addressSummary ? <p className="text-xs text-ink-muted">{addressSummary}</p> : null}
           </div>
-          <div className="inline-flex items-center gap-2 rounded-full bg-cream px-3 py-1.5 text-xs font-semibold text-ink-soft">
-            <Clock3 className="h-3.5 w-3.5 text-accent" />
-            {deliveryTime} mins
+          <div className="flex flex-wrap gap-2">
+            <div className="inline-flex items-center gap-2 rounded-full bg-cream px-3 py-1.5 text-xs font-semibold text-ink-soft">
+              <Clock3 className="h-3.5 w-3.5 text-accent" />
+              {deliveryTime} mins
+            </div>
+            {distanceLabel ? (
+              <div className="inline-flex items-center gap-2 rounded-full bg-accent/[0.06] px-3 py-1.5 text-xs font-semibold text-accent">
+                <MapPin className="h-3.5 w-3.5" />
+                {distanceLabel}
+              </div>
+            ) : null}
           </div>
         </div>
       </Link>

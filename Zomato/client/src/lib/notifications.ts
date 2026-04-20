@@ -89,6 +89,7 @@ export const getNotificationHref = (
         return `/owner/orders?orderId=${meta.orderId}`;
       case "DELIVERY_PARTNER":
         return `/delivery/active?orderId=${meta.orderId}`;
+      case "REGIONAL_MANAGER":
       case "OPERATIONS_MANAGER":
         return "/ops/assignments";
       case "ADMIN":
@@ -129,6 +130,7 @@ export const getNotificationHref = (
       return "/owner/notifications";
     case "DELIVERY_PARTNER":
       return "/delivery/notifications";
+    case "REGIONAL_MANAGER":
     case "OPERATIONS_MANAGER":
       return "/ops/notifications";
     case "ADMIN":
@@ -152,6 +154,7 @@ export const getNotificationActionLabel = (
         return "Open orders";
       case "DELIVERY_PARTNER":
         return "View delivery";
+      case "REGIONAL_MANAGER":
       case "OPERATIONS_MANAGER":
         return "View backlog";
       case "ADMIN":

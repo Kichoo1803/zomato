@@ -22,6 +22,14 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional(),
   GOOGLE_MAPS_API_KEY: z.string().optional(),
+  RESTAURANT_DISCOVERY_DEFAULT_RADIUS_KM: z.coerce.number().positive().default(5),
+  RESTAURANT_DISCOVERY_MAX_RADIUS_KM: z.coerce.number().positive().default(10),
+  DELIVERY_ASSIGNMENT_RADII_KM: z.string().default("2,3,5"),
+  DELIVERY_ASSIGNMENT_OFFER_TTL_SECONDS: z.coerce.number().int().positive().default(45),
+  DELIVERY_ASSIGNMENT_STALE_LOCATION_MINUTES: z.coerce.number().int().positive().default(10),
+  DELIVERY_ASSIGNMENT_MAX_ACTIVE_ORDERS: z.coerce.number().int().positive().default(1),
+  DELIVERY_ASSIGNMENT_MAX_BROADCAST_PARTNERS: z.coerce.number().int().positive().default(6),
+  DELIVERY_ASSIGNMENT_REASSIGN_TIMEOUT_MINUTES: z.coerce.number().int().positive().default(4),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

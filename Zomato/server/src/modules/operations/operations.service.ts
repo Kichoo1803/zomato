@@ -3,10 +3,29 @@ import { DeliveryAvailabilityStatus, Role } from "../../constants/enums.js";
 import { prisma } from "../../lib/prisma.js";
 import { StatusCodes } from "http-status-codes";
 import { AppError } from "../../utils/app-error.js";
+import { approvalRequestsService } from "../approval-requests/approval-requests.service.js";
+import {
+  resolveRegionIdForAssignment,
+  syncRestaurantsRegionForOwner,
+} from "../regions/regions.service.js";
+import { isRegionalOperationsRole, normalizeRegionValue } from "../../utils/regions.js";
 
 type RegionFilters = {
   state?: string;
   district?: string;
+};
+
+type OperationsActor = {
+  id: number;
+  role: Role;
+};
+
+type OperationsScope = {
+  isRestricted: boolean;
+  state?: string;
+  district?: string;
+  regionId?: number | null;
+  regionName?: string | null;
 };
 
 type OwnerFilters = RegionFilters & {
@@ -25,9 +44,73 @@ type CommunicationsFilters = RegionFilters & {
   search?: string;
 };
 
-const normalizeRegionValue = (value?: string | null) => {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : null;
+const getOperationsScope = async (actor: OperationsActor): Promise<OperationsScope> => {
+  if (actor.role === Role.ADMIN) {
+    return {
+      isRestricted: false,
+    };
+  }
+
+  if (!isRegionalOperationsRole(actor.role)) {
+    throw new AppError(StatusCodes.FORBIDDEN, "Access denied", "ACCESS_DENIED");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: actor.id },
+    select: {
+      role: true,
+      regionId: true,
+      opsState: true,
+      opsDistrict: true,
+    },
+  });
+
+  if (!user || !isRegionalOperationsRole(user.role)) {
+    throw new AppError(StatusCodes.FORBIDDEN, "Access denied", "ACCESS_DENIED");
+  }
+
+  const state = normalizeRegionValue(user.opsState);
+  const district = normalizeRegionValue(user.opsDistrict);
+
+  if (!state || !district) {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "Regional manager is not assigned to a district yet",
+      "REGIONAL_SCOPE_NOT_ASSIGNED",
+    );
+  }
+
+  return {
+    isRestricted: true,
+    state,
+    district,
+    regionId: user.regionId ?? null,
+    regionName: `${district}, ${state}`,
+  };
+};
+
+const applyScopeToFilters = (filters: RegionFilters, scope: OperationsScope): RegionFilters => {
+  if (!scope.isRestricted) {
+    return filters;
+  }
+
+  if (filters.state && filters.state !== scope.state) {
+    throw new AppError(StatusCodes.FORBIDDEN, "That state is outside your assigned region", "ACCESS_DENIED");
+  }
+
+  if (filters.district && filters.district !== scope.district) {
+    throw new AppError(
+      StatusCodes.FORBIDDEN,
+      "That district is outside your assigned region",
+      "ACCESS_DENIED",
+    );
+  }
+
+  return {
+    ...filters,
+    state: scope.state,
+    district: scope.district,
+  };
 };
 
 const getAssignmentStatus = (state?: string | null, district?: string | null) => {
@@ -243,13 +326,25 @@ const buildDeliveryPartnerWhere = (filters: DeliveryPartnerFilters): Prisma.User
 const sortStrings = (values: Iterable<string>) =>
   [...values].sort((left, right) => left.localeCompare(right, "en-IN"));
 
-const getRegionOptions = async () => {
-  const [users, notes, restaurants] = await Promise.all([
+const getRegionOptions = async (filters: RegionFilters) => {
+  const [regions, users, notes, restaurants] = await Promise.all([
+    prisma.region.findMany({
+      where: {
+        ...(filters.state ? { stateName: filters.state } : {}),
+        ...(filters.district ? { districtName: filters.district } : {}),
+        isActive: true,
+      },
+      select: {
+        stateName: true,
+        districtName: true,
+      },
+    }),
     prisma.user.findMany({
       where: {
         role: {
           in: [Role.RESTAURANT_OWNER, Role.DELIVERY_PARTNER],
         },
+        ...buildRegionWhere(filters),
       },
       select: {
         opsState: true,
@@ -257,12 +352,19 @@ const getRegionOptions = async () => {
       },
     }),
     prisma.operationsRegionNote.findMany({
+      where: {
+        ...(filters.state ? { state: filters.state } : {}),
+        ...(filters.district ? { district: filters.district } : {}),
+      },
       select: {
         state: true,
         district: true,
       },
     }),
     prisma.restaurant.findMany({
+      where: {
+        ...(filters.state ? { state: filters.state } : {}),
+      },
       select: {
         state: true,
       },
@@ -289,6 +391,7 @@ const getRegionOptions = async () => {
     }
   };
 
+  regions.forEach((region) => registerRegion(region.stateName, region.districtName));
   users.forEach((user) => registerRegion(user.opsState, user.opsDistrict));
   notes.forEach((note) => registerRegion(note.state, note.district));
   restaurants.forEach((restaurant) => registerRegion(restaurant.state, null));
@@ -326,7 +429,7 @@ const getRegionSummary = async (filters: RegionFilters) => {
         opsDistrict: true,
       },
     }),
-    getRegionOptions(),
+    getRegionOptions(filters),
   ]);
 
   const stateMap = new Map<
@@ -393,6 +496,14 @@ const getRegionSummary = async (filters: RegionFilters) => {
     districtMap.set(key, existing);
     return existing;
   };
+
+  regionOptions.states.forEach((state) => {
+    ensureStateEntry(state);
+
+    (regionOptions.districtsByState[state] ?? []).forEach((district) => {
+      ensureDistrictEntry(state, district);
+    });
+  });
 
   for (const owner of owners) {
     const assignmentStatus = getAssignmentStatus(owner.opsState, owner.opsDistrict);
@@ -618,20 +729,27 @@ const getRecentUpdates = async (filters: RegionFilters) => {
 };
 
 export const operationsService = {
-  async getDashboard(filters: RegionFilters) {
+  async getDashboard(actor: OperationsActor, filters: RegionFilters) {
+    const scope = await getOperationsScope(actor);
+    const scopedFilters = applyScopeToFilters(filters, scope);
+
     return {
-      ...(await getRegionSummary(filters)),
-      recentUpdates: await getRecentUpdates(filters),
+      ...(await getRegionSummary(scopedFilters)),
+      recentUpdates: await getRecentUpdates(scopedFilters),
     };
   },
 
-  async getRegions(filters: RegionFilters) {
-    return getRegionSummary(filters);
+  async getRegions(actor: OperationsActor, filters: RegionFilters) {
+    const scope = await getOperationsScope(actor);
+    const scopedFilters = applyScopeToFilters(filters, scope);
+    return getRegionSummary(scopedFilters);
   },
 
-  async listOwners(filters: OwnerFilters) {
+  async listOwners(actor: OperationsActor, filters: OwnerFilters) {
+    const scope = await getOperationsScope(actor);
+    const scopedFilters = applyScopeToFilters(filters, scope);
     const owners = await prisma.user.findMany({
-      where: buildOwnerWhere(filters),
+      where: buildOwnerWhere(scopedFilters),
       select: ownerSelect,
       orderBy: [{ opsState: "asc" }, { opsDistrict: "asc" }, { fullName: "asc" }],
     });
@@ -654,9 +772,11 @@ export const operationsService = {
     }));
   },
 
-  async listDeliveryPartners(filters: DeliveryPartnerFilters) {
+  async listDeliveryPartners(actor: OperationsActor, filters: DeliveryPartnerFilters) {
+    const scope = await getOperationsScope(actor);
+    const scopedFilters = applyScopeToFilters(filters, scope);
     const partners = await prisma.user.findMany({
-      where: buildDeliveryPartnerWhere(filters),
+      where: buildDeliveryPartnerWhere(scopedFilters),
       select: deliveryPartnerUserSelect,
       orderBy: [{ opsState: "asc" }, { opsDistrict: "asc" }, { fullName: "asc" }],
     });
@@ -683,6 +803,7 @@ export const operationsService = {
   },
 
   async updateUserAssignment(
+    actor: OperationsActor,
     userId: number,
     input: {
       state?: string;
@@ -690,11 +811,16 @@ export const operationsService = {
       notes?: string;
     },
   ) {
+    const scope = await getOperationsScope(actor);
     const target = await prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
         role: true,
+        fullName: true,
+        opsState: true,
+        opsDistrict: true,
+        opsNotes: true,
       },
     });
 
@@ -705,43 +831,105 @@ export const operationsService = {
       throw new AppError(StatusCodes.NOT_FOUND, "Assignment target not found", "ASSIGNMENT_TARGET_NOT_FOUND");
     }
 
-    const normalizedState = normalizeRegionValue(input.state);
-    const normalizedDistrict = normalizeRegionValue(input.district);
+    const currentState = normalizeRegionValue(target.opsState);
+    const currentDistrict = normalizeRegionValue(target.opsDistrict);
+    const currentNotes = target.opsNotes ?? null;
+    const normalizedState =
+      input.state !== undefined ? normalizeRegionValue(input.state) : currentState;
+    const normalizedDistrict =
+      input.district !== undefined ? normalizeRegionValue(input.district) : currentDistrict;
     const normalizedNotes = input.notes?.trim() ? input.notes.trim() : null;
 
-    const updated = await prisma.user.update({
-      where: { id: userId },
-      data: {
-        ...(input.state !== undefined ? { opsState: normalizedState } : {}),
-        ...(input.district !== undefined ? { opsDistrict: normalizedDistrict } : {}),
-        ...(input.notes !== undefined ? { opsNotes: normalizedNotes } : {}),
-      },
-      select: {
-        id: true,
-        fullName: true,
-        role: true,
-        opsState: true,
-        opsDistrict: true,
-        opsNotes: true,
-        updatedAt: true,
-      },
+    if (scope.isRestricted && currentState && currentDistrict) {
+      if (currentState !== scope.state || currentDistrict !== scope.district) {
+        throw new AppError(
+          StatusCodes.FORBIDDEN,
+          "You can only manage assignment records inside your assigned region",
+          "ACCESS_DENIED",
+        );
+      }
+    }
+
+    const stateChanged = normalizedState !== currentState;
+    const districtChanged = normalizedDistrict !== currentDistrict;
+    const isSensitiveRegionChange = stateChanged || districtChanged;
+    const nextNotes =
+      input.notes !== undefined ? normalizedNotes : currentNotes;
+    const nextRegion =
+      input.state !== undefined || input.district !== undefined
+        ? await resolveRegionIdForAssignment(prisma, normalizedState, normalizedDistrict)
+        : null;
+
+    if (scope.isRestricted && isSensitiveRegionChange) {
+      const request = await approvalRequestsService.createUserAssignmentRequest({
+        requesterId: actor.id,
+        requesterRole: actor.role,
+        targetUserId: userId,
+        currentState,
+        currentDistrict,
+        currentNotes,
+        nextState: normalizedState,
+        nextDistrict: normalizedDistrict,
+        nextNotes,
+        regionId: nextRegion?.id ?? scope.regionId ?? null,
+      });
+
+      return {
+        mode: "REQUEST_CREATED" as const,
+        request,
+      };
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id: userId },
+        data: {
+          ...(input.state !== undefined ? { opsState: normalizedState } : {}),
+          ...(input.district !== undefined ? { opsDistrict: normalizedDistrict } : {}),
+          ...(input.notes !== undefined ? { opsNotes: normalizedNotes } : {}),
+          ...(input.state !== undefined || input.district !== undefined
+            ? { regionId: nextRegion?.id ?? null }
+            : {}),
+        },
+        select: {
+          id: true,
+          fullName: true,
+          role: true,
+          opsState: true,
+          opsDistrict: true,
+          opsNotes: true,
+          updatedAt: true,
+          regionId: true,
+        },
+      });
+
+      if (user.role === Role.RESTAURANT_OWNER && (input.state !== undefined || input.district !== undefined)) {
+        await syncRestaurantsRegionForOwner(tx, user.id, user.regionId ?? null);
+      }
+
+      return user;
     });
 
     return {
-      ...updated,
-      opsState: normalizeRegionValue(updated.opsState),
-      opsDistrict: normalizeRegionValue(updated.opsDistrict),
-      assignmentStatus: getAssignmentStatus(updated.opsState, updated.opsDistrict),
+      mode: "UPDATED" as const,
+      assignment: {
+        ...updated,
+        opsState: normalizeRegionValue(updated.opsState),
+        opsDistrict: normalizeRegionValue(updated.opsDistrict),
+        assignmentStatus: getAssignmentStatus(updated.opsState, updated.opsDistrict),
+      },
     };
   },
 
-  async listCommunications(filters: CommunicationsFilters) {
+  async listCommunications(actor: OperationsActor, filters: CommunicationsFilters) {
+    const scope = await getOperationsScope(actor);
+    const scopedFilters = applyScopeToFilters(filters, scope);
     const search = filters.search?.trim();
     const [regionNotes, ownerNotes, partnerNotes] = await Promise.all([
       prisma.operationsRegionNote.findMany({
         where: {
-          ...(filters.state ? { state: filters.state } : {}),
-          ...(filters.district ? { district: filters.district } : {}),
+          ...(scopedFilters.state ? { state: scopedFilters.state } : {}),
+          ...(scopedFilters.district ? { district: scopedFilters.district } : {}),
           ...(search
             ? {
                 OR: [{ title: { contains: search } }, { message: { contains: search } }],
@@ -756,8 +944,8 @@ export const operationsService = {
         where: {
           role: Role.RESTAURANT_OWNER,
           opsNotes: { not: null },
-          ...(filters.state ? { opsState: filters.state } : {}),
-          ...(filters.district ? { opsDistrict: filters.district } : {}),
+          ...(scopedFilters.state ? { opsState: scopedFilters.state } : {}),
+          ...(scopedFilters.district ? { opsDistrict: scopedFilters.district } : {}),
           ...(search
             ? {
                 OR: [
@@ -776,8 +964,8 @@ export const operationsService = {
         where: {
           role: Role.DELIVERY_PARTNER,
           opsNotes: { not: null },
-          ...(filters.state ? { opsState: filters.state } : {}),
-          ...(filters.district ? { opsDistrict: filters.district } : {}),
+          ...(scopedFilters.state ? { opsState: scopedFilters.state } : {}),
+          ...(scopedFilters.district ? { opsDistrict: scopedFilters.district } : {}),
           ...(search
             ? {
                 OR: [
@@ -838,7 +1026,7 @@ export const operationsService = {
   },
 
   async createRegionNote(
-    actorId: number,
+    actor: OperationsActor,
     input: {
       state: string;
       district?: string;
@@ -846,21 +1034,36 @@ export const operationsService = {
       message: string;
     },
   ) {
+    const scope = await getOperationsScope(actor);
+    const scopedFilters = applyScopeToFilters(
+      {
+        state: input.state,
+        district: input.district,
+      },
+      scope,
+    );
+    const region = await resolveRegionIdForAssignment(
+      prisma,
+      scopedFilters.state ?? null,
+      scopedFilters.district ?? null,
+    );
+
     return prisma.operationsRegionNote.create({
       data: {
-        state: input.state.trim(),
-        district: normalizeRegionValue(input.district),
+        regionId: region?.id ?? scope.regionId ?? null,
+        state: scopedFilters.state!.trim(),
+        district: normalizeRegionValue(scopedFilters.district),
         title: input.title.trim(),
         message: input.message.trim(),
-        updatedById: actorId,
+        updatedById: actor.id,
       },
       select: regionNoteSelect,
     });
   },
 
   async updateRegionNote(
+    actor: OperationsActor,
     noteId: number,
-    actorId: number,
     input: {
       state?: string;
       district?: string;
@@ -868,14 +1071,51 @@ export const operationsService = {
       message?: string;
     },
   ) {
+    const scope = await getOperationsScope(actor);
+    const existingNote = await prisma.operationsRegionNote.findUnique({
+      where: { id: noteId },
+      select: {
+        id: true,
+        state: true,
+        district: true,
+      },
+    });
+
+    if (!existingNote) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Region note not found", "REGION_NOTE_NOT_FOUND");
+    }
+
+    applyScopeToFilters(
+      {
+        state: existingNote.state,
+        district: existingNote.district ?? undefined,
+      },
+      scope,
+    );
+
+    const nextFilters = applyScopeToFilters(
+      {
+        state: input.state ?? existingNote.state,
+        district: input.district ?? existingNote.district ?? undefined,
+      },
+      scope,
+    );
+    const nextRegion =
+      input.state !== undefined || input.district !== undefined
+        ? await resolveRegionIdForAssignment(prisma, nextFilters.state ?? null, nextFilters.district ?? null)
+        : null;
+
     return prisma.operationsRegionNote.update({
       where: { id: noteId },
       data: {
-        ...(input.state !== undefined ? { state: input.state.trim() } : {}),
-        ...(input.district !== undefined ? { district: normalizeRegionValue(input.district) } : {}),
+        ...(input.state !== undefined ? { state: nextFilters.state?.trim() } : {}),
+        ...(input.district !== undefined ? { district: normalizeRegionValue(nextFilters.district) } : {}),
+        ...(input.state !== undefined || input.district !== undefined
+          ? { regionId: nextRegion?.id ?? null }
+          : {}),
         ...(input.title !== undefined ? { title: input.title.trim() } : {}),
         ...(input.message !== undefined ? { message: input.message.trim() } : {}),
-        updatedById: actorId,
+        updatedById: actor.id,
       },
       select: regionNoteSelect,
     });

@@ -37,6 +37,9 @@ export type CustomerRestaurantSummary = {
   area?: string | null;
   city: string;
   state: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  distanceKm?: number | null;
   avgRating: number;
   totalReviews: number;
   costForTwo: number;
@@ -376,6 +379,19 @@ export type PendingCustomerCouponSelection = {
   cartId?: number | null;
 };
 
+export type PublicRestaurantQuery = {
+  search?: string;
+  latitude?: number;
+  longitude?: number;
+  radiusKm?: number;
+};
+
+export type CustomerLocationLookup = {
+  latitude: number;
+  longitude: number;
+  address: string;
+};
+
 export type CustomerOrder = {
   id: number;
   userId: number;
@@ -551,7 +567,7 @@ export const clearPendingCustomerCouponSelection = (userId?: number | null) => {
   window.localStorage.removeItem(getPendingCustomerCouponStorageKey(userId));
 };
 
-export const getPublicRestaurants = async (params?: { search?: string }) =>
+export const getPublicRestaurants = async (params?: PublicRestaurantQuery) =>
   unwrapData(
     await publicApi.get<
       ApiEnvelope<{
@@ -566,9 +582,32 @@ export const getPublicRestaurants = async (params?: { search?: string }) =>
     >("/restaurants", { params }),
   ).restaurants;
 
-export const getPublicRestaurantBySlug = async (slug: string) =>
-  unwrapData(await publicApi.get<ApiEnvelope<{ restaurant: CustomerRestaurantDetail }>>(`/restaurants/${slug}`))
-    .restaurant;
+export const geocodeCustomerLocation = async (query: string) =>
+  unwrapData(
+    await publicApi.get<ApiEnvelope<{ location: CustomerLocationLookup }>>("/geo/search", {
+      params: { query },
+    }),
+  ).location;
+
+export const reverseGeocodeCustomerLocation = async (payload: {
+  latitude: number;
+  longitude: number;
+}) =>
+  unwrapData(
+    await publicApi.get<ApiEnvelope<{ location: CustomerLocationLookup }>>("/geo/reverse", {
+      params: payload,
+    }),
+  ).location;
+
+export const getPublicRestaurantBySlug = async (
+  slug: string,
+  params?: Pick<PublicRestaurantQuery, "latitude" | "longitude" | "radiusKm">,
+) =>
+  unwrapData(
+    await publicApi.get<ApiEnvelope<{ restaurant: CustomerRestaurantDetail }>>(`/restaurants/${slug}`, {
+      params,
+    }),
+  ).restaurant;
 
 export const getPublicOffers = async () =>
   unwrapData(await publicApi.get<ApiEnvelope<{ offers: CustomerOffer[] }>>("/offers")).offers;
@@ -663,6 +702,9 @@ export const updateCustomerAddress = async (
   unwrapData(
     await apiClient.patch<ApiEnvelope<{ address: CustomerAddress }>>(`/addresses/${addressId}`, payload),
   ).address;
+
+export const deleteCustomerAddress = async (addressId: number) =>
+  unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/addresses/${addressId}`));
 
 export const placeCustomerOrder = async (payload: {
   cartId: number;

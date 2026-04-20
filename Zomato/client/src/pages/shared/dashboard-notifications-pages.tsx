@@ -147,12 +147,21 @@ export const DeliveryNotificationsPage = () => (
 );
 
 export const OperationsNotificationsPage = () => (
-  <DashboardNotificationsPage
-    role="OPERATIONS_MANAGER"
-    eyebrow="Operations"
-    title="Regional coordination alerts."
-    description="Dispatch coverage reminders and operations follow-ups stay organized inside the current dashboard shell."
-    emptyTitle="No operations notifications yet"
-    emptyDescription="Regional reminders and coordination alerts will appear here."
-  />
+  <OperationsNotificationsContent />
 );
+
+const OperationsNotificationsContent = () => {
+  const { user } = useAuth();
+  const role = user?.role === "REGIONAL_MANAGER" ? "REGIONAL_MANAGER" : "OPERATIONS_MANAGER";
+
+  return (
+    <DashboardNotificationsPage
+      role={role}
+      eyebrow="Operations"
+      title="Regional coordination alerts."
+      description="Dispatch coverage reminders and operations follow-ups stay organized inside the current dashboard shell."
+      emptyTitle="No operations notifications yet"
+      emptyDescription="Regional reminders and coordination alerts will appear here."
+    />
+  );
+};

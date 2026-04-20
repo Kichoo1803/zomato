@@ -27,6 +27,7 @@ const allowedRoles: UserRole[] = [
   "CUSTOMER",
   "RESTAURANT_OWNER",
   "DELIVERY_PARTNER",
+  "REGIONAL_MANAGER",
   "OPERATIONS_MANAGER",
   "ADMIN",
 ];
@@ -66,6 +67,17 @@ const parseAuthResponse = (response: AuthResponse) => {
   };
 };
 
+const getApiErrorCode = (error: unknown) => {
+  if (!axios.isAxiosError(error)) {
+    return null;
+  }
+
+  const responseCode = error.response?.data?.code;
+  return typeof responseCode === "string" ? responseCode : null;
+};
+
+const getApiErrorStatus = (error: unknown) => (axios.isAxiosError(error) ? error.response?.status ?? null : null);
+
 export const loginWithPassword = async (payload: { email: string; password: string }) => {
   const response = await publicApi.post<AuthResponse>("/auth/login", payload);
   return parseAuthResponse(response.data);
@@ -93,6 +105,7 @@ export const getDefaultRedirectPath = (role: UserRole) => {
   switch (role) {
     case "ADMIN":
       return "/admin/dashboard";
+    case "REGIONAL_MANAGER":
     case "OPERATIONS_MANAGER":
       return "/ops/dashboard";
     case "RESTAURANT_OWNER":
@@ -152,4 +165,59 @@ export const getApiErrorMessage = (error: unknown, fallback: string) => {
   }
 
   return fallback;
+};
+
+export const getLoginErrorMessage = (error: unknown) => {
+  if (!axios.isAxiosError(error)) {
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+
+    return "Unable to sign in right now.";
+  }
+
+  const errorCode = getApiErrorCode(error);
+  const statusCode = getApiErrorStatus(error);
+
+  if (error.code === "ERR_NETWORK") {
+    return "Server unavailable. Please check that the backend is running and reachable from this device.";
+  }
+
+  if (errorCode === "MISSING_CREDENTIALS" || statusCode === 400) {
+    return "Enter your email and password.";
+  }
+
+  if (errorCode === "ACCOUNT_NOT_FOUND") {
+    return "Account not found.";
+  }
+
+  if (errorCode === "INVALID_CREDENTIALS" || statusCode === 401) {
+    return "Invalid email or password.";
+  }
+
+  if (errorCode === "ACCOUNT_DISABLED" || statusCode === 403) {
+    return "Your account is currently disabled.";
+  }
+
+  if (
+    [
+      "DATABASE_CONNECTION_FAILED",
+      "MONGODB_REPLICA_SET_REQUIRED",
+      "DATABASE_SCHEMA_NOT_READY",
+      "PRISMA_CLIENT_OUT_OF_SYNC",
+    ].includes(errorCode ?? "")
+  ) {
+    return "Server unavailable. Please try again in a moment.";
+  }
+
+  if (error.code === "ERR_BAD_RESPONSE" || (statusCode ?? 0) >= 500) {
+    return "Sign-in hit a temporary server issue. Please try again in a moment.";
+  }
+
+  const responseMessage = error.response?.data?.message;
+  if (typeof responseMessage === "string" && responseMessage.trim()) {
+    return responseMessage;
+  }
+
+  return "Unable to sign in right now.";
 };

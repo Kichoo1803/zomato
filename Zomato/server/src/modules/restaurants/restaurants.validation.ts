@@ -1,8 +1,14 @@
 import { Role } from "../../constants/enums.js";
 import { z } from "zod";
 
+const discoveryLocationQuerySchema = z.object({
+  latitude: z.coerce.number().min(-90).max(90).optional(),
+  longitude: z.coerce.number().min(-180).max(180).optional(),
+  radiusKm: z.coerce.number().min(0).optional(),
+});
+
 export const listRestaurantsSchema = {
-  query: z.object({
+  query: discoveryLocationQuerySchema.extend({
     search: z.string().trim().optional(),
     cuisine: z.string().trim().optional(),
     foodType: z.enum(["veg", "non_veg"]).optional(),
@@ -77,4 +83,5 @@ export const restaurantSlugParamSchema = {
   params: z.object({
     slug: z.string().trim().min(2),
   }),
+  query: discoveryLocationQuerySchema,
 };

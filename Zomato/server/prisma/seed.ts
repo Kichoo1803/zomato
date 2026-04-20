@@ -1,4 +1,3 @@
-import { PrismaClient } from "@prisma/client";
 import {
   AddonType,
   AddressType,
@@ -15,12 +14,27 @@ import {
   Role,
   VehicleType,
 } from "../src/constants/enums.js";
+import { createPrismaClient } from "../src/lib/prisma-client.js";
 import bcrypt from "bcrypt";
 import dayjs from "dayjs";
 
-const prisma = new PrismaClient();
+const prisma = createPrismaClient();
 const BASE_DATE = dayjs("2026-04-08T12:00:00+05:30");
 const DEMO_PASSWORD = "Password@123";
+
+const isReplicaSetRequiredError = (error: unknown) =>
+  error instanceof Error &&
+  (error.message.includes("Transactions are not supported by this deployment") ||
+    error.message.includes("requires your MongoDB server to be run as a replica set"));
+
+const logReplicaSetGuidance = () => {
+  console.error(
+    [
+      "MongoDB replica set required for Prisma transactions.",
+      'Start MongoDB with `mongod --dbpath "<your-db-path>" --replSet rs0 --bind_ip 127.0.0.1`, run `mongosh --eval "rs.initiate()"`, then use `DATABASE_URL=mongodb://127.0.0.1:27017/zomato?replicaSet=rs0`.',
+    ].join(" "),
+  );
+};
 
 type UserSeed = {
   key: string;
@@ -2801,10 +2815,12 @@ async function clearDatabase() {
   await prisma.orderItemAddon.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.payment.deleteMany();
+  await prisma.savedPaymentMethod.deleteMany();
   await prisma.review.deleteMany();
   await prisma.notification.deleteMany();
   await prisma.reservation.deleteMany();
   await prisma.orderStatusEvent.deleteMany();
+  await prisma.deliveryAssignmentOffer.deleteMany();
   await prisma.order.deleteMany();
   await prisma.favoriteRestaurant.deleteMany();
   await prisma.restaurantOffer.deleteMany();
@@ -2812,6 +2828,8 @@ async function clearDatabase() {
   await prisma.deliveryDocument.deleteMany();
   await prisma.deliveryPartner.deleteMany();
   await prisma.itemAddon.deleteMany();
+  await prisma.comboItem.deleteMany();
+  await prisma.combo.deleteMany();
   await prisma.menuItem.deleteMany();
   await prisma.menuCategory.deleteMany();
   await prisma.restaurantHour.deleteMany();
@@ -2824,6 +2842,7 @@ async function clearDatabase() {
   await prisma.address.deleteMany();
   await prisma.refreshToken.deleteMany();
   await prisma.user.deleteMany();
+  await prisma.idCounter.deleteMany();
 }
 
 async function main() {
@@ -3473,6 +3492,10 @@ async function main() {
 
 main()
   .catch((error) => {
+    if (isReplicaSetRequiredError(error)) {
+      logReplicaSetGuidance();
+    }
+
     console.error("Seed failed.", error);
     process.exitCode = 1;
   })

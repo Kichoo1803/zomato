@@ -137,3 +137,19 @@ export const emitDeliveryLocationUpdate = (payload: {
 export const emitNotification = (userId: number, payload: Record<string, unknown>) => {
   io?.to(`user:${userId}`).emit("notification:new", payload);
 };
+
+export const emitDispatchQueueUpdate = (payload: {
+  orderId: number;
+  state: string;
+  userIds: number[];
+}) => {
+  if (!io || !payload.userIds.length) {
+    return;
+  }
+
+  emitToRooms(
+    "delivery:dispatch:update",
+    payload.userIds.map((userId) => `user:${userId}`),
+    payload,
+  );
+};

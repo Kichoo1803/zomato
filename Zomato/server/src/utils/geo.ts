@@ -11,6 +11,7 @@ export type RouteMetrics = {
 
 const OSRM_ROUTE_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
 const NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search";
+const NOMINATIM_REVERSE_ENDPOINT = "https://nominatim.openstreetmap.org/reverse";
 
 const isValidCoordinate = (value?: number | null) =>
   typeof value === "number" && Number.isFinite(value);
@@ -110,7 +111,7 @@ export const buildAddressSearchText = (parts: Array<string | null | undefined>) 
     .filter(Boolean)
     .join(", ");
 
-export const geocodeAddressText = async (addressText: string) => {
+export const resolveAddressText = async (addressText: string) => {
   const normalized = addressText.trim();
   if (!normalized) {
     return null;
@@ -120,6 +121,7 @@ export const geocodeAddressText = async (addressText: string) => {
     const params = new URLSearchParams({
       format: "jsonv2",
       limit: "1",
+      addressdetails: "1",
       q: normalized,
     });
     const response = await fetchWithTimeout(`${NOMINATIM_ENDPOINT}?${params.toString()}`, {
@@ -136,6 +138,7 @@ export const geocodeAddressText = async (addressText: string) => {
     const payload = (await response.json()) as Array<{
       lat?: string;
       lon?: string;
+      display_name?: string;
     }>;
     const result = payload[0];
 
@@ -150,7 +153,66 @@ export const geocodeAddressText = async (addressText: string) => {
       return null;
     }
 
-    return { latitude, longitude };
+    return {
+      latitude,
+      longitude,
+      address: result.display_name?.trim() || normalized,
+    };
+  } catch {
+    return null;
+  }
+};
+
+export const geocodeAddressText = async (addressText: string) => {
+  const resolvedAddress = await resolveAddressText(addressText);
+
+  if (!resolvedAddress) {
+    return null;
+  }
+
+  return {
+    latitude: resolvedAddress.latitude,
+    longitude: resolvedAddress.longitude,
+  };
+};
+
+export const reverseGeocodeCoordinates = async (latitude: number, longitude: number) => {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return null;
+  }
+
+  try {
+    const params = new URLSearchParams({
+      format: "jsonv2",
+      lat: String(latitude),
+      lon: String(longitude),
+      addressdetails: "1",
+    });
+    const response = await fetchWithTimeout(`${NOMINATIM_REVERSE_ENDPOINT}?${params.toString()}`, {
+      headers: {
+        "Accept-Language": "en",
+        "User-Agent": "Zomato Luxe/0.1.0 (location lookup)",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      display_name?: string;
+    };
+
+    const address = payload.display_name?.trim();
+    if (!address) {
+      return null;
+    }
+
+    return {
+      latitude,
+      longitude,
+      address,
+    };
   } catch {
     return null;
   }

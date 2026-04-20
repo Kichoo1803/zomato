@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Bike, LocateFixed, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -18,6 +18,8 @@ import {
   getDeliveryHistory,
   getDeliveryProfile,
   getDeliveryRequests,
+  releaseAssignedDeliveryOrder,
+  skipDeliveryRequest,
   toDeliverySessionUser,
   updateDeliveryAvailability,
   updateDeliveryLocation,
@@ -52,6 +54,20 @@ const formatEtaMinutes = (value?: number | null) =>
 
 const formatDistanceKm = (value?: number | null) =>
   value != null ? `${value.toFixed(1)} km` : "Pending";
+
+const formatOfferTimeRemaining = (value?: string | null) => {
+  if (!value) {
+    return "Live";
+  }
+
+  const differenceMs = new Date(value).getTime() - Date.now();
+  if (differenceMs <= 0) {
+    return "Expiring now";
+  }
+
+  const minutesRemaining = Math.ceil(differenceMs / (60 * 1000));
+  return `${minutesRemaining} min left`;
+};
 
 const buildDeliveryAddressSummary = (parts: Array<string | null | undefined>) =>
   parts
@@ -91,13 +107,16 @@ const DeliveryRequestCard = ({
   profile,
   pendingOrderId,
   onAccept,
+  onSkip,
 }: {
   order: DeliveryOrder;
   profile?: DeliveryProfile | null;
   pendingOrderId: number | null;
   onAccept: (orderId: number) => Promise<void>;
+  onSkip: (orderId: number) => Promise<void>;
 }) => {
   const actionState = getDeliveryRequestAction(order, profile);
+  const pickupDistance = order.deliveryOffer?.distanceKm ?? order.routeDistanceKm;
 
   return (
     <div id={`delivery-order-${order.id}`} className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4">
@@ -116,12 +135,12 @@ const DeliveryRequestCard = ({
             <p className="mt-2 text-sm font-semibold text-ink">{formatEtaMinutes(order.estimatedDeliveryMinutes)}</p>
           </div>
           <div className="rounded-[1.25rem] bg-cream px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Distance</p>
-            <p className="mt-2 text-sm font-semibold text-ink">{formatDistanceKm(order.routeDistanceKm)}</p>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Pickup distance</p>
+            <p className="mt-2 text-sm font-semibold text-ink">{formatDistanceKm(pickupDistance)}</p>
           </div>
           <div className="rounded-[1.25rem] bg-cream px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Tip</p>
-            <p className="mt-2 text-sm font-semibold text-ink">{formatCurrency(order.tipAmount)}</p>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Offer window</p>
+            <p className="mt-2 text-sm font-semibold text-ink">{formatOfferTimeRemaining(order.deliveryOffer?.expiresAt)}</p>
           </div>
         </div>
       </div>
@@ -131,12 +150,26 @@ const DeliveryRequestCard = ({
         <p><span className="font-semibold text-ink">Pickup:</span> {buildDeliveryAddressSummary([order.restaurant.addressLine, order.restaurant.area, order.restaurant.city]) || order.restaurant.name}</p>
         <p><span className="font-semibold text-ink">Drop-off:</span> {buildDeliveryAddressSummary([order.address.houseNo, order.address.street, order.address.area, order.address.city])}</p>
       </div>
+      {order.deliveryOffer ? (
+        <div className="mt-4 rounded-[1.25rem] bg-cream px-4 py-3 text-sm leading-7 text-ink-soft">
+          Broadcast radius {formatDistanceKm(order.deliveryOffer.radiusKm)} • Batch {order.deliveryOffer.batchNumber}
+        </div>
+      ) : null}
       {order.specialInstructions ? (
         <div className="mt-4 rounded-[1.25rem] border border-accent/10 bg-accent/[0.03] px-4 py-3 text-sm leading-7 text-ink-soft">
           {order.specialInstructions}
         </div>
       ) : null}
-      <div className="mt-4 flex justify-end">
+      <div className="mt-4 flex flex-wrap justify-end gap-3">
+        <Button
+          type="button"
+          variant="secondary"
+          className="min-w-32"
+          onClick={() => void onSkip(order.id)}
+          disabled={pendingOrderId === order.id}
+        >
+          {pendingOrderId === order.id ? "Working..." : "Skip"}
+        </Button>
         <Button
           type="button"
           className="min-w-40"
@@ -219,6 +252,9 @@ const useDeliveryWorkspace = () => {
   const [isUpdatingAvailability, setIsUpdatingAvailability] = useState(false);
   const [isUpdatingLocation, setIsUpdatingLocation] = useState(false);
   const [pendingOrderId, setPendingOrderId] = useState<number | null>(null);
+  const loadDataRef = useRef<
+    ((options?: { quietly?: boolean }) => Promise<void>) | null
+  >(null);
 
   const loadData = async ({ quietly = false }: { quietly?: boolean } = {}) => {
     if (!useLiveFlow) {
@@ -253,6 +289,10 @@ const useDeliveryWorkspace = () => {
     void loadData();
   }, [useLiveFlow]);
 
+  useEffect(() => {
+    loadDataRef.current = loadData;
+  }, [loadData]);
+
   useRealtimeSubscription({
     enabled: useLiveFlow,
     userId: user?.id,
@@ -267,7 +307,24 @@ const useDeliveryWorkspace = () => {
     onDeliveryLocationUpdate: () => {
       void loadData({ quietly: true });
     },
+    onDispatchQueueUpdate: () => {
+      void loadData({ quietly: true });
+    },
   });
+
+  useEffect(() => {
+    if (!useLiveFlow) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void loadDataRef.current?.({ quietly: true });
+    }, 15000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [useLiveFlow]);
 
   const toggleAvailability = async () => {
     if (!profile) {
@@ -280,6 +337,7 @@ const useDeliveryWorkspace = () => {
       const nextProfile = await updateDeliveryAvailability(nextAvailability);
       setProfile(nextProfile);
       toast.success(`Availability updated to ${toLabel(nextAvailability)}.`);
+      await loadData({ quietly: true });
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to update availability right now."));
     } finally {
@@ -336,6 +394,32 @@ const useDeliveryWorkspace = () => {
     }
   };
 
+  const skipOrder = async (orderId: number) => {
+    setPendingOrderId(orderId);
+    try {
+      await skipDeliveryRequest(orderId);
+      toast.success("Delivery request skipped.");
+      await loadData();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to skip this delivery request."));
+    } finally {
+      setPendingOrderId(null);
+    }
+  };
+
+  const releaseOrder = async (orderId: number) => {
+    setPendingOrderId(orderId);
+    try {
+      await releaseAssignedDeliveryOrder(orderId);
+      toast.success("Order released back to nearby rider search.");
+      await loadData();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to release this delivery order."));
+    } finally {
+      setPendingOrderId(null);
+    }
+  };
+
   return {
     useLiveFlow,
     profile,
@@ -350,6 +434,8 @@ const useDeliveryWorkspace = () => {
     refreshLocation,
     toggleAvailability,
     acceptOrder,
+    skipOrder,
+    releaseOrder,
     updateOrderStatus,
     user,
   };
@@ -391,6 +477,7 @@ export const DeliveryDashboardPage = () => {
     isLoading,
     pendingOrderId,
     acceptOrder,
+    skipOrder,
     refreshLocation,
     loadData,
     isUpdatingLocation,
@@ -497,6 +584,7 @@ export const DeliveryDashboardPage = () => {
                   profile={profile}
                   pendingOrderId={pendingOrderId}
                   onAccept={acceptOrder}
+                  onSkip={skipOrder}
                 />
               ))
             ) : (
@@ -521,6 +609,8 @@ export const DeliveryActivePage = () => {
     isLoading,
     pendingOrderId,
     acceptOrder,
+    skipOrder,
+    releaseOrder,
     updateOrderStatus,
     refreshLocation,
     loadData,
@@ -595,6 +685,7 @@ export const DeliveryActivePage = () => {
                 profile={profile}
                 pendingOrderId={pendingOrderId}
                 onAccept={acceptOrder}
+                onSkip={skipOrder}
               />
             ))}
           </div>
@@ -653,6 +744,17 @@ export const DeliveryActivePage = () => {
                     <p><span className="font-semibold text-ink">Customer note:</span> {order.specialInstructions ?? "No extra note shared."}</p>
                   </div>
                   <div className="space-y-3">
+                    {order.status === "DELIVERY_PARTNER_ASSIGNED" ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="w-full justify-center"
+                        onClick={() => void releaseOrder(order.id)}
+                        disabled={pendingOrderId === order.id}
+                      >
+                        {pendingOrderId === order.id ? "Updating..." : "Release order"}
+                      </Button>
+                    ) : null}
                     {(deliveryStatusTransitions[order.status] ?? []).map((status) => (
                       <Button
                         key={status}

@@ -10,6 +10,7 @@ import { sendMail } from "../../lib/mailer.js";
 import { AppError } from "../../utils/app-error.js";
 import { durationToMs } from "../../utils/cookies.js";
 import { hashValue } from "../../utils/hash.js";
+import { getPrismaRuntimeErrorResponse } from "../../utils/prisma-runtime-errors.js";
 import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from "../../utils/jwt.js";
 
 const publicUserSelect = {
@@ -49,34 +50,17 @@ type SessionMeta = {
 const genericLoginFailureMessage = "The server couldn't complete sign-in right now. Please try again in a moment.";
 
 const getLoginServerError = (error: unknown) => {
-  if (error instanceof Prisma.PrismaClientInitializationError) {
-    return new AppError(
-      StatusCodes.INTERNAL_SERVER_ERROR,
-      env.isDevelopment
-        ? "Sign-in failed because the database connection is unavailable. Check DATABASE_URL and confirm the database is reachable."
-        : genericLoginFailureMessage,
-      "DATABASE_CONNECTION_FAILED",
-    );
-  }
+  const prismaRuntimeError = getPrismaRuntimeErrorResponse(error, {
+    isDevelopment: env.isDevelopment,
+    fallbackMessage: genericLoginFailureMessage,
+  });
 
-  if (error instanceof Prisma.PrismaClientValidationError) {
+  if (prismaRuntimeError) {
     return new AppError(
-      StatusCodes.INTERNAL_SERVER_ERROR,
-      env.isDevelopment
-        ? "Sign-in failed because the Prisma client is out of sync with the auth schema. Run `npm run prisma:generate` and restart the server."
-        : genericLoginFailureMessage,
-      "PRISMA_CLIENT_OUT_OF_SYNC",
-    );
-  }
-
-  if (error instanceof Prisma.PrismaClientKnownRequestError && ["P2021", "P2022"].includes(error.code)) {
-    return new AppError(
-      StatusCodes.INTERNAL_SERVER_ERROR,
-      env.isDevelopment
-        ? "Sign-in failed because the database schema is missing required auth tables or columns. Run `npm run prisma:sync` for local SQLite development, or `npm run prisma:migrate:deploy` for a migrated deployment target, then restart the server."
-        : genericLoginFailureMessage,
-      "DATABASE_SCHEMA_NOT_READY",
-      env.isDevelopment ? error.meta : undefined,
+      prismaRuntimeError.statusCode,
+      prismaRuntimeError.message,
+      prismaRuntimeError.code,
+      prismaRuntimeError.details,
     );
   }
 
@@ -107,9 +91,9 @@ const createSession = async (user: PublicUser, meta?: SessionMeta) => {
   };
 };
 
-function ensureActiveUser<T extends { isActive: boolean }>(user: T | null): asserts user is T {
+function ensureLoginEligibleUser<T extends { isActive: boolean }>(user: T | null): asserts user is T {
   if (!user) {
-    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid email or password", "INVALID_CREDENTIALS");
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Account not found", "ACCOUNT_NOT_FOUND");
   }
 
   if (!user.isActive) {
@@ -182,7 +166,12 @@ export const authService = {
   },
 
   async login(input: { email: string; password: string }, meta?: SessionMeta) {
-    const email = input.email.trim().toLowerCase();
+    const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
+    const password = typeof input.password === "string" ? input.password : "";
+
+    if (!email || !password.trim()) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Email and password are required", "MISSING_CREDENTIALS");
+    }
 
     logger.info("Login attempt received", {
       email,
@@ -201,9 +190,9 @@ export const authService = {
         userFound: Boolean(user),
       });
 
-      ensureActiveUser(user);
+      ensureLoginEligibleUser(user);
 
-      const isPasswordValid = await bcrypt.compare(input.password, user.passwordHash);
+      const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
       logger.info("Login password verification completed", {
         email,
         userId: user.id,
@@ -285,7 +274,7 @@ export const authService = {
       throw new AppError(StatusCodes.UNAUTHORIZED, "Refresh session has expired", "EXPIRED_REFRESH_TOKEN");
     }
 
-    ensureActiveUser(storedToken.user);
+    ensureLoginEligibleUser(storedToken.user);
 
     await prisma.refreshToken.update({
       where: { id: storedToken.id },
@@ -322,7 +311,7 @@ export const authService = {
       select: publicUserSelect,
     });
 
-    ensureActiveUser(user);
+    ensureLoginEligibleUser(user);
 
     return user;
   },

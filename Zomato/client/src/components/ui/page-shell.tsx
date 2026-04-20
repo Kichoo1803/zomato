@@ -55,7 +55,7 @@ export const PageShell = ({
 
 export const SurfaceCard = ({ className, children }: SurfaceCardProps) => {
   return (
-    <div className={cn("rounded-[2rem] border border-white/70 bg-white/80 p-6 shadow-soft", className)}>
+    <div className={cn("min-w-0 rounded-[2rem] border border-white/70 bg-white/80 p-6 shadow-soft", className)}>
       {children}
     </div>
   );

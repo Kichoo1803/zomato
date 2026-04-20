@@ -10,15 +10,20 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/hooks/use-auth";
 import type { UserRole } from "@/types/auth";
 import {
-  getApiErrorMessage,
   getDefaultRedirectPath,
+  getApiErrorMessage,
+  getLoginErrorMessage,
   loginWithPassword,
   logoutFromServer,
   registerWithPassword,
 } from "@/lib/auth";
 
 const loginSchema = z.object({
-  email: z.string().trim().email("Enter a valid email address."),
+  email: z
+    .string()
+    .trim()
+    .min(1, "Enter your email.")
+    .email("Enter a valid email address."),
   password: z.string().min(1, "Enter your password."),
 });
 
@@ -144,7 +149,7 @@ const authCopy: Record<
   ops: {
     eyebrow: "Operations access",
     title: "India operations login",
-    description: "Authenticate with a seeded operations manager account and continue into the regional India control room built on the current premium auth flow.",
+    description: "Authenticate with a regional manager or operations manager account and continue into the regional India control room built on the current premium auth flow.",
     credentials: ["ops@zomatoluxe.dev / Password@123"],
   },
   admin: {
@@ -190,7 +195,7 @@ const resolveNextPath = (role: UserRole, state: LocationState | null) => {
     return fallbackPath;
   }
 
-  if (requestedPath.startsWith("/ops") && role !== "OPERATIONS_MANAGER") {
+  if (requestedPath.startsWith("/ops") && !["OPERATIONS_MANAGER", "REGIONAL_MANAGER"].includes(role)) {
     return fallbackPath;
   }
 
@@ -245,7 +250,7 @@ const LoginForm = () => {
         replace: true,
       });
     } catch (error) {
-      setSubmitError(getApiErrorMessage(error, "Unable to sign in right now."));
+      setSubmitError(getLoginErrorMessage(error));
     }
   });
 

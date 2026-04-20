@@ -1,9 +1,9 @@
-import { PrismaClient } from "@prisma/client";
 import { env } from "../config/env.js";
 import { logger } from "./logger.js";
+import { createPrismaClient, type AppPrismaClient } from "./prisma-client.js";
 
 const globalForPrisma = globalThis as unknown as {
-  prisma?: PrismaClient;
+  prisma?: AppPrismaClient;
 };
 
 const sleep = (durationMs: number) => new Promise((resolve) => setTimeout(resolve, durationMs));
@@ -32,12 +32,12 @@ const summarizeDatabaseTarget = (databaseUrl: string) => {
 
 export const prismaConnectionInfo = summarizeDatabaseTarget(env.DATABASE_URL);
 
-const createPrismaClient = () =>
-  new PrismaClient({
+const createPrisma = () =>
+  createPrismaClient({
     log: env.isDevelopment ? ["query", "warn", "error"] : ["warn", "error"],
   });
 
-export const prisma = globalForPrisma.prisma ?? createPrismaClient();
+export const prisma = globalForPrisma.prisma ?? createPrisma();
 
 if (!env.isProduction) {
   globalForPrisma.prisma = prisma;

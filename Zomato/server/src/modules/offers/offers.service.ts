@@ -170,28 +170,36 @@ export const offersService = {
   ) {
     await ensureOwnerRestaurantAccess(userId, input.restaurantId);
 
-    const offer = await prisma.offer.create({
-      data: {
-        code: input.code,
-        title: input.title,
-        description: input.description,
-        discountType: input.discountType,
-        discountValue: input.discountValue,
-        minOrderAmount: input.minOrderAmount ?? 0,
-        maxDiscount: input.maxDiscount,
-        scope: OfferScope.RESTAURANT,
-        usageLimit: input.usageLimit,
-        perUserLimit: input.perUserLimit,
-        startDate: input.startDate,
-        endDate: input.endDate,
-        isActive: input.isActive ?? true,
-        restaurantLinks: {
-          create: {
-            restaurantId: input.restaurantId,
-          },
+    const offer = await prisma.$transaction(async (tx) => {
+      const createdOffer = await tx.offer.create({
+        data: {
+          code: input.code,
+          title: input.title,
+          description: input.description,
+          discountType: input.discountType,
+          discountValue: input.discountValue,
+          minOrderAmount: input.minOrderAmount ?? 0,
+          maxDiscount: input.maxDiscount,
+          scope: OfferScope.RESTAURANT,
+          usageLimit: input.usageLimit,
+          perUserLimit: input.perUserLimit,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          isActive: input.isActive ?? true,
         },
-      },
-      select: offerSelect,
+      });
+
+      await tx.restaurantOffer.create({
+        data: {
+          offerId: createdOffer.id,
+          restaurantId: input.restaurantId,
+        },
+      });
+
+      return tx.offer.findUniqueOrThrow({
+        where: { id: createdOffer.id },
+        select: offerSelect,
+      });
     });
 
     return toOwnerOfferSelect(offer);

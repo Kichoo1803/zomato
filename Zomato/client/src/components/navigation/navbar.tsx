@@ -5,15 +5,14 @@ import { useNotificationInbox } from "@/hooks/use-notification-inbox";
 import { getDefaultRedirectPath } from "@/lib/auth";
 import { cn } from "@/utils/cn";
 
-const navItems = [
-  { label: "Restaurants", to: "/restaurants" },
-  { label: "Offers", to: "/offers" },
-  { label: "Membership", to: "/membership" },
-];
-
 export const Navbar = () => {
   const { isAuthenticated, user } = useAuth();
   const isCustomerSession = isAuthenticated && user?.role === "CUSTOMER";
+  const navItems = [
+    { label: "Restaurants", to: "/restaurants" },
+    { label: "Offers", to: "/offers" },
+    { label: "Membership", to: "/membership" },
+  ];
   const { unreadCount } = useNotificationInbox({
     enabled: isCustomerSession,
     userId: user?.id,

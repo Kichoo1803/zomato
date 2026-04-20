@@ -1,4 +1,5 @@
 import {
+  DeliveryOfferStatus,
   NotificationType,
   OfferScope,
   OrderStatus,
@@ -239,9 +240,20 @@ export const dispatchNotificationReminders = async () => {
     prisma.order.count({
       where: {
         deletedAt: null,
-        status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
+        deliveryPartnerId: null,
+        status: {
+          in: [OrderStatus.READY_FOR_PICKUP, OrderStatus.LOOKING_FOR_DELIVERY_PARTNER],
+        },
         updatedAt: {
           lte: opsDispatchCutoff,
+        },
+        deliveryAssignmentOffers: {
+          none: {
+            status: DeliveryOfferStatus.PENDING,
+            expiresAt: {
+              gt: now,
+            },
+          },
         },
       },
     }),
@@ -256,7 +268,9 @@ export const dispatchNotificationReminders = async () => {
     }),
     prisma.user.findMany({
       where: {
-        role: Role.OPERATIONS_MANAGER,
+        role: {
+          in: [Role.OPERATIONS_MANAGER, Role.REGIONAL_MANAGER],
+        },
         isActive: true,
       },
       select: {

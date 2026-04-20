@@ -3,7 +3,7 @@ import { asyncHandler } from "../../utils/async-handler.js";
 import { operationsService } from "./operations.service.js";
 
 export const getOperationsDashboard = asyncHandler(async (req, res) => {
-  const dashboard = await operationsService.getDashboard({
+  const dashboard = await operationsService.getDashboard(req.user!, {
     state: req.query.state as string | undefined,
     district: req.query.district as string | undefined,
   });
@@ -15,7 +15,7 @@ export const getOperationsDashboard = asyncHandler(async (req, res) => {
 });
 
 export const getOperationsRegions = asyncHandler(async (req, res) => {
-  const regions = await operationsService.getRegions({
+  const regions = await operationsService.getRegions(req.user!, {
     state: req.query.state as string | undefined,
     district: req.query.district as string | undefined,
   });
@@ -27,7 +27,7 @@ export const getOperationsRegions = asyncHandler(async (req, res) => {
 });
 
 export const listOperationsOwners = asyncHandler(async (req, res) => {
-  const owners = await operationsService.listOwners({
+  const owners = await operationsService.listOwners(req.user!, {
     state: req.query.state as string | undefined,
     district: req.query.district as string | undefined,
     search: req.query.search as string | undefined,
@@ -42,7 +42,7 @@ export const listOperationsOwners = asyncHandler(async (req, res) => {
 });
 
 export const listOperationsDeliveryPartners = asyncHandler(async (req, res) => {
-  const partners = await operationsService.listDeliveryPartners({
+  const partners = await operationsService.listDeliveryPartners(req.user!, {
     state: req.query.state as string | undefined,
     district: req.query.district as string | undefined,
     search: req.query.search as string | undefined,
@@ -57,16 +57,19 @@ export const listOperationsDeliveryPartners = asyncHandler(async (req, res) => {
 });
 
 export const updateOperationsAssignment = asyncHandler(async (req, res) => {
-  const assignment = await operationsService.updateUserAssignment(Number(req.params.userId), req.body);
+  const assignment = await operationsService.updateUserAssignment(req.user!, Number(req.params.userId), req.body);
 
   return sendSuccess(res, {
-    message: "Operations assignment updated successfully",
-    data: { assignment },
+    message:
+      assignment.mode === "REQUEST_CREATED"
+        ? "Approval request created successfully"
+        : "Operations assignment updated successfully",
+    data: assignment,
   });
 });
 
 export const listOperationsCommunications = asyncHandler(async (req, res) => {
-  const communications = await operationsService.listCommunications({
+  const communications = await operationsService.listCommunications(req.user!, {
     state: req.query.state as string | undefined,
     district: req.query.district as string | undefined,
     search: req.query.search as string | undefined,
@@ -79,7 +82,7 @@ export const listOperationsCommunications = asyncHandler(async (req, res) => {
 });
 
 export const createOperationsRegionNote = asyncHandler(async (req, res) => {
-  const note = await operationsService.createRegionNote(req.user!.id, req.body);
+  const note = await operationsService.createRegionNote(req.user!, req.body);
 
   return sendSuccess(res, {
     statusCode: 201,
@@ -89,7 +92,7 @@ export const createOperationsRegionNote = asyncHandler(async (req, res) => {
 });
 
 export const updateOperationsRegionNote = asyncHandler(async (req, res) => {
-  const note = await operationsService.updateRegionNote(Number(req.params.noteId), req.user!.id, req.body);
+  const note = await operationsService.updateRegionNote(req.user!, Number(req.params.noteId), req.body);
 
   return sendSuccess(res, {
     message: "Operations region note updated successfully",

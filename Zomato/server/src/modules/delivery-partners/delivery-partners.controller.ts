@@ -85,11 +85,19 @@ export const updateLocation = asyncHandler(async (req, res) => {
 });
 
 export const listNewRequests = asyncHandler(async (_req, res) => {
-  const requests = await deliveryPartnersService.listNewRequests();
+  const requests = await deliveryPartnersService.listNewRequests(_req.user!);
 
   return sendSuccess(res, {
     message: "Delivery requests fetched successfully",
     data: { requests },
+  });
+});
+
+export const declineDeliveryRequest = asyncHandler(async (req, res) => {
+  await deliveryPartnersService.declineRequest(req.user!.id, Number(req.params.orderId));
+
+  return sendSuccess(res, {
+    message: "Delivery request skipped successfully",
   });
 });
 
@@ -108,6 +116,19 @@ export const listActiveDeliveries = asyncHandler(async (req, res) => {
   return sendSuccess(res, {
     message: "Active deliveries fetched successfully",
     data: { deliveries },
+  });
+});
+
+export const releaseAssignedOrder = asyncHandler(async (req, res) => {
+  const order = await deliveryPartnersService.releaseAssignedOrder(
+    req.user!.id,
+    Number(req.params.orderId),
+    req.body.note as string | undefined,
+  );
+
+  return sendSuccess(res, {
+    message: "Delivery order released successfully",
+    data: { order },
   });
 });
 

@@ -1,6 +1,8 @@
 import { Role } from "../../constants/enums.js";
 import { z } from "zod";
 
+const optionalRegionString = z.string().trim().min(2).max(120).optional();
+
 export const updateProfileSchema = {
   body: z.object({
     fullName: z.string().trim().min(2).max(120).optional(),
@@ -56,12 +58,15 @@ export const listUsersQuerySchema = {
   }),
 };
 
-const adminUserBodySchema = z.object({
+const adminUserBodyBaseSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   email: z.string().trim().email(),
   phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
   password: passwordSchema.optional(),
   role: z.nativeEnum(Role),
+  opsState: optionalRegionString,
+  opsDistrict: optionalRegionString,
+  opsNotes: z.string().trim().max(1000).optional(),
   profileImage: z.string().trim().url().optional(),
   walletBalance: z.coerce.number().min(0).optional(),
   isActive: z.boolean().optional(),
@@ -69,17 +74,30 @@ const adminUserBodySchema = z.object({
   phoneVerified: z.boolean().optional(),
 });
 
+const withAdminUserBodyValidation = <T extends z.ZodTypeAny>(schema: T) =>
+  schema.superRefine((values, context) => {
+    if (values.opsDistrict && !values.opsState) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["opsDistrict"],
+        message: "Select a state before choosing a district.",
+      });
+    }
+  });
+
+const adminUserBodySchema = withAdminUserBodyValidation(adminUserBodyBaseSchema);
+
 export const createUserSchema = {
-  body: adminUserBodySchema.extend({
+  body: withAdminUserBodyValidation(adminUserBodyBaseSchema.extend({
     password: passwordSchema,
-  }),
+  })),
 };
 
 export const updateUserSchema = {
   params: z.object({
     userId: z.coerce.number().int().positive(),
   }),
-  body: adminUserBodySchema.partial(),
+  body: withAdminUserBodyValidation(adminUserBodyBaseSchema.partial()),
 };
 
 export const userIdParamSchema = {

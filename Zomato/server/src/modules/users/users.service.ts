@@ -3,6 +3,10 @@ import { Role } from "../../constants/enums.js";
 import bcrypt from "bcrypt";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
+import {
+  resolveRegionIdForAssignment,
+  syncRestaurantsRegionForOwner,
+} from "../regions/regions.service.js";
 import { notificationsService } from "../notifications/notifications.service.js";
 import { AppError } from "../../utils/app-error.js";
 
@@ -12,6 +16,10 @@ const userSelect = {
   email: true,
   phone: true,
   role: true,
+  regionId: true,
+  opsState: true,
+  opsDistrict: true,
+  opsNotes: true,
   profileImage: true,
   membershipTier: true,
   membershipStatus: true,
@@ -32,6 +40,9 @@ type AdminUserInput = {
   phone?: string;
   password?: string;
   role: Role;
+  opsState?: string;
+  opsDistrict?: string;
+  opsNotes?: string;
   profileImage?: string;
   walletBalance?: number;
   isActive?: boolean;
@@ -121,6 +132,7 @@ export const usersService = {
     }
 
     const passwordHash = await bcrypt.hash(input.password, 12);
+    const region = await resolveRegionIdForAssignment(prisma, input.opsState, input.opsDistrict);
 
     return prisma.user.create({
       data: {
@@ -129,6 +141,10 @@ export const usersService = {
         phone: input.phone,
         passwordHash,
         role: input.role,
+        regionId: region?.id ?? null,
+        opsState: input.opsState?.trim() || null,
+        opsDistrict: input.opsDistrict?.trim() || null,
+        opsNotes: input.opsNotes?.trim() || null,
         profileImage: input.profileImage,
         walletBalance: input.walletBalance ?? 0,
         isActive: input.isActive ?? true,
@@ -142,28 +158,51 @@ export const usersService = {
   async updateByAdmin(userId: number, input: Partial<AdminUserInput>) {
     const existingUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true },
+      select: { id: true, role: true },
     });
 
     if (!existingUser) {
       throw new AppError(StatusCodes.NOT_FOUND, "User not found", "USER_NOT_FOUND");
     }
 
-    return prisma.user.update({
-      where: { id: userId },
-      data: {
-        ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
-        ...(input.email !== undefined ? { email: input.email } : {}),
-        ...(input.phone !== undefined ? { phone: input.phone } : {}),
-        ...(input.password !== undefined ? { passwordHash: await bcrypt.hash(input.password, 12) } : {}),
-        ...(input.role !== undefined ? { role: input.role } : {}),
-        ...(input.profileImage !== undefined ? { profileImage: input.profileImage } : {}),
-        ...(input.walletBalance !== undefined ? { walletBalance: input.walletBalance } : {}),
-        ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
-        ...(input.emailVerified !== undefined ? { emailVerified: input.emailVerified } : {}),
-        ...(input.phoneVerified !== undefined ? { phoneVerified: input.phoneVerified } : {}),
-      },
-      select: userSelect,
+    const nextState = input.opsState !== undefined ? input.opsState : undefined;
+    const nextDistrict = input.opsDistrict !== undefined ? input.opsDistrict : undefined;
+    const shouldRecalculateRegion = input.opsState !== undefined || input.opsDistrict !== undefined;
+
+    const region = shouldRecalculateRegion
+      ? await resolveRegionIdForAssignment(prisma, nextState ?? null, nextDistrict ?? null)
+      : null;
+
+    return prisma.$transaction(async (tx) => {
+      const user = await tx.user.update({
+        where: { id: userId },
+        data: {
+          ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
+          ...(input.email !== undefined ? { email: input.email } : {}),
+          ...(input.phone !== undefined ? { phone: input.phone } : {}),
+          ...(input.password !== undefined ? { passwordHash: await bcrypt.hash(input.password, 12) } : {}),
+          ...(input.role !== undefined ? { role: input.role } : {}),
+          ...(input.opsState !== undefined ? { opsState: input.opsState?.trim() || null } : {}),
+          ...(input.opsDistrict !== undefined ? { opsDistrict: input.opsDistrict?.trim() || null } : {}),
+          ...(input.opsNotes !== undefined ? { opsNotes: input.opsNotes?.trim() || null } : {}),
+          ...(shouldRecalculateRegion ? { regionId: region?.id ?? null } : {}),
+          ...(input.profileImage !== undefined ? { profileImage: input.profileImage } : {}),
+          ...(input.walletBalance !== undefined ? { walletBalance: input.walletBalance } : {}),
+          ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+          ...(input.emailVerified !== undefined ? { emailVerified: input.emailVerified } : {}),
+          ...(input.phoneVerified !== undefined ? { phoneVerified: input.phoneVerified } : {}),
+        },
+        select: userSelect,
+      });
+
+      if (
+        shouldRecalculateRegion &&
+        (existingUser.role === Role.RESTAURANT_OWNER || input.role === Role.RESTAURANT_OWNER)
+      ) {
+        await syncRestaurantsRegionForOwner(tx, userId, region?.id ?? null);
+      }
+
+      return user;
     });
   },
 

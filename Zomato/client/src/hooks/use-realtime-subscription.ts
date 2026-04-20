@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
+  type RealtimeDispatchQueueUpdate,
   getRealtimeSocket,
   type RealtimeDeliveryLocationUpdate,
   type RealtimeNotification,
@@ -13,6 +14,7 @@ type UseRealtimeSubscriptionOptions = {
   onNotification?: (payload: RealtimeNotification) => void;
   onOrderStatusUpdate?: (payload: RealtimeOrderStatusUpdate) => void;
   onDeliveryLocationUpdate?: (payload: RealtimeDeliveryLocationUpdate) => void;
+  onDispatchQueueUpdate?: (payload: RealtimeDispatchQueueUpdate) => void;
 };
 
 const normalizeOrderIds = (orderIds?: Array<number | null | undefined>) =>
@@ -25,17 +27,20 @@ export const useRealtimeSubscription = ({
   onNotification,
   onOrderStatusUpdate,
   onDeliveryLocationUpdate,
+  onDispatchQueueUpdate,
 }: UseRealtimeSubscriptionOptions) => {
   const orderRoomIds = useMemo(() => normalizeOrderIds(orderIds), [orderIds]);
   const notificationHandlerRef = useRef<typeof onNotification>();
   const orderStatusHandlerRef = useRef<typeof onOrderStatusUpdate>();
   const deliveryLocationHandlerRef = useRef<typeof onDeliveryLocationUpdate>();
+  const dispatchQueueHandlerRef = useRef<typeof onDispatchQueueUpdate>();
 
   useEffect(() => {
     notificationHandlerRef.current = onNotification;
     orderStatusHandlerRef.current = onOrderStatusUpdate;
     deliveryLocationHandlerRef.current = onDeliveryLocationUpdate;
-  }, [onDeliveryLocationUpdate, onNotification, onOrderStatusUpdate]);
+    dispatchQueueHandlerRef.current = onDispatchQueueUpdate;
+  }, [onDeliveryLocationUpdate, onDispatchQueueUpdate, onNotification, onOrderStatusUpdate]);
 
   useEffect(() => {
     if (!enabled || !userId) {
@@ -59,9 +64,14 @@ export const useRealtimeSubscription = ({
       deliveryLocationHandlerRef.current?.(payload);
     };
 
+    const handleDispatchQueueUpdate = (payload: RealtimeDispatchQueueUpdate) => {
+      dispatchQueueHandlerRef.current?.(payload);
+    };
+
     socket.on("notification:new", handleNotification);
     socket.on("order:status:update", handleOrderStatusUpdate);
     socket.on("delivery:location:update", handleDeliveryLocationUpdate);
+    socket.on("delivery:dispatch:update", handleDispatchQueueUpdate);
 
     orderRoomIds.forEach((orderId) => {
       socket.emit("join:order", orderId);
@@ -71,6 +81,7 @@ export const useRealtimeSubscription = ({
       socket.off("notification:new", handleNotification);
       socket.off("order:status:update", handleOrderStatusUpdate);
       socket.off("delivery:location:update", handleDeliveryLocationUpdate);
+      socket.off("delivery:dispatch:update", handleDispatchQueueUpdate);
 
       orderRoomIds.forEach((orderId) => {
         socket.emit("leave:order", orderId);

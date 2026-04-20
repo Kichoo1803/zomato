@@ -45,5 +45,7 @@ export const assignDeliveryPartnerSchema = {
   }),
   body: z.object({
     deliveryPartnerId: z.coerce.number().int().positive(),
+    emergencyOverride: z.literal(true),
+    overrideReason: z.string().trim().max(300).optional(),
   }),
 };

@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { CreditCard, Edit3, MapPin, Sparkles, Wallet } from "lucide-react";
+import { CreditCard, Edit3, LocateFixed, MapPin, MapPinned, Sparkles, Trash2, Wallet } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
 import { ConfirmDangerModal } from "@/components/admin/admin-ui";
+import { LocationPickerMap } from "@/components/maps/location-picker-map";
 import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -14,14 +15,31 @@ import { Modal } from "@/components/ui/modal";
 import { PageShell, SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Table } from "@/components/ui/table";
+import { Tabs } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/use-auth";
 import { useNotificationInbox } from "@/hooks/use-notification-inbox";
 import { getApiErrorMessage, logoutFromServer } from "@/lib/auth";
 import {
+  areCustomerActiveLocationsEqual,
+  clearStoredCustomerActiveLocation,
+  createCustomerActiveLocationFromAddress,
+  getBrowserCoordinates,
+  getCustomerLocationErrorMessage,
+  hasCustomerAddressCoordinates,
+  readStoredCustomerActiveLocation,
+  resolvePreferredCustomerActiveLocation,
+  writeStoredCustomerActiveLocation,
+  type CustomerActiveLocationSource,
+  type CustomerActiveLocation,
+} from "@/lib/customer-location";
+import {
   createCustomerAddress,
+  deleteCustomerAddress,
   createCustomerPaymentMethod,
   getCustomerAddresses,
   getCustomerPaymentMethods,
+  geocodeCustomerLocation,
+  reverseGeocodeCustomerLocation,
   type CustomerAddress,
   type CustomerAddressPayload,
   type CustomerPaymentMethod,
@@ -112,7 +130,10 @@ const addressFormSchema = z.object({
   city: z.string().trim().min(2, "City is required.").max(120),
   state: z.string().trim().min(2, "State is required.").max(120),
   pincode: z.string().trim().min(4, "Pincode is required.").max(20),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
   isDefault: z.boolean().default(false),
+  useForSearch: z.boolean().default(true),
 });
 
 const profileFormSchema = z.object({
@@ -208,6 +229,7 @@ const mapAddressToFormValues = (
   defaults?: {
     recipientName?: string | null;
     contactPhone?: string | null;
+    useForSearch?: boolean;
   },
 ): AddressFormValues => ({
   addressType: (address?.addressType as AddressFormValues["addressType"] | undefined) ?? "HOME",
@@ -221,7 +243,10 @@ const mapAddressToFormValues = (
   city: normalizeOptional(address?.city),
   state: normalizeOptional(address?.state),
   pincode: normalizeOptional(address?.pincode),
+  latitude: address?.latitude ?? undefined,
+  longitude: address?.longitude ?? undefined,
   isDefault: address?.isDefault ?? false,
+  useForSearch: defaults?.useForSearch ?? false,
 });
 
 const toAddressPayload = (values: AddressFormValues): CustomerAddressPayload => {
@@ -242,9 +267,25 @@ const toAddressPayload = (values: AddressFormValues): CustomerAddressPayload => 
     city: values.city.trim(),
     state: values.state.trim(),
     pincode: values.pincode.trim(),
+    latitude: values.latitude,
+    longitude: values.longitude,
     isDefault: values.isDefault,
   };
 };
+
+const buildAddressSearchText = (values: AddressFormValues) =>
+  [
+    values.houseNo,
+    values.street,
+    values.landmark,
+    values.area,
+    values.city,
+    values.state,
+    values.pincode,
+  ]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value))
+    .join(", ");
 
 const getAddressHeading = (address: CustomerAddress) =>
   address.title?.trim() || toAddressLabel(address.addressType);
@@ -265,11 +306,38 @@ const getAddressLines = (address: CustomerAddress) => ({
     .join(", "),
 });
 
+const getAddressLocationStatus = (address: CustomerAddress) =>
+  hasCustomerAddressCoordinates(address)
+    ? {
+        label: "Ready for search",
+        tone: "success" as const,
+        message: "This address has usable coordinates and can drive nearby restaurant discovery.",
+      }
+    : {
+        label: "Location needed",
+        tone: "warning" as const,
+        message: "Add location details to use this address for food search and nearby restaurant delivery.",
+      };
+
+const getAddressCoordinateSummary = (address: CustomerAddress) =>
+  hasCustomerAddressCoordinates(address)
+    ? `${address.latitude.toFixed(5)}, ${address.longitude.toFixed(5)}`
+    : "Coordinates not set";
+
+const hasResolvedFormCoordinates = (values: { latitude?: number; longitude?: number }) =>
+  typeof values.latitude === "number" &&
+  Number.isFinite(values.latitude) &&
+  typeof values.longitude === "number" &&
+  Number.isFinite(values.longitude);
+
+const DEFAULT_MAP_COORDINATES = { latitude: 20.5937, longitude: 78.9629 };
+
 const AddressFormModal = ({
   open,
   address,
   defaultRecipientName,
   defaultPhone,
+  defaultUseForSearch,
   isSubmitting,
   onClose,
   onSubmit,
@@ -278,6 +346,7 @@ const AddressFormModal = ({
   address: CustomerAddress | null;
   defaultRecipientName?: string | null;
   defaultPhone?: string | null;
+  defaultUseForSearch?: boolean;
   isSubmitting: boolean;
   onClose: () => void;
   onSubmit: (values: AddressFormValues) => Promise<void>;
@@ -287,29 +356,281 @@ const AddressFormModal = ({
     defaultValues: mapAddressToFormValues(address, {
       recipientName: defaultRecipientName,
       contactPhone: defaultPhone,
+      useForSearch: defaultUseForSearch,
     }),
   });
+  const [activeLocationTab, setActiveLocationTab] = useState<"current" | "map" | "manual">("manual");
+  const [mapCoordinates, setMapCoordinates] = useState(() =>
+    hasCustomerAddressCoordinates(address)
+      ? { latitude: address.latitude, longitude: address.longitude }
+      : DEFAULT_MAP_COORDINATES,
+  );
+  const [hasTouchedMap, setHasTouchedMap] = useState(Boolean(address && hasCustomerAddressCoordinates(address)));
+  const [resolvedLocationLabel, setResolvedLocationLabel] = useState(() =>
+    address ? `${buildAddressSearchText(mapAddressToFormValues(address)) || address.city} (${getAddressCoordinateSummary(address)})` : "",
+  );
+  const [locationError, setLocationError] = useState<string>();
+  const [isResolvingCurrentLocation, setIsResolvingCurrentLocation] = useState(false);
+  const [isResolvingTypedAddress, setIsResolvingTypedAddress] = useState(false);
+  const [isSavingMapLocation, setIsSavingMapLocation] = useState(false);
+
+  useEffect(() => {
+    form.register("latitude");
+    form.register("longitude");
+  }, [form]);
 
   useEffect(() => {
     if (!open) {
       return;
     }
 
-    form.reset(
-      mapAddressToFormValues(address, {
-        recipientName: defaultRecipientName,
-        contactPhone: defaultPhone,
-      }),
+    const defaultValues = mapAddressToFormValues(address, {
+      recipientName: defaultRecipientName,
+      contactPhone: defaultPhone,
+      useForSearch: defaultUseForSearch,
+    });
+
+    form.reset(defaultValues);
+    const nextCoordinates =
+      hasResolvedFormCoordinates(defaultValues) && typeof defaultValues.latitude === "number" && typeof defaultValues.longitude === "number"
+        ? { latitude: defaultValues.latitude, longitude: defaultValues.longitude }
+        : DEFAULT_MAP_COORDINATES;
+    setMapCoordinates(nextCoordinates);
+    setHasTouchedMap(hasResolvedFormCoordinates(defaultValues));
+    setActiveLocationTab(hasResolvedFormCoordinates(defaultValues) ? "map" : "manual");
+    setResolvedLocationLabel(
+      address
+        ? `${buildAddressSearchText(defaultValues) || address.city} (${getAddressCoordinateSummary(address)})`
+        : "",
     );
-  }, [address, defaultPhone, defaultRecipientName, form, open]);
+    setLocationError(undefined);
+  }, [address, defaultPhone, defaultRecipientName, defaultUseForSearch, form, open]);
+
+  const latitude = form.watch("latitude");
+  const longitude = form.watch("longitude");
+  const useForSearch = form.watch("useForSearch");
+  const hasCoordinates = hasResolvedFormCoordinates({ latitude, longitude });
+
+  const attachResolvedLocation = (
+    coordinates: { latitude: number; longitude: number },
+    label: string,
+  ) => {
+    form.setValue("latitude", coordinates.latitude, { shouldDirty: true, shouldTouch: true });
+    form.setValue("longitude", coordinates.longitude, { shouldDirty: true, shouldTouch: true });
+    setMapCoordinates(coordinates);
+    setHasTouchedMap(true);
+    setResolvedLocationLabel(`${label} (${coordinates.latitude.toFixed(5)}, ${coordinates.longitude.toFixed(5)})`);
+    setLocationError(undefined);
+  };
+
+  const resolveTypedAddress = async ({ silently = false }: { silently?: boolean } = {}) => {
+    const values = form.getValues();
+    const searchText = buildAddressSearchText(values);
+
+    if (searchText.trim().length < 6) {
+      const message = "Add fuller address details before resolving location coordinates.";
+      setLocationError(message);
+      if (!silently) {
+        toast.error(message);
+      }
+      return null;
+    }
+
+    setIsResolvingTypedAddress(true);
+
+    try {
+      const resolvedLocation = await geocodeCustomerLocation(searchText);
+      attachResolvedLocation(
+        {
+          latitude: resolvedLocation.latitude,
+          longitude: resolvedLocation.longitude,
+        },
+        resolvedLocation.address.trim() || searchText,
+      );
+
+      if (!silently) {
+        toast.success("Address details matched to a delivery location.");
+      }
+
+      return resolvedLocation;
+    } catch (error) {
+      const message = getApiErrorMessage(error, "Unable to match this address yet. Try the map pin instead.");
+      setLocationError(message);
+      if (!silently) {
+        toast.error(message);
+      }
+      return null;
+    } finally {
+      setIsResolvingTypedAddress(false);
+    }
+  };
+
+  const handleUseCurrentLocation = async () => {
+    setIsResolvingCurrentLocation(true);
+    setLocationError(undefined);
+
+    try {
+      const coordinates = await getBrowserCoordinates();
+      const resolvedLocation = await reverseGeocodeCustomerLocation(coordinates).catch(() => null);
+      attachResolvedLocation(
+        coordinates,
+        resolvedLocation?.address?.trim() ||
+          `Current location near ${coordinates.latitude.toFixed(4)}, ${coordinates.longitude.toFixed(4)}`,
+      );
+      toast.success("Current location attached to this address.");
+    } catch (error) {
+      const message = getCustomerLocationErrorMessage(error);
+      setLocationError(message);
+      toast.error(message);
+    } finally {
+      setIsResolvingCurrentLocation(false);
+    }
+  };
+
+  const handleUseMapLocation = async () => {
+    setIsSavingMapLocation(true);
+    setLocationError(undefined);
+
+    try {
+      const resolvedLocation = await reverseGeocodeCustomerLocation(mapCoordinates).catch(() => null);
+      attachResolvedLocation(
+        mapCoordinates,
+        resolvedLocation?.address?.trim() ||
+          `Pinned location near ${mapCoordinates.latitude.toFixed(4)}, ${mapCoordinates.longitude.toFixed(4)}`,
+      );
+      toast.success("Map location attached to this address.");
+    } catch (error) {
+      const message = getApiErrorMessage(error, "Unable to use this map location right now.");
+      setLocationError(message);
+      toast.error(message);
+    } finally {
+      setIsSavingMapLocation(false);
+    }
+  };
 
   const handleSubmit = form.handleSubmit(async (values) => {
-    await onSubmit(values);
+    let nextValues = values;
+
+    if (!hasResolvedFormCoordinates(values)) {
+      const resolvedLocation = await resolveTypedAddress({ silently: true });
+
+      if (resolvedLocation) {
+        nextValues = {
+          ...form.getValues(),
+          latitude: resolvedLocation.latitude,
+          longitude: resolvedLocation.longitude,
+        };
+      }
+    }
+
+    await onSubmit(nextValues);
   });
 
   return (
-    <Modal open={open} onClose={onClose} title={address ? "Edit address" : "Add new address"} className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={address ? "Edit address" : "Add new address"} className="max-w-4xl">
       <form onSubmit={handleSubmit} className="space-y-5">
+        <div className="space-y-4 rounded-[1.75rem] border border-accent/10 bg-cream-soft/60 px-5 py-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Location details</p>
+              <p className="mt-2 text-sm leading-7 text-ink-soft">
+                Nearby restaurant search only works when this address has valid latitude and longitude coordinates.
+              </p>
+            </div>
+            <StatusPill label={hasCoordinates ? "Ready for search" : "Location needed"} tone={hasCoordinates ? "success" : "warning"} />
+          </div>
+
+          <Tabs
+            items={[
+              { value: "current", label: "Current" },
+              { value: "map", label: "Map" },
+              { value: "manual", label: "Address" },
+            ]}
+            value={activeLocationTab}
+            onChange={(value) => setActiveLocationTab(value as "current" | "map" | "manual")}
+          />
+
+          {activeLocationTab === "current" ? (
+            <div className="space-y-4 rounded-[1.5rem] border border-accent/10 bg-white px-4 py-4">
+              <p className="text-sm leading-7 text-ink-soft">
+                Use your device GPS to capture the handoff coordinates, then finish any building, landmark, or recipient details below before saving.
+              </p>
+              <div className="flex flex-wrap justify-end gap-3">
+                <Button type="button" variant="secondary" onClick={onClose} disabled={isResolvingCurrentLocation || isSubmitting}>
+                  Cancel
+                </Button>
+                <Button type="button" onClick={() => void handleUseCurrentLocation()} disabled={isResolvingCurrentLocation || isSubmitting}>
+                  <LocateFixed className="mr-2 h-4 w-4" />
+                  {isResolvingCurrentLocation ? "Locating..." : "Use current location"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {activeLocationTab === "map" ? (
+            <div className="space-y-4 rounded-[1.5rem] border border-accent/10 bg-white px-4 py-4">
+              <LocationPickerMap
+                value={mapCoordinates}
+                onChange={(coordinates) => {
+                  setMapCoordinates(coordinates);
+                  setHasTouchedMap(true);
+                }}
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-[1.25rem] bg-cream px-4 py-3 text-sm text-ink-soft">
+                  <span className="font-semibold text-ink">Latitude:</span> {mapCoordinates.latitude.toFixed(5)}
+                </div>
+                <div className="rounded-[1.25rem] bg-cream px-4 py-3 text-sm text-ink-soft">
+                  <span className="font-semibold text-ink">Longitude:</span> {mapCoordinates.longitude.toFixed(5)}
+                </div>
+              </div>
+              <div className="flex flex-wrap justify-end gap-3">
+                <Button type="button" onClick={() => void handleUseMapLocation()} disabled={isSavingMapLocation || isSubmitting || !hasTouchedMap}>
+                  <MapPinned className="mr-2 h-4 w-4" />
+                  {isSavingMapLocation ? "Saving..." : "Use map pin"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {activeLocationTab === "manual" ? (
+            <div className="space-y-4 rounded-[1.5rem] border border-accent/10 bg-white px-4 py-4">
+              <p className="text-sm leading-7 text-ink-soft">
+                Fill the address form below, then resolve coordinates from the typed address. If matching fails, switch to the map tab.
+              </p>
+              <div className="flex flex-wrap justify-end gap-3">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void resolveTypedAddress()}
+                  disabled={isResolvingTypedAddress || isSubmitting}
+                >
+                  {isResolvingTypedAddress ? "Matching..." : "Resolve from typed address"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-[1.25rem] bg-white px-4 py-4 text-sm leading-7 text-ink-soft">
+              <p className="font-semibold text-ink">Resolved location</p>
+              <p className="mt-2">
+                {resolvedLocationLabel || "No coordinates attached yet. Use current location, map pin, or resolve the typed address."}
+              </p>
+            </div>
+            <div className="rounded-[1.25rem] bg-white px-4 py-4 text-sm leading-7 text-ink-soft">
+              <p className="font-semibold text-ink">Coordinate status</p>
+              <p className="mt-2">
+                {hasCoordinates && typeof latitude === "number" && typeof longitude === "number"
+                  ? `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
+                  : "Coordinates will be attached here once the location is resolved."}
+              </p>
+            </div>
+          </div>
+
+          {locationError ? <p className="text-sm font-medium text-accent-soft">{locationError}</p> : null}
+        </div>
+
         <div className="grid gap-4 sm:grid-cols-2">
           <Select label="Address type" error={form.formState.errors.addressType?.message} {...form.register("addressType")}>
             {ADDRESS_TYPE_OPTIONS.map((option) => (
@@ -386,12 +707,32 @@ const AddressFormModal = ({
           <input type="checkbox" className="h-4 w-4 accent-[rgb(139,30,36)]" {...form.register("isDefault")} />
         </label>
 
+        <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream-soft/60 px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold text-ink">Use this address for nearby restaurant search</p>
+            <p className="mt-1 text-xs text-ink-soft">
+              {hasCoordinates
+                ? "This address will become the active delivery location for restaurant discovery."
+                : "We will try to resolve coordinates on save, but food search stays blocked until the location is matched."}
+            </p>
+          </div>
+          <input type="checkbox" className="h-4 w-4 accent-[rgb(139,30,36)]" {...form.register("useForSearch")} />
+        </label>
+
         <div className="flex flex-wrap justify-end gap-3">
           <Button type="button" variant="secondary" onClick={onClose} disabled={isSubmitting}>
             Cancel
           </Button>
           <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? (address ? "Saving..." : "Adding...") : address ? "Save changes" : "Add address"}
+            {isSubmitting
+              ? address
+                ? "Saving..."
+                : "Adding..."
+              : address
+                ? "Save changes"
+                : useForSearch
+                  ? "Save and use address"
+                  : "Add address"}
           </Button>
         </div>
       </form>
@@ -897,11 +1238,38 @@ export const ProfilePage = () => {
 export const SavedAddressesPage = () => {
   const { user } = useAuth();
   const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
+  const [activeLocation, setActiveLocation] = useState<CustomerActiveLocation | null>(() =>
+    readStoredCustomerActiveLocation(),
+  );
   const [isLoading, setIsLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedAddress, setSelectedAddress] = useState<CustomerAddress | null>(null);
+  const [shouldUseSelectedAddressForSearch, setShouldUseSelectedAddressForSearch] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [defaultingAddressId, setDefaultingAddressId] = useState<number | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CustomerAddress | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const persistActiveLocation = (
+    address: CustomerAddress,
+    source: CustomerActiveLocationSource = address.isDefault ? "default" : "saved",
+  ) => {
+    const nextLocation = createCustomerActiveLocationFromAddress(address, source);
+
+    if (!nextLocation) {
+      toast.error("Add location details to this address before using it for nearby restaurant search.");
+      return false;
+    }
+
+    writeStoredCustomerActiveLocation(nextLocation);
+    setActiveLocation(nextLocation);
+    return true;
+  };
+
+  const clearActiveLocation = () => {
+    clearStoredCustomerActiveLocation();
+    setActiveLocation(null);
+  };
 
   const loadAddresses = async ({ quietly = false }: { quietly?: boolean } = {}) => {
     if (!quietly) {
@@ -911,9 +1279,11 @@ export const SavedAddressesPage = () => {
     try {
       const nextAddresses = await getCustomerAddresses();
       setAddresses(nextAddresses);
+      return nextAddresses;
     } catch (error) {
       setAddresses([]);
       toast.error(getApiErrorMessage(error, "Unable to load saved addresses right now."));
+      return [] as CustomerAddress[];
     } finally {
       if (!quietly) {
         setIsLoading(false);
@@ -925,6 +1295,32 @@ export const SavedAddressesPage = () => {
     void loadAddresses();
   }, []);
 
+  useEffect(() => {
+    const storedLocation = readStoredCustomerActiveLocation();
+    const preferredLocation = resolvePreferredCustomerActiveLocation(addresses, storedLocation);
+
+    if (preferredLocation) {
+      if (!areCustomerActiveLocationsEqual(activeLocation, preferredLocation)) {
+        setActiveLocation(preferredLocation);
+      }
+
+      if (!areCustomerActiveLocationsEqual(storedLocation, preferredLocation)) {
+        writeStoredCustomerActiveLocation(preferredLocation);
+      }
+
+      return;
+    }
+
+    if (!activeLocation) {
+      clearActiveLocation();
+      return;
+    }
+
+    if (activeLocation.source === "default" || activeLocation.source === "saved") {
+      clearActiveLocation();
+    }
+  }, [activeLocation, addresses]);
+
   const handleCloseModal = () => {
     if (isSubmitting) {
       return;
@@ -932,15 +1328,18 @@ export const SavedAddressesPage = () => {
 
     setIsModalOpen(false);
     setSelectedAddress(null);
+    setShouldUseSelectedAddressForSearch(false);
   };
 
   const handleCreateAddress = () => {
     setSelectedAddress(null);
+    setShouldUseSelectedAddressForSearch(!activeLocation);
     setIsModalOpen(true);
   };
 
   const handleEditAddress = (address: CustomerAddress) => {
     setSelectedAddress(address);
+    setShouldUseSelectedAddressForSearch(activeAddressId === address.id);
     setIsModalOpen(true);
   };
 
@@ -949,18 +1348,34 @@ export const SavedAddressesPage = () => {
 
     try {
       const payload = toAddressPayload(values);
+      const savedAddress = selectedAddress
+        ? await updateCustomerAddress(selectedAddress.id, payload)
+        : await createCustomerAddress(payload);
+      const shouldUseForSearch = values.useForSearch || savedAddress.isDefault;
 
       if (selectedAddress) {
-        await updateCustomerAddress(selectedAddress.id, payload);
         toast.success("Address updated successfully.");
       } else {
-        await createCustomerAddress(payload);
         toast.success("Address added successfully.");
       }
 
       await loadAddresses({ quietly: true });
+
+      if (shouldUseForSearch && hasCustomerAddressCoordinates(savedAddress)) {
+        persistActiveLocation(savedAddress, savedAddress.isDefault ? "default" : "saved");
+      } else if (shouldUseForSearch && !hasCustomerAddressCoordinates(savedAddress)) {
+        toast.success("Address saved. Add location details before using it for nearby restaurant search.");
+      } else if (activeLocation?.addressId === savedAddress.id) {
+        if (hasCustomerAddressCoordinates(savedAddress)) {
+          persistActiveLocation(savedAddress, savedAddress.isDefault ? "default" : "saved");
+        } else {
+          clearActiveLocation();
+        }
+      }
+
       setIsModalOpen(false);
       setSelectedAddress(null);
+      setShouldUseSelectedAddressForSearch(false);
     } catch (error) {
       toast.error(
         getApiErrorMessage(
@@ -977,15 +1392,72 @@ export const SavedAddressesPage = () => {
     setDefaultingAddressId(address.id);
 
     try {
-      await updateCustomerAddress(address.id, { isDefault: true });
+      const updatedAddress = await updateCustomerAddress(address.id, { isDefault: true });
       await loadAddresses({ quietly: true });
-      toast.success("Default address updated.");
+
+      if (hasCustomerAddressCoordinates(updatedAddress)) {
+        persistActiveLocation({ ...updatedAddress, isDefault: true }, "default");
+        toast.success("Default address updated and linked to nearby restaurant search.");
+      } else {
+        toast.success("Default address updated. Add location details before using it for nearby restaurant search.");
+      }
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to update the default address right now."));
     } finally {
       setDefaultingAddressId(null);
     }
   };
+
+  const handleUseForSearch = (address: CustomerAddress) => {
+    if (!hasCustomerAddressCoordinates(address)) {
+      toast.error("Add location details to this address before using it for nearby restaurant search.");
+      setSelectedAddress(address);
+      setShouldUseSelectedAddressForSearch(true);
+      setIsModalOpen(true);
+      return;
+    }
+
+    if (persistActiveLocation(address, address.isDefault ? "default" : "saved")) {
+      toast.success("Nearby restaurant search now uses this saved address.");
+    }
+  };
+
+  const handleDeleteAddress = async () => {
+    if (!deleteTarget) {
+      return;
+    }
+
+    setIsDeleting(true);
+
+    try {
+      await deleteCustomerAddress(deleteTarget.id);
+      const nextAddresses = await loadAddresses({ quietly: true });
+
+      if (activeLocation?.addressId === deleteTarget.id) {
+        const replacementAddress =
+          nextAddresses.find((address) => address.isDefault && hasCustomerAddressCoordinates(address)) ??
+          nextAddresses.find((address) => hasCustomerAddressCoordinates(address));
+
+        if (replacementAddress) {
+          persistActiveLocation(replacementAddress, replacementAddress.isDefault ? "default" : "saved");
+          toast.success("Address deleted. Nearby restaurant search moved to another saved address.");
+        } else {
+          clearActiveLocation();
+          toast.success("Address deleted. Choose another address with location details to browse restaurants.");
+        }
+      } else {
+        toast.success("Address deleted successfully.");
+      }
+
+      setDeleteTarget(null);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to delete this address right now."));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const activeAddressId = activeLocation?.addressId ?? null;
 
   return (
     <>
@@ -999,6 +1471,36 @@ export const SavedAddressesPage = () => {
           </Button>
         }
       >
+        <SurfaceCard className="space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <StatusPill label={activeLocation ? "Active for search" : "Location needed"} tone={activeLocation ? "success" : "warning"} />
+                {activeLocation?.label ? <StatusPill label={activeLocation.label} tone="info" /> : null}
+              </div>
+              <p className="text-sm font-semibold text-ink">
+                {activeLocation
+                  ? activeLocation.addressId
+                    ? "Nearby restaurants are currently filtered from this saved delivery location."
+                    : "Nearby restaurants are currently filtered from a temporary delivery location."
+                  : "Choose a saved address with location details before browsing nearby restaurants."}
+              </p>
+              <p className="text-sm leading-7 text-ink-soft">
+                {activeLocation
+                  ? activeLocation.addressId
+                    ? activeLocation.address
+                    : `${activeLocation.address} Use one of the saved addresses below to replace this temporary search location.`
+                  : "Save an address with a map pin, current location, or typed-address match, then use it for food search."}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Link to="/restaurants" className={linkButtonClassName}>
+                Browse restaurants
+              </Link>
+            </div>
+          </div>
+        </SurfaceCard>
+
         {isLoading ? (
           <SurfaceCard>
             <p className="text-sm leading-7 text-ink-soft">Loading your saved addresses.</p>
@@ -1020,7 +1522,10 @@ export const SavedAddressesPage = () => {
                         <p className="mt-1 text-sm text-ink-soft">{getAddressSubtitle(address)}</p>
                       </div>
                     </div>
-                    {address.isDefault ? <StatusPill label="Default" tone="info" /> : null}
+                    <div className="flex flex-wrap gap-2">
+                      {address.isDefault ? <StatusPill label="Default" tone="info" /> : null}
+                      {activeAddressId === address.id ? <StatusPill label="Search active" tone="success" /> : null}
+                    </div>
                   </div>
 
                   <div className="rounded-[1.5rem] bg-cream px-5 py-4 text-sm leading-7 text-ink-soft">
@@ -1029,7 +1534,38 @@ export const SavedAddressesPage = () => {
                     {address.contactPhone ? <p>{address.contactPhone}</p> : null}
                   </div>
 
+                  <div className="space-y-3 rounded-[1.5rem] border border-accent/10 bg-white px-5 py-4">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <StatusPill
+                        label={getAddressLocationStatus(address).label}
+                        tone={getAddressLocationStatus(address).tone}
+                      />
+                      <p className="text-sm text-ink-soft">{getAddressLocationStatus(address).message}</p>
+                    </div>
+                    <p className="text-sm leading-7 text-ink-soft">
+                      <span className="font-semibold text-ink">Coordinates:</span> {getAddressCoordinateSummary(address)}
+                    </p>
+                    {!hasCustomerAddressCoordinates(address) ? (
+                      <p className="text-sm leading-7 text-ink-soft">
+                        This saved address remains editable and usable at checkout, but restaurant discovery stays blocked until coordinates are attached.
+                      </p>
+                    ) : null}
+                  </div>
+
                   <div className="flex flex-wrap gap-3">
+                    <Button
+                      type="button"
+                      variant={activeAddressId === address.id ? "secondary" : "primary"}
+                      className="px-3 py-2 text-xs"
+                      onClick={() => handleUseForSearch(address)}
+                      disabled={activeAddressId === address.id}
+                    >
+                      {hasCustomerAddressCoordinates(address)
+                        ? activeAddressId === address.id
+                          ? "Using for search"
+                          : "Use for search"
+                        : "Add location details"}
+                    </Button>
                     <Button type="button" variant="ghost" className="px-3 py-2 text-xs" onClick={() => handleEditAddress(address)}>
                       <Edit3 className="mr-2 h-4 w-4" />
                       Edit address
@@ -1045,6 +1581,15 @@ export const SavedAddressesPage = () => {
                         {defaultingAddressId === address.id ? "Updating..." : "Set as default"}
                       </Button>
                     ) : null}
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => setDeleteTarget(address)}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </Button>
                   </div>
                 </SurfaceCard>
               );
@@ -1063,9 +1608,24 @@ export const SavedAddressesPage = () => {
         address={selectedAddress}
         defaultRecipientName={user?.fullName}
         defaultPhone={user?.phone}
+        defaultUseForSearch={shouldUseSelectedAddressForSearch}
         isSubmitting={isSubmitting}
         onClose={handleCloseModal}
         onSubmit={handleSubmitAddress}
+      />
+
+      <ConfirmDangerModal
+        open={Boolean(deleteTarget)}
+        title="Delete saved address"
+        description="This removes the address from your saved list. Orders already placed keep their historic delivery address details."
+        confirmLabel="Delete address"
+        isSubmitting={isDeleting}
+        onClose={() => {
+          if (!isDeleting) {
+            setDeleteTarget(null);
+          }
+        }}
+        onConfirm={() => void handleDeleteAddress()}
       />
     </>
   );

@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import { StatusCodes } from "http-status-codes";
+import { logger } from "../../lib/logger.js";
 import { AppError } from "../../utils/app-error.js";
 import { getClearRefreshCookieOptions, getRefreshCookieOptions, REFRESH_COOKIE_NAME } from "../../utils/cookies.js";
 import { sendSuccess } from "../../utils/api-response.js";
@@ -31,6 +32,12 @@ export const login = asyncHandler(async (req, res) => {
   const result = await authService.login(req.body, getSessionMeta(req));
 
   res.cookie(REFRESH_COOKIE_NAME, result.refreshToken, getRefreshCookieOptions());
+
+  logger.info("Login response sent", {
+    userId: result.user.id,
+    email: result.user.email,
+    role: result.user.role,
+  });
 
   return sendSuccess(res, {
     message: "Login successful",

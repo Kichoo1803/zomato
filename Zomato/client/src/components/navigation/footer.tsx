@@ -1,12 +1,20 @@
 import { Link } from "react-router-dom";
+import { useAuth } from "@/hooks/use-auth";
+import { getDefaultRedirectPath } from "@/lib/auth";
 
 export const Footer = () => {
+  const { isAuthenticated, user } = useAuth();
+  const isCustomerSession = isAuthenticated && user?.role === "CUSTOMER";
   const footerLinks = [
-    { label: "Customer", to: "/" },
-    { label: "Partners", to: "/partner" },
-    { label: "Owner", to: "/owner" },
-    { label: "Delivery", to: "/delivery" },
-    { label: "Admin", to: "/admin" },
+    { label: "Home", to: "/" },
+    { label: "Restaurants", to: "/restaurants" },
+    { label: "Offers", to: "/offers" },
+    { label: "Membership", to: "/membership" },
+    ...(isAuthenticated && user && user.role !== "CUSTOMER"
+      ? [{ label: "Dashboard", to: getDefaultRedirectPath(user.role) }]
+      : isCustomerSession
+        ? [{ label: "Addresses", to: "/addresses" }]
+        : []),
   ];
 
   return (
@@ -18,7 +26,7 @@ export const Footer = () => {
             Elevated food delivery, premium dining, and real-time order tracking in one seamless platform.
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-4 text-xs uppercase tracking-[0.24em] text-ink-muted sm:grid-cols-5">
+        <div className="grid grid-cols-2 gap-4 text-xs uppercase tracking-[0.24em] text-ink-muted sm:flex sm:flex-wrap sm:justify-end sm:gap-6">
           {footerLinks.map((item) => (
             <Link key={item.label} to={item.to} className="transition-colors hover:text-accent">
               {item.label}
