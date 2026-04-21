@@ -149,7 +149,7 @@ const authCopy: Record<
   ops: {
     eyebrow: "Operations access",
     title: "India operations login",
-    description: "Authenticate with a regional manager or operations manager account and continue into the regional India control room built on the current premium auth flow.",
+    description: "Authenticate with a regional manager account and continue into the regional India control room built on the current premium auth flow.",
     credentials: ["ops@zomatoluxe.dev / Password@123"],
   },
   admin: {
@@ -195,7 +195,7 @@ const resolveNextPath = (role: UserRole, state: LocationState | null) => {
     return fallbackPath;
   }
 
-  if (requestedPath.startsWith("/ops") && !["OPERATIONS_MANAGER", "REGIONAL_MANAGER"].includes(role)) {
+  if (requestedPath.startsWith("/ops") && !["REGIONAL_MANAGER"].includes(role)) {
     return fallbackPath;
   }
 

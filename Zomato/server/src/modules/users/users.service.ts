@@ -4,6 +4,8 @@ import bcrypt from "bcrypt";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
 import {
+  clearRegionalManagerAssignments,
+  replaceRegionalManagerAssignments,
   resolveRegionIdForAssignment,
   syncRestaurantsRegionForOwner,
 } from "../regions/regions.service.js";
@@ -40,6 +42,7 @@ type AdminUserInput = {
   phone?: string;
   password?: string;
   role: Role;
+  managedRegionIds?: number[];
   opsState?: string;
   opsDistrict?: string;
   opsNotes?: string;
@@ -76,6 +79,84 @@ const getMembershipTierLabel = (tier: "CLASSIC" | "GOLD" | "PLATINUM") => {
     case "CLASSIC":
     default:
       return "Luxe Circle Classic";
+  }
+};
+
+const ensureAdminUserUniqueness = async (input: {
+  email?: string;
+  phone?: string;
+  excludeUserId?: number;
+}) => {
+  const normalizedEmail = input.email?.trim();
+  const normalizedPhone = input.phone?.trim();
+  const uniqueConditions = [
+    ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
+    ...(normalizedPhone ? [{ phone: normalizedPhone }] : []),
+  ];
+
+  if (!uniqueConditions.length) {
+    return;
+  }
+
+  const existingUser = await prisma.user.findFirst({
+    where: {
+      OR: uniqueConditions,
+      ...(input.excludeUserId
+        ? {
+            NOT: {
+              id: input.excludeUserId,
+            },
+          }
+        : {}),
+    },
+    select: {
+      id: true,
+      email: true,
+      phone: true,
+    },
+  });
+
+  if (!existingUser) {
+    return;
+  }
+
+  const conflictsWithEmail = normalizedEmail && existingUser.email === normalizedEmail;
+  const conflictsWithPhone = normalizedPhone && existingUser.phone === normalizedPhone;
+
+  throw new AppError(
+    StatusCodes.CONFLICT,
+    conflictsWithEmail
+      ? "An account with this email already exists"
+      : conflictsWithPhone
+        ? "An account with this phone number already exists"
+        : "An account with these details already exists",
+    "ACCOUNT_ALREADY_EXISTS",
+  );
+};
+
+const assertRegionalManagerAssignmentInput = (input: {
+  role: Role;
+  isActive: boolean;
+  managedRegionIds?: number[];
+}) => {
+  if (input.managedRegionIds === undefined) {
+    return;
+  }
+
+  if (input.role !== Role.REGIONAL_MANAGER) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Region assignments can only be managed for regional manager accounts",
+      "INVALID_REGION_MANAGER_ROLE",
+    );
+  }
+
+  if (!input.isActive && input.managedRegionIds.length) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Inactive regional manager accounts cannot keep assigned regions",
+      "REGIONAL_MANAGER_INACTIVE",
+    );
   }
 };
 
@@ -116,65 +197,107 @@ export const usersService = {
   },
 
   async create(input: AdminUserInput & { password: string }) {
-    const existingUser = await prisma.user.findFirst({
-      where: {
-        OR: [{ email: input.email }, ...(input.phone ? [{ phone: input.phone }] : [])],
-      },
-      select: { id: true },
+    await ensureAdminUserUniqueness({
+      email: input.email,
+      phone: input.phone,
     });
 
-    if (existingUser) {
-      throw new AppError(
-        StatusCodes.CONFLICT,
-        "An account with these details already exists",
-        "ACCOUNT_ALREADY_EXISTS",
-      );
-    }
+    assertRegionalManagerAssignmentInput({
+      role: input.role,
+      isActive: input.isActive ?? true,
+      managedRegionIds: input.managedRegionIds,
+    });
 
     const passwordHash = await bcrypt.hash(input.password, 12);
-    const region = await resolveRegionIdForAssignment(prisma, input.opsState, input.opsDistrict);
+    const region =
+      input.role === Role.REGIONAL_MANAGER
+        ? null
+        : await resolveRegionIdForAssignment(prisma, input.opsState, input.opsDistrict);
 
-    return prisma.user.create({
-      data: {
-        fullName: input.fullName,
-        email: input.email,
-        phone: input.phone,
-        passwordHash,
-        role: input.role,
-        regionId: region?.id ?? null,
-        opsState: input.opsState?.trim() || null,
-        opsDistrict: input.opsDistrict?.trim() || null,
-        opsNotes: input.opsNotes?.trim() || null,
-        profileImage: input.profileImage,
-        walletBalance: input.walletBalance ?? 0,
-        isActive: input.isActive ?? true,
-        emailVerified: input.emailVerified ?? false,
-        phoneVerified: input.phoneVerified ?? false,
-      },
-      select: userSelect,
+    return prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          fullName: input.fullName,
+          email: input.email,
+          phone: input.phone,
+          passwordHash,
+          role: input.role,
+          regionId: region?.id ?? null,
+          opsState: input.role === Role.REGIONAL_MANAGER ? null : input.opsState?.trim() || null,
+          opsDistrict: input.role === Role.REGIONAL_MANAGER ? null : input.opsDistrict?.trim() || null,
+          opsNotes: input.opsNotes?.trim() || null,
+          profileImage: input.profileImage,
+          walletBalance: input.walletBalance ?? 0,
+          isActive: input.isActive ?? true,
+          emailVerified: input.emailVerified ?? false,
+          phoneVerified: input.phoneVerified ?? false,
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (input.role === Role.REGIONAL_MANAGER && input.managedRegionIds !== undefined) {
+        await replaceRegionalManagerAssignments(tx, user.id, input.managedRegionIds);
+      }
+
+      return tx.user.findUniqueOrThrow({
+        where: {
+          id: user.id,
+        },
+        select: userSelect,
+      });
     });
   },
 
   async updateByAdmin(userId: number, input: Partial<AdminUserInput>) {
     const existingUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, role: true },
+      select: { id: true, role: true, isActive: true },
     });
 
     if (!existingUser) {
       throw new AppError(StatusCodes.NOT_FOUND, "User not found", "USER_NOT_FOUND");
     }
 
+    await ensureAdminUserUniqueness({
+      email: input.email,
+      phone: input.phone,
+      excludeUserId: userId,
+    });
+
+    const nextRole = (input.role ?? existingUser.role) as Role;
+    const nextIsActive = input.isActive ?? existingUser.isActive;
+
+    assertRegionalManagerAssignmentInput({
+      role: nextRole,
+      isActive: nextIsActive,
+      managedRegionIds: input.managedRegionIds,
+    });
+
     const nextState = input.opsState !== undefined ? input.opsState : undefined;
     const nextDistrict = input.opsDistrict !== undefined ? input.opsDistrict : undefined;
-    const shouldRecalculateRegion = input.opsState !== undefined || input.opsDistrict !== undefined;
+    const shouldRecalculateRegion =
+      nextRole !== Role.REGIONAL_MANAGER &&
+      (input.opsState !== undefined || input.opsDistrict !== undefined);
 
     const region = shouldRecalculateRegion
       ? await resolveRegionIdForAssignment(prisma, nextState ?? null, nextDistrict ?? null)
       : null;
+    const shouldClearManagedRegions =
+      existingUser.role === Role.REGIONAL_MANAGER &&
+      (nextRole !== Role.REGIONAL_MANAGER || !nextIsActive);
+    const shouldInitializeRegionalManagerScope =
+      nextRole === Role.REGIONAL_MANAGER &&
+      existingUser.role !== Role.REGIONAL_MANAGER &&
+      input.managedRegionIds === undefined;
 
     return prisma.$transaction(async (tx) => {
-      const user = await tx.user.update({
+      if (shouldClearManagedRegions) {
+        await clearRegionalManagerAssignments(tx, userId);
+      }
+
+      await tx.user.update({
         where: { id: userId },
         data: {
           ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
@@ -182,8 +305,12 @@ export const usersService = {
           ...(input.phone !== undefined ? { phone: input.phone } : {}),
           ...(input.password !== undefined ? { passwordHash: await bcrypt.hash(input.password, 12) } : {}),
           ...(input.role !== undefined ? { role: input.role } : {}),
-          ...(input.opsState !== undefined ? { opsState: input.opsState?.trim() || null } : {}),
-          ...(input.opsDistrict !== undefined ? { opsDistrict: input.opsDistrict?.trim() || null } : {}),
+          ...(nextRole !== Role.REGIONAL_MANAGER && input.opsState !== undefined
+            ? { opsState: input.opsState?.trim() || null }
+            : {}),
+          ...(nextRole !== Role.REGIONAL_MANAGER && input.opsDistrict !== undefined
+            ? { opsDistrict: input.opsDistrict?.trim() || null }
+            : {}),
           ...(input.opsNotes !== undefined ? { opsNotes: input.opsNotes?.trim() || null } : {}),
           ...(shouldRecalculateRegion ? { regionId: region?.id ?? null } : {}),
           ...(input.profileImage !== undefined ? { profileImage: input.profileImage } : {}),
@@ -192,17 +319,27 @@ export const usersService = {
           ...(input.emailVerified !== undefined ? { emailVerified: input.emailVerified } : {}),
           ...(input.phoneVerified !== undefined ? { phoneVerified: input.phoneVerified } : {}),
         },
-        select: userSelect,
       });
 
       if (
         shouldRecalculateRegion &&
-        (existingUser.role === Role.RESTAURANT_OWNER || input.role === Role.RESTAURANT_OWNER)
+        (existingUser.role === Role.RESTAURANT_OWNER || nextRole === Role.RESTAURANT_OWNER)
       ) {
         await syncRestaurantsRegionForOwner(tx, userId, region?.id ?? null);
       }
 
-      return user;
+      if (nextRole === Role.REGIONAL_MANAGER) {
+        if (input.managedRegionIds !== undefined) {
+          await replaceRegionalManagerAssignments(tx, userId, input.managedRegionIds);
+        } else if (shouldInitializeRegionalManagerScope) {
+          await clearRegionalManagerAssignments(tx, userId);
+        }
+      }
+
+      return tx.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: userSelect,
+      });
     });
   },
 
@@ -211,12 +348,32 @@ export const usersService = {
       throw new AppError(StatusCodes.BAD_REQUEST, "You cannot disable your own account", "SELF_DISABLE_FORBIDDEN");
     }
 
-    return prisma.user.update({
-      where: { id: userId },
-      data: {
-        isActive: false,
-      },
-      select: userSelect,
+    return prisma.$transaction(async (tx) => {
+      const targetUser = await tx.user.findUnique({
+        where: {
+          id: userId,
+        },
+        select: {
+          id: true,
+          role: true,
+        },
+      });
+
+      if (!targetUser) {
+        throw new AppError(StatusCodes.NOT_FOUND, "User not found", "USER_NOT_FOUND");
+      }
+
+      if (targetUser.role === Role.REGIONAL_MANAGER) {
+        await clearRegionalManagerAssignments(tx, userId);
+      }
+
+      return tx.user.update({
+        where: { id: userId },
+        data: {
+          isActive: false,
+        },
+        select: userSelect,
+      });
     });
   },
 

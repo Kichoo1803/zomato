@@ -17,6 +17,8 @@ If you are using PowerShell on Windows, replace `cp` with `Copy-Item` and use `n
 
 `npm run dev -w server` now only regenerates Prisma Client when the current generated client is missing or stale. This avoids the common Windows `EPERM` rename failure when another local process still has the Prisma query engine DLL open.
 
+When `DATABASE_URL` uses the checked-in repo-scoped MongoDB URI on `127.0.0.1:27018` with `replicaSet=rs0`, the backend scripts now auto-start that local MongoDB node and wait for it to become the replica-set PRIMARY before continuing.
+
 ## MongoDB Notes
 
 - Prisma still powers the backend; the datasource provider changed from SQLite to MongoDB.
@@ -46,8 +48,7 @@ If you already had MongoDB data created with the earlier numeric-`_id` workaroun
 For this repo, the safest local path is a repo-scoped replica set on port `27018`, which avoids modifying a protected machine-wide MongoDB service:
 
 ```bash
-mongod --dbpath "server/prisma/mongo-rs/data" --replSet rs0 --bind_ip 127.0.0.1 --port 27018 --logpath "server/prisma/mongo-rs/mongod.log" --logappend
-mongosh --port 27018 --eval "rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '127.0.0.1:27018' }] })"
+npm run mongo:ensure -w server
 ```
 
 Use this connection string with the checked-in config:
@@ -57,6 +58,13 @@ mongodb://127.0.0.1:27018/zomato?replicaSet=rs0
 ```
 
 MongoDB Compass can connect with the same URI.
+
+If you ever need to start the local replica set manually instead of using the helper script:
+
+```bash
+mongod --dbpath "server/prisma/mongo-rs/data" --replSet rs0 --bind_ip 127.0.0.1 --port 27018 --logpath "server/prisma/mongo-rs/mongod.log" --logappend
+mongosh --port 27018 --eval "rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '127.0.0.1:27018' }] })"
+```
 
 ## Existing Data Migration
 

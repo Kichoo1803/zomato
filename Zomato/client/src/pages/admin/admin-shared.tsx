@@ -3,17 +3,10 @@ import { Link } from "react-router-dom";
 import { Edit3, Eye, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/ui/page-shell";
-import type { UserRole } from "@/types/auth";
+import { USER_ROLES, type UserRole } from "@/types/auth";
 
 export const PAGE_SIZE = 6;
-export const ROLE_OPTIONS: UserRole[] = [
-  "CUSTOMER",
-  "RESTAURANT_OWNER",
-  "DELIVERY_PARTNER",
-  "REGIONAL_MANAGER",
-  "OPERATIONS_MANAGER",
-  "ADMIN",
-];
+export const ROLE_OPTIONS: UserRole[] = [...USER_ROLES];
 export const VEHICLE_OPTIONS = ["BIKE", "CYCLE", "SCOOTER", "CAR"];
 export const FOOD_TYPES = ["VEG", "NON_VEG", "EGG"];
 export const ADDON_TYPES = ["EXTRA", "UPGRADE", "DIP", "DRINK", "SIDE", "DESSERT"];

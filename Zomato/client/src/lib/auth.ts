@@ -1,6 +1,7 @@
 import axios from "axios";
 import { publicApi } from "@/lib/api";
 import type { AuthUser, MembershipStatus, MembershipTier, UserRole } from "@/types/auth";
+import { normalizeUserRole } from "@/lib/roles";
 
 type BackendAuthUser = {
   id: number;
@@ -23,15 +24,6 @@ type AuthResponse = {
   };
 };
 
-const allowedRoles: UserRole[] = [
-  "CUSTOMER",
-  "RESTAURANT_OWNER",
-  "DELIVERY_PARTNER",
-  "REGIONAL_MANAGER",
-  "OPERATIONS_MANAGER",
-  "ADMIN",
-];
-
 const allowedMembershipTiers: MembershipTier[] = ["CLASSIC", "GOLD", "PLATINUM"];
 const allowedMembershipStatuses: MembershipStatus[] = ["ACTIVE", "INACTIVE", "EXPIRED"];
 
@@ -41,7 +33,7 @@ export const normalizeAuthUser = (user: BackendAuthUser): AuthUser => ({
   email: user.email,
   phone: user.phone ?? null,
   profileImage: user.profileImage ?? null,
-  role: allowedRoles.includes(user.role as UserRole) ? (user.role as UserRole) : "CUSTOMER",
+  role: normalizeUserRole(user.role) ?? "CUSTOMER",
   walletBalance: user.walletBalance ?? 0,
   membershipTier: allowedMembershipTiers.includes(user.membershipTier as MembershipTier)
     ? (user.membershipTier as MembershipTier)
@@ -106,7 +98,6 @@ export const getDefaultRedirectPath = (role: UserRole) => {
     case "ADMIN":
       return "/admin/dashboard";
     case "REGIONAL_MANAGER":
-    case "OPERATIONS_MANAGER":
       return "/ops/dashboard";
     case "RESTAURANT_OWNER":
       return "/owner/dashboard";

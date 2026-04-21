@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import {
   AdminDataTable,
@@ -6,22 +6,30 @@ import {
   AdminLoadingState,
   AdminToolbar,
 } from "@/components/admin/admin-ui";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { SectionHeading, StatusPill } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
 import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
 import {
+  createOperationsDeliveryPartner,
   getOperationsDeliveryPartners,
   getOperationsRegions,
   updateOperationsAssignment,
   type OperationsDeliveryPartner,
 } from "@/lib/ops";
 import {
+  AddButton,
   PAGE_SIZE,
   RefreshButton,
   RowActions,
+  ToggleField,
+  VEHICLE_OPTIONS,
   formatDateTime,
   getToneForStatus,
   paginate,
@@ -30,10 +38,12 @@ import {
 import { OperationsAssignmentModal } from "./ops-shared";
 
 export const OpsDeliveryPartnersPage = () => {
+  const { user } = useAuth();
   const [partners, setPartners] = useState<OperationsDeliveryPartner[]>([]);
   const [regionOptions, setRegionOptions] = useState<{ states: string[]; districtsByState: Record<string, string[]> } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState("");
   const [districtFilter, setDistrictFilter] = useState("");
@@ -42,6 +52,23 @@ export const OpsDeliveryPartnersPage = () => {
   const [page, setPage] = useState(1);
   const [detailsPartner, setDetailsPartner] = useState<OperationsDeliveryPartner | null>(null);
   const [assignmentTarget, setAssignmentTarget] = useState<OperationsDeliveryPartner | null>(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    fullName: "",
+    email: "",
+    phone: "",
+    password: "",
+    profileImage: "",
+    vehicleType: "BIKE",
+    vehicleNumber: "",
+    licenseNumber: "",
+    availabilityStatus: "OFFLINE",
+    isVerified: false,
+    state: "",
+    district: "",
+    notes: "",
+  });
+  const canCreatePartners = user?.role === "ADMIN" || user?.role === "REGIONAL_MANAGER";
 
   const loadPartners = async () => {
     setIsLoading(true);
@@ -54,9 +81,7 @@ export const OpsDeliveryPartnersPage = () => {
           availabilityStatus: availabilityFilter === "ALL" ? undefined : availabilityFilter,
           assignmentStatus: assignmentFilter === "ALL" ? undefined : assignmentFilter,
         }),
-        getOperationsRegions({
-          state: stateFilter || undefined,
-        }),
+        getOperationsRegions(),
       ]);
       setPartners(partnerRows);
       setRegionOptions(regions.regionOptions);
@@ -73,7 +98,37 @@ export const OpsDeliveryPartnersPage = () => {
 
   const mergedOptions = useMemo(() => mergeRegionOptions(regionOptions), [regionOptions]);
   const districtOptions = useMemo(() => getDistrictOptions(stateFilter, regionOptions), [regionOptions, stateFilter]);
+  const createDistrictOptions = useMemo(
+    () => getDistrictOptions(createForm.state, regionOptions),
+    [createForm.state, regionOptions],
+  );
   const pagedPartners = paginate(partners, page);
+
+  const openCreateModal = () => {
+    const nextState = stateFilter || (mergedOptions.states.length === 1 ? mergedOptions.states[0] : "");
+    const nextDistrict =
+      districtFilter ||
+      (nextState && getDistrictOptions(nextState, regionOptions).length === 1
+        ? getDistrictOptions(nextState, regionOptions)[0]
+        : "");
+
+    setCreateForm({
+      fullName: "",
+      email: "",
+      phone: "",
+      password: "",
+      profileImage: "",
+      vehicleType: "BIKE",
+      vehicleNumber: "",
+      licenseNumber: "",
+      availabilityStatus: "OFFLINE",
+      isVerified: false,
+      state: nextState,
+      district: nextDistrict,
+      notes: "",
+    });
+    setIsCreateModalOpen(true);
+  };
 
   const handleSaveAssignment = async (payload: { state?: string; district?: string; notes?: string }) => {
     if (!assignmentTarget) {
@@ -93,13 +148,53 @@ export const OpsDeliveryPartnersPage = () => {
     }
   };
 
+  const handleCreatePartner = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!createForm.state || !createForm.district) {
+      toast.error("Select both a state and district before creating a delivery partner.");
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      await createOperationsDeliveryPartner({
+        fullName: createForm.fullName,
+        email: createForm.email,
+        phone: createForm.phone.trim() || undefined,
+        password: createForm.password,
+        profileImage: createForm.profileImage.trim() || undefined,
+        vehicleType: createForm.vehicleType,
+        vehicleNumber: createForm.vehicleNumber.trim() || undefined,
+        licenseNumber: createForm.licenseNumber.trim() || undefined,
+        availabilityStatus: createForm.availabilityStatus,
+        isVerified: createForm.isVerified,
+        state: createForm.state,
+        district: createForm.district,
+        notes: createForm.notes.trim() || undefined,
+      });
+      toast.success("Delivery partner created successfully.");
+      setIsCreateModalOpen(false);
+      await loadPartners();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to create this delivery partner."));
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <SectionHeading
         eyebrow="Delivery partners"
         title="Rider coverage by state and district."
         description="Review availability, assignment readiness, and operational notes for delivery partners inside the India operations flow."
-        action={<RefreshButton onClick={() => void loadPartners()} />}
+        action={
+          <div className="flex gap-3">
+            <RefreshButton onClick={() => void loadPartners()} />
+            {canCreatePartners ? <AddButton label="Add delivery partner" onClick={openCreateModal} /> : null}
+          </div>
+        }
       />
 
       <AdminToolbar
@@ -151,7 +246,7 @@ export const OpsDeliveryPartnersPage = () => {
             rows={pagedPartners.items}
             getRowKey={(partner) => partner.id}
             emptyTitle="No delivery partners found"
-            emptyDescription="Broaden the filters or add assignments from the operations queue."
+            emptyDescription="Broaden the filters or add new delivery registrations from the operations workflow."
             columns={[
               {
                 key: "partner",
@@ -230,6 +325,135 @@ export const OpsDeliveryPartnersPage = () => {
             ]}
           />
         ) : null}
+      </Modal>
+
+      <Modal
+        open={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        title="Add delivery partner"
+        className="max-w-3xl"
+      >
+        <form className="space-y-4" onSubmit={handleCreatePartner}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Input
+              label="Full name"
+              value={createForm.fullName}
+              onChange={(event) => setCreateForm({ ...createForm, fullName: event.target.value })}
+              required
+            />
+            <Input
+              label="Email"
+              type="email"
+              value={createForm.email}
+              onChange={(event) => setCreateForm({ ...createForm, email: event.target.value })}
+              required
+            />
+            <Input
+              label="Phone"
+              value={createForm.phone}
+              onChange={(event) => setCreateForm({ ...createForm, phone: event.target.value })}
+            />
+            <Input
+              label="Password"
+              type="password"
+              value={createForm.password}
+              onChange={(event) => setCreateForm({ ...createForm, password: event.target.value })}
+              required
+            />
+            <Select
+              label="State"
+              value={createForm.state}
+              onChange={(event) =>
+                setCreateForm({
+                  ...createForm,
+                  state: event.target.value,
+                  district: "",
+                })
+              }
+              required
+            >
+              <option value="">Select state</option>
+              {mergedOptions.states.map((state) => (
+                <option key={state} value={state}>
+                  {state}
+                </option>
+              ))}
+            </Select>
+            <Select
+              label="District"
+              value={createForm.district}
+              onChange={(event) => setCreateForm({ ...createForm, district: event.target.value })}
+              disabled={!createForm.state}
+              required
+            >
+              <option value="">{createForm.state ? "Select district" : "Choose a state first"}</option>
+              {createDistrictOptions.map((district) => (
+                <option key={district} value={district}>
+                  {district}
+                </option>
+              ))}
+            </Select>
+            <Input
+              label="Profile image URL"
+              value={createForm.profileImage}
+              onChange={(event) => setCreateForm({ ...createForm, profileImage: event.target.value })}
+            />
+            <Select
+              label="Vehicle type"
+              value={createForm.vehicleType}
+              onChange={(event) => setCreateForm({ ...createForm, vehicleType: event.target.value })}
+            >
+              {VEHICLE_OPTIONS.map((vehicle) => (
+                <option key={vehicle} value={vehicle}>
+                  {toLabel(vehicle)}
+                </option>
+              ))}
+            </Select>
+            <Input
+              label="Vehicle number"
+              value={createForm.vehicleNumber}
+              onChange={(event) => setCreateForm({ ...createForm, vehicleNumber: event.target.value })}
+            />
+            <Input
+              label="License number"
+              value={createForm.licenseNumber}
+              onChange={(event) => setCreateForm({ ...createForm, licenseNumber: event.target.value })}
+            />
+            <Select
+              label="Availability"
+              value={createForm.availabilityStatus}
+              onChange={(event) => setCreateForm({ ...createForm, availabilityStatus: event.target.value })}
+            >
+              <option value="ONLINE">Online</option>
+              <option value="OFFLINE">Offline</option>
+              <option value="BUSY">Busy</option>
+            </Select>
+          </div>
+          <ToggleField
+            label="Verified partner"
+            checked={createForm.isVerified}
+            onChange={(checked) => setCreateForm({ ...createForm, isVerified: checked })}
+          />
+          <Textarea
+            label="Operational notes"
+            value={createForm.notes}
+            onChange={(event) => setCreateForm({ ...createForm, notes: event.target.value })}
+            placeholder="Capture onboarding notes, local coverage context, or verification handoff details."
+          />
+          <div className="flex justify-end gap-3">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setIsCreateModalOpen(false)}
+              disabled={isCreating}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isCreating}>
+              {isCreating ? "Creating..." : "Create partner"}
+            </Button>
+          </div>
+        </form>
       </Modal>
 
       <OperationsAssignmentModal

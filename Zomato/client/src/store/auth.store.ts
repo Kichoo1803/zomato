@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { normalizeStoredAuthUser } from "@/lib/roles";
 import type { AuthState } from "@/types/auth";
 
 export const useAuthStore = create<AuthState>()(
@@ -29,6 +30,19 @@ export const useAuthStore = create<AuthState>()(
         accessToken,
         isAuthenticated,
       }),
+      merge: (persistedState, currentState) => {
+        const typedState = (persistedState as Partial<AuthState> | undefined) ?? {};
+        const user = normalizeStoredAuthUser(typedState.user ?? null);
+        const accessToken = typedState.accessToken ?? null;
+
+        return {
+          ...currentState,
+          ...typedState,
+          user,
+          accessToken,
+          isAuthenticated: Boolean(typedState.isAuthenticated && user && accessToken),
+        };
+      },
     },
   ),
 );

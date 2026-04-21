@@ -41,6 +41,16 @@ export const listOperationsOwners = asyncHandler(async (req, res) => {
   });
 });
 
+export const createOperationsOwner = asyncHandler(async (req, res) => {
+  const owner = await operationsService.createOwner(req.user!, req.body);
+
+  return sendSuccess(res, {
+    statusCode: 201,
+    message: "Operations owner created successfully",
+    data: { owner },
+  });
+});
+
 export const listOperationsDeliveryPartners = asyncHandler(async (req, res) => {
   const partners = await operationsService.listDeliveryPartners(req.user!, {
     state: req.query.state as string | undefined,
@@ -53,6 +63,16 @@ export const listOperationsDeliveryPartners = asyncHandler(async (req, res) => {
   return sendSuccess(res, {
     message: "Operations delivery partners fetched successfully",
     data: { partners },
+  });
+});
+
+export const createOperationsDeliveryPartner = asyncHandler(async (req, res) => {
+  const partner = await operationsService.createDeliveryPartner(req.user!, req.body);
+
+  return sendSuccess(res, {
+    statusCode: 201,
+    message: "Operations delivery partner created successfully",
+    data: { partner },
   });
 });
 

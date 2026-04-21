@@ -202,6 +202,33 @@ export type OperationsProfile = {
   updatedAt: string;
 };
 
+export type CreateOperationsOwnerPayload = {
+  fullName: string;
+  email: string;
+  phone?: string;
+  password: string;
+  profileImage?: string;
+  state: string;
+  district: string;
+  notes?: string;
+};
+
+export type CreateOperationsDeliveryPartnerPayload = {
+  fullName: string;
+  email: string;
+  phone?: string;
+  password: string;
+  profileImage?: string;
+  vehicleType: string;
+  vehicleNumber?: string;
+  licenseNumber?: string;
+  availabilityStatus?: string;
+  isVerified?: boolean;
+  state: string;
+  district: string;
+  notes?: string;
+};
+
 export const toOperationsSessionUser = (user: OperationsProfile): AuthUser =>
   normalizeAuthUser({
     id: user.id,
@@ -229,6 +256,9 @@ export const getOperationsOwners = async (params?: {
   unwrapData(await apiClient.get<ApiEnvelope<{ owners: OperationsOwner[] }>>("/operations/owners", { params }))
     .owners;
 
+export const createOperationsOwner = async (payload: CreateOperationsOwnerPayload) =>
+  unwrapData(await apiClient.post<ApiEnvelope<{ owner: OperationsOwner }>>("/operations/owners", payload)).owner;
+
 export const getOperationsDeliveryPartners = async (params?: {
   search?: string;
   state?: string;
@@ -242,6 +272,14 @@ export const getOperationsDeliveryPartners = async (params?: {
       { params },
     ),
   ).partners;
+
+export const createOperationsDeliveryPartner = async (payload: CreateOperationsDeliveryPartnerPayload) =>
+  unwrapData(
+    await apiClient.post<ApiEnvelope<{ partner: OperationsDeliveryPartner }>>(
+      "/operations/delivery-partners",
+      payload,
+    ),
+  ).partner;
 
 export const updateOperationsAssignment = async (
   userId: number,

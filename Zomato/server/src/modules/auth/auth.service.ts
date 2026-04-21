@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { Prisma } from "@prisma/client";
 import { Role } from "../../constants/enums.js";
 import bcrypt from "bcrypt";
@@ -12,6 +13,7 @@ import { durationToMs } from "../../utils/cookies.js";
 import { hashValue } from "../../utils/hash.js";
 import { getPrismaRuntimeErrorResponse } from "../../utils/prisma-runtime-errors.js";
 import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from "../../utils/jwt.js";
+import { normalizeRoleValue } from "../../utils/roles.js";
 
 const publicUserSelect = {
   id: true,
@@ -47,7 +49,55 @@ type SessionMeta = {
   origin?: string;
 };
 
+type AuthDebugContext = {
+  label: "login";
+  email: string;
+  requestStartedAt: number;
+  meta?: SessionMeta;
+};
+
 const genericLoginFailureMessage = "The server couldn't complete sign-in right now. Please try again in a moment.";
+const getDurationMs = (startedAt: number) => Number((performance.now() - startedAt).toFixed(1));
+
+const getNormalizedUserRole = (role?: string | null) => {
+  const normalizedRole = normalizeRoleValue(role);
+
+  if (!normalizedRole) {
+    throw new AppError(
+      StatusCodes.INTERNAL_SERVER_ERROR,
+      "This account has an unsupported role configuration",
+      "INVALID_ACCOUNT_ROLE",
+    );
+  }
+
+  return normalizedRole;
+};
+
+const normalizePublicUser = (user: PublicUser) => ({
+  ...user,
+  role: getNormalizedUserRole(user.role),
+});
+
+const getAuthDebugLogContext = (
+  debugContext: AuthDebugContext | undefined,
+  {
+    userId,
+    stepStartedAt,
+    extra,
+  }: {
+    userId?: number;
+    stepStartedAt?: number;
+    extra?: Record<string, unknown>;
+  } = {},
+) => ({
+  email: debugContext?.email,
+  ...(userId !== undefined ? { userId } : {}),
+  ipAddress: debugContext?.meta?.ipAddress,
+  origin: debugContext?.meta?.origin,
+  ...(stepStartedAt !== undefined ? { stepDurationMs: getDurationMs(stepStartedAt) } : {}),
+  ...(debugContext ? { totalDurationMs: getDurationMs(debugContext.requestStartedAt) } : {}),
+  ...(extra ?? {}),
+});
 
 const getLoginServerError = (error: unknown) => {
   const prismaRuntimeError = getPrismaRuntimeErrorResponse(error, {
@@ -67,13 +117,33 @@ const getLoginServerError = (error: unknown) => {
   return new AppError(StatusCodes.INTERNAL_SERVER_ERROR, genericLoginFailureMessage, "LOGIN_FAILED");
 };
 
-const createSession = async (user: PublicUser, meta?: SessionMeta) => {
+const createSession = async (user: ReturnType<typeof normalizePublicUser>, meta?: SessionMeta, debugContext?: AuthDebugContext) => {
+  const tokenGenerationStartedAt = performance.now();
+  if (debugContext?.label === "login") {
+    logger.info("Login token generation started", getAuthDebugLogContext(debugContext, { userId: user.id }));
+  }
+
   const refreshToken = generateRefreshToken(user.id, crypto.randomUUID());
   const accessToken = generateAccessToken({
     id: user.id,
     email: user.email,
-    role: user.role as Role,
+    role: user.role,
   });
+
+  if (debugContext?.label === "login") {
+    logger.info(
+      "Login token generation completed",
+      getAuthDebugLogContext(debugContext, {
+        userId: user.id,
+        stepStartedAt: tokenGenerationStartedAt,
+      }),
+    );
+  }
+
+  const sessionSaveStartedAt = performance.now();
+  if (debugContext?.label === "login") {
+    logger.info("Login refresh session save started", getAuthDebugLogContext(debugContext, { userId: user.id }));
+  }
 
   await prisma.refreshToken.create({
     data: {
@@ -84,6 +154,16 @@ const createSession = async (user: PublicUser, meta?: SessionMeta) => {
       expiresAt: new Date(Date.now() + durationToMs(env.JWT_REFRESH_EXPIRES_IN)),
     },
   });
+
+  if (debugContext?.label === "login") {
+    logger.info(
+      "Login refresh session save completed",
+      getAuthDebugLogContext(debugContext, {
+        userId: user.id,
+        stepStartedAt: sessionSaveStartedAt,
+      }),
+    );
+  }
 
   return {
     accessToken,
@@ -144,98 +224,149 @@ export const authService = {
       },
       select: publicUserSelect,
     });
+    const normalizedUser = normalizePublicUser(user);
 
     void sendMail({
-      to: user.email,
+      to: normalizedUser.email,
       subject: "Welcome to Zomato Luxe",
-      html: `<p>Hi ${user.fullName}, your Zomato Luxe account is ready. You can now explore restaurants, offers, and live order tracking.</p>`,
-      text: `Hi ${user.fullName}, your Zomato Luxe account is ready.`,
+      html: `<p>Hi ${normalizedUser.fullName}, your Zomato Luxe account is ready. You can now explore restaurants, offers, and live order tracking.</p>`,
+      text: `Hi ${normalizedUser.fullName}, your Zomato Luxe account is ready.`,
     }).catch((error) => {
       logger.warn("Welcome email failed to send", {
-        userId: user.id,
+        userId: normalizedUser.id,
         error: error instanceof Error ? error.message : "Unknown mailer error",
       });
     });
 
-    const session = await createSession(user, meta);
+    const session = await createSession(normalizedUser, meta);
 
     return {
-      user,
+      user: normalizedUser,
       ...session,
     };
   },
 
   async login(input: { email: string; password: string }, meta?: SessionMeta) {
+    const loginStartedAt = performance.now();
     const email = typeof input.email === "string" ? input.email.trim().toLowerCase() : "";
     const password = typeof input.password === "string" ? input.password : "";
-
-    if (!email || !password.trim()) {
-      throw new AppError(StatusCodes.BAD_REQUEST, "Email and password are required", "MISSING_CREDENTIALS");
-    }
-
-    logger.info("Login attempt received", {
+    const debugContext: AuthDebugContext = {
+      label: "login",
       email,
-      ipAddress: meta?.ipAddress,
-      origin: meta?.origin,
-    });
+      requestStartedAt: loginStartedAt,
+      meta,
+    };
+
+    logger.info("Login request received", getAuthDebugLogContext(debugContext));
 
     try {
+      const validationStartedAt = performance.now();
+      logger.info("Login validation started", getAuthDebugLogContext(debugContext));
+
+      if (!email || !password.trim()) {
+        throw new AppError(StatusCodes.BAD_REQUEST, "Email and password are required", "MISSING_CREDENTIALS");
+      }
+
+      logger.info(
+        "Login validation completed",
+        getAuthDebugLogContext(debugContext, {
+          stepStartedAt: validationStartedAt,
+        }),
+      );
+
+      const userLookupStartedAt = performance.now();
+      logger.info("Login user lookup started", getAuthDebugLogContext(debugContext));
       const user = await prisma.user.findUnique({
         where: { email },
         select: authUserSelect,
       });
 
-      logger.info("Login user lookup completed", {
-        email,
-        userFound: Boolean(user),
-      });
+      logger.info(
+        "Login user lookup completed",
+        getAuthDebugLogContext(debugContext, {
+          stepStartedAt: userLookupStartedAt,
+          extra: {
+            userFound: Boolean(user),
+          },
+        }),
+      );
 
       ensureLoginEligibleUser(user);
 
+      const passwordCompareStartedAt = performance.now();
+      logger.info("Login password compare started", getAuthDebugLogContext(debugContext, { userId: user.id }));
+
+      if (typeof user.passwordHash !== "string" || !user.passwordHash) {
+        logger.warn(
+          "Login password hash missing",
+          getAuthDebugLogContext(debugContext, {
+            userId: user.id,
+            stepStartedAt: passwordCompareStartedAt,
+          }),
+        );
+        throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid email or password", "INVALID_CREDENTIALS");
+      }
+
       const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
-      logger.info("Login password verification completed", {
-        email,
-        userId: user.id,
-        isPasswordValid,
-      });
+      logger.info(
+        "Login password compare completed",
+        getAuthDebugLogContext(debugContext, {
+          userId: user.id,
+          stepStartedAt: passwordCompareStartedAt,
+          extra: {
+            isPasswordValid,
+          },
+        }),
+      );
 
       if (!isPasswordValid) {
         throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid email or password", "INVALID_CREDENTIALS");
       }
 
+      const lastLoginUpdateStartedAt = performance.now();
+      logger.info("Login last-login update started", getAuthDebugLogContext(debugContext, { userId: user.id }));
       const safeUser = await prisma.user.update({
         where: { id: user.id },
         data: { lastLoginAt: new Date() },
         select: publicUserSelect,
       });
+      const normalizedUser = normalizePublicUser(safeUser);
+      logger.info(
+        "Login last-login update completed",
+        getAuthDebugLogContext(debugContext, {
+          userId: normalizedUser.id,
+          stepStartedAt: lastLoginUpdateStartedAt,
+        }),
+      );
 
-      const session = await createSession(safeUser, meta);
-      logger.info("Login session created", {
-        userId: safeUser.id,
-        email,
-      });
+      const session = await createSession(normalizedUser, meta, debugContext);
+      logger.info("Login session created", getAuthDebugLogContext(debugContext, { userId: normalizedUser.id }));
 
-      logger.info("Login successful", {
-        userId: safeUser.id,
-        email,
-        role: safeUser.role,
-        ipAddress: meta?.ipAddress,
-        origin: meta?.origin,
-      });
+      logger.info(
+        "Login successful",
+        getAuthDebugLogContext(debugContext, {
+          userId: normalizedUser.id,
+          extra: {
+            role: normalizedUser.role,
+          },
+        }),
+      );
 
       return {
-        user: safeUser,
+        user: normalizedUser,
         ...session,
       };
     } catch (error) {
       if (error instanceof AppError) {
-        logger.warn("Login request rejected", {
-          email,
-          code: error.code,
-          statusCode: error.statusCode,
-          ipAddress: meta?.ipAddress,
-          origin: meta?.origin,
-        });
+        logger.warn(
+          "Login request rejected",
+          getAuthDebugLogContext(debugContext, {
+            extra: {
+              code: error.code,
+              statusCode: error.statusCode,
+            },
+          }),
+        );
         throw error;
       }
 
@@ -243,7 +374,9 @@ export const authService = {
         email,
         ipAddress: meta?.ipAddress,
         origin: meta?.origin,
+        totalDurationMs: getDurationMs(loginStartedAt),
         error: error instanceof Error ? error.message : "Unknown error",
+        stack: error instanceof Error ? error.stack : undefined,
       });
 
       throw getLoginServerError(error);
@@ -276,15 +409,17 @@ export const authService = {
 
     ensureLoginEligibleUser(storedToken.user);
 
+    const normalizedUser = normalizePublicUser(storedToken.user);
+
     await prisma.refreshToken.update({
       where: { id: storedToken.id },
       data: { revokedAt: new Date() },
     });
 
-    const session = await createSession(storedToken.user, meta);
+    const session = await createSession(normalizedUser, meta);
 
     return {
-      user: storedToken.user,
+      user: normalizedUser,
       ...session,
     };
   },
@@ -313,6 +448,6 @@ export const authService = {
 
     ensureLoginEligibleUser(user);
 
-    return user;
+    return normalizePublicUser(user);
   },
 };

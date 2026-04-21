@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import {
   AdminDataTable,
@@ -6,20 +6,26 @@ import {
   AdminLoadingState,
   AdminToolbar,
 } from "@/components/admin/admin-ui";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
 import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
 import {
+  createOperationsOwner,
   getOperationsOwners,
   getOperationsRegions,
   updateOperationsAssignment,
   type OperationsOwner,
 } from "@/lib/ops";
 import {
+  AddButton,
   PAGE_SIZE,
   RefreshButton,
   RowActions,
@@ -30,10 +36,12 @@ import {
 import { OperationsAssignmentModal } from "./ops-shared";
 
 export const OpsRestaurantOwnersPage = () => {
+  const { user } = useAuth();
   const [owners, setOwners] = useState<OperationsOwner[]>([]);
   const [regionOptions, setRegionOptions] = useState<{ states: string[]; districtsByState: Record<string, string[]> } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState("");
   const [districtFilter, setDistrictFilter] = useState("");
@@ -42,6 +50,18 @@ export const OpsRestaurantOwnersPage = () => {
   const [page, setPage] = useState(1);
   const [detailsOwner, setDetailsOwner] = useState<OperationsOwner | null>(null);
   const [assignmentTarget, setAssignmentTarget] = useState<OperationsOwner | null>(null);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    fullName: "",
+    email: "",
+    phone: "",
+    password: "",
+    profileImage: "",
+    state: "",
+    district: "",
+    notes: "",
+  });
+  const canCreateOwners = user?.role === "ADMIN" || user?.role === "REGIONAL_MANAGER";
 
   const loadOwners = async () => {
     setIsLoading(true);
@@ -54,9 +74,7 @@ export const OpsRestaurantOwnersPage = () => {
           status: statusFilter === "ALL" ? undefined : statusFilter,
           assignmentStatus: assignmentFilter === "ALL" ? undefined : assignmentFilter,
         }),
-        getOperationsRegions({
-          state: stateFilter || undefined,
-        }),
+        getOperationsRegions(),
       ]);
       setOwners(ownerRows);
       setRegionOptions(regions.regionOptions);
@@ -73,7 +91,32 @@ export const OpsRestaurantOwnersPage = () => {
 
   const mergedOptions = useMemo(() => mergeRegionOptions(regionOptions), [regionOptions]);
   const districtOptions = useMemo(() => getDistrictOptions(stateFilter, regionOptions), [regionOptions, stateFilter]);
+  const createDistrictOptions = useMemo(
+    () => getDistrictOptions(createForm.state, regionOptions),
+    [createForm.state, regionOptions],
+  );
   const pagedOwners = paginate(owners, page);
+
+  const openCreateModal = () => {
+    const nextState = stateFilter || (mergedOptions.states.length === 1 ? mergedOptions.states[0] : "");
+    const nextDistrict =
+      districtFilter ||
+      (nextState && getDistrictOptions(nextState, regionOptions).length === 1
+        ? getDistrictOptions(nextState, regionOptions)[0]
+        : "");
+
+    setCreateForm({
+      fullName: "",
+      email: "",
+      phone: "",
+      password: "",
+      profileImage: "",
+      state: nextState,
+      district: nextDistrict,
+      notes: "",
+    });
+    setIsCreateModalOpen(true);
+  };
 
   const handleSaveAssignment = async (payload: { state?: string; district?: string; notes?: string }) => {
     if (!assignmentTarget) {
@@ -93,13 +136,48 @@ export const OpsRestaurantOwnersPage = () => {
     }
   };
 
+  const handleCreateOwner = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!createForm.state || !createForm.district) {
+      toast.error("Select both a state and district before creating an owner.");
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      await createOperationsOwner({
+        fullName: createForm.fullName,
+        email: createForm.email,
+        phone: createForm.phone.trim() || undefined,
+        password: createForm.password,
+        profileImage: createForm.profileImage.trim() || undefined,
+        state: createForm.state,
+        district: createForm.district,
+        notes: createForm.notes.trim() || undefined,
+      });
+      toast.success("Restaurant owner created successfully.");
+      setIsCreateModalOpen(false);
+      await loadOwners();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to create this restaurant owner."));
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <SectionHeading
         eyebrow="Restaurant owners"
         title="Owner coverage by state and district."
         description="Filter restaurant owners through the India region hierarchy, review linked restaurants, and update operational assignments safely."
-        action={<RefreshButton onClick={() => void loadOwners()} />}
+        action={
+          <div className="flex gap-3">
+            <RefreshButton onClick={() => void loadOwners()} />
+            {canCreateOwners ? <AddButton label="Add owner" onClick={openCreateModal} /> : null}
+          </div>
+        }
       />
 
       <AdminToolbar
@@ -150,7 +228,7 @@ export const OpsRestaurantOwnersPage = () => {
             rows={pagedOwners.items}
             getRowKey={(owner) => owner.id}
             emptyTitle="No restaurant owners found"
-            emptyDescription="Broaden the filters or add new owner assignments from the operations workflow."
+            emptyDescription="Broaden the filters or add new owner registrations from the operations workflow."
             columns={[
               {
                 key: "owner",
@@ -255,6 +333,100 @@ export const OpsRestaurantOwnersPage = () => {
             </SurfaceCard>
           </div>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        title="Add restaurant owner"
+        className="max-w-3xl"
+      >
+        <form className="space-y-4" onSubmit={handleCreateOwner}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Input
+              label="Full name"
+              value={createForm.fullName}
+              onChange={(event) => setCreateForm({ ...createForm, fullName: event.target.value })}
+              required
+            />
+            <Input
+              label="Email"
+              type="email"
+              value={createForm.email}
+              onChange={(event) => setCreateForm({ ...createForm, email: event.target.value })}
+              required
+            />
+            <Input
+              label="Phone"
+              value={createForm.phone}
+              onChange={(event) => setCreateForm({ ...createForm, phone: event.target.value })}
+            />
+            <Input
+              label="Password"
+              type="password"
+              value={createForm.password}
+              onChange={(event) => setCreateForm({ ...createForm, password: event.target.value })}
+              required
+            />
+            <Select
+              label="State"
+              value={createForm.state}
+              onChange={(event) =>
+                setCreateForm({
+                  ...createForm,
+                  state: event.target.value,
+                  district: "",
+                })
+              }
+              required
+            >
+              <option value="">Select state</option>
+              {mergedOptions.states.map((state) => (
+                <option key={state} value={state}>
+                  {state}
+                </option>
+              ))}
+            </Select>
+            <Select
+              label="District"
+              value={createForm.district}
+              onChange={(event) => setCreateForm({ ...createForm, district: event.target.value })}
+              disabled={!createForm.state}
+              required
+            >
+              <option value="">{createForm.state ? "Select district" : "Choose a state first"}</option>
+              {createDistrictOptions.map((district) => (
+                <option key={district} value={district}>
+                  {district}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <Input
+            label="Profile image URL"
+            value={createForm.profileImage}
+            onChange={(event) => setCreateForm({ ...createForm, profileImage: event.target.value })}
+          />
+          <Textarea
+            label="Operational notes"
+            value={createForm.notes}
+            onChange={(event) => setCreateForm({ ...createForm, notes: event.target.value })}
+            placeholder="Capture onboarding context, launch notes, or regional handoff details."
+          />
+          <div className="flex justify-end gap-3">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setIsCreateModalOpen(false)}
+              disabled={isCreating}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isCreating}>
+              {isCreating ? "Creating..." : "Create owner"}
+            </Button>
+          </div>
+        </form>
       </Modal>
 
       <OperationsAssignmentModal

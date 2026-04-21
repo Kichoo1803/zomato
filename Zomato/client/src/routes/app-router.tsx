@@ -38,6 +38,7 @@ import {
   AdminOrdersPage,
   AdminPaymentsPage,
   AdminProfilePage,
+  AdminRegionalManagersPage,
   AdminRegionsPage,
   AdminReportsPage,
   AdminRestaurantsPage,
@@ -166,7 +167,7 @@ export const AppRouter = () => {
           </Route>
         </Route>
 
-        <Route element={<ProtectedRoute roles={["OPERATIONS_MANAGER", "REGIONAL_MANAGER"]} />}>
+        <Route element={<ProtectedRoute roles={["ADMIN", "REGIONAL_MANAGER"]} />}>
           <Route element={<DashboardLayout />}>
             <Route path="/ops" element={<Navigate to="/ops/dashboard" replace />} />
             <Route path="/ops/dashboard" element={<OpsDashboardPage />} />
@@ -186,6 +187,7 @@ export const AppRouter = () => {
             <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
             <Route path="/admin/live-map" element={<AdminLiveMapPage />} />
             <Route path="/admin/regions" element={<AdminRegionsPage />} />
+            <Route path="/admin/regional-managers" element={<AdminRegionalManagersPage />} />
             <Route path="/admin/users" element={<AdminUsersPage />} />
             <Route path="/admin/restaurants" element={<AdminRestaurantsPage />} />
             <Route path="/admin/delivery-partners" element={<AdminDeliveryPartnersPage />} />

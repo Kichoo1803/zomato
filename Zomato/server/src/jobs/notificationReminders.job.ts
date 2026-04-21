@@ -9,6 +9,7 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
 import { notificationsService } from "../modules/notifications/notifications.service.js";
+import { LEGACY_OPERATIONS_MANAGER_ROLE } from "../utils/roles.js";
 
 const CUSTOMER_ACTIVE_STATUSES = [
   OrderStatus.PLACED,
@@ -269,7 +270,7 @@ export const dispatchNotificationReminders = async () => {
     prisma.user.findMany({
       where: {
         role: {
-          in: [Role.OPERATIONS_MANAGER, Role.REGIONAL_MANAGER],
+          in: [Role.REGIONAL_MANAGER, LEGACY_OPERATIONS_MANAGER_ROLE],
         },
         isActive: true,
       },

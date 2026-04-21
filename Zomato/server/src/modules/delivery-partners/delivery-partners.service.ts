@@ -11,6 +11,7 @@ import { emitDeliveryLocationUpdate, emitOrderStatusUpdate } from "../../socket/
 import { AppError } from "../../utils/app-error.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import { orderDispatchService } from "../orders/order-dispatch.service.js";
+import { resolveRegionIdForAssignment } from "../regions/regions.service.js";
 
 const getPartnerByUserId = async (userId: number) => {
   const partner = await prisma.deliveryPartner.findUnique({
@@ -37,6 +38,9 @@ const adminPartnerInclude = {
       phone: true,
       profileImage: true,
       role: true,
+      opsState: true,
+      opsDistrict: true,
+      opsNotes: true,
       isActive: true,
       lastLoginAt: true,
       createdAt: true,
@@ -168,6 +172,9 @@ export const deliveryPartnersService = {
     licenseNumber?: string;
     availabilityStatus?: string;
     isVerified?: boolean;
+    opsState?: string;
+    opsDistrict?: string;
+    opsNotes?: string;
   }) {
     const existingUser = await prisma.user.findFirst({
       where: {
@@ -185,6 +192,7 @@ export const deliveryPartnersService = {
     }
 
     const passwordHash = await bcrypt.hash(input.password, 12);
+    const region = await resolveRegionIdForAssignment(prisma, input.opsState, input.opsDistrict);
 
     const created = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
@@ -195,6 +203,10 @@ export const deliveryPartnersService = {
           passwordHash,
           profileImage: input.profileImage,
           role: Role.DELIVERY_PARTNER,
+          regionId: region?.id ?? null,
+          opsState: input.opsState?.trim() || null,
+          opsDistrict: input.opsDistrict?.trim() || null,
+          opsNotes: input.opsNotes?.trim() || null,
           isActive: true,
         },
       });

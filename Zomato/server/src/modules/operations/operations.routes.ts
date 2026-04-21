@@ -3,6 +3,8 @@ import { Router } from "express";
 import { authorize, requireAuth } from "../../middlewares/auth.middleware.js";
 import { validate } from "../../middlewares/validate.middleware.js";
 import {
+  createOperationsDeliveryPartner,
+  createOperationsOwner,
   createOperationsRegionNote,
   getOperationsDashboard,
   getOperationsRegions,
@@ -13,6 +15,8 @@ import {
   updateOperationsRegionNote,
 } from "./operations.controller.js";
 import {
+  createOperationsDeliveryPartnerSchema,
+  createOperationsOwnerSchema,
   createOperationsRegionNoteSchema,
   listOperationsCommunicationsQuerySchema,
   listOperationsDeliveryPartnersQuerySchema,
@@ -24,14 +28,26 @@ import {
 
 export const operationsRouter = Router();
 
-operationsRouter.use(requireAuth, authorize(Role.OPERATIONS_MANAGER, Role.REGIONAL_MANAGER));
+operationsRouter.use(requireAuth, authorize(Role.ADMIN, Role.REGIONAL_MANAGER));
 operationsRouter.get("/dashboard", validate(operationsRegionQuerySchema), getOperationsDashboard);
 operationsRouter.get("/regions", validate(operationsRegionQuerySchema), getOperationsRegions);
 operationsRouter.get("/owners", validate(listOperationsOwnersQuerySchema), listOperationsOwners);
+operationsRouter.post(
+  "/owners",
+  authorize(Role.ADMIN, Role.REGIONAL_MANAGER),
+  validate(createOperationsOwnerSchema),
+  createOperationsOwner,
+);
 operationsRouter.get(
   "/delivery-partners",
   validate(listOperationsDeliveryPartnersQuerySchema),
   listOperationsDeliveryPartners,
+);
+operationsRouter.post(
+  "/delivery-partners",
+  authorize(Role.ADMIN, Role.REGIONAL_MANAGER),
+  validate(createOperationsDeliveryPartnerSchema),
+  createOperationsDeliveryPartner,
 );
 operationsRouter.patch(
   "/users/:userId/assignment",

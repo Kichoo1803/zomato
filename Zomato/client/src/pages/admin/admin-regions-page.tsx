@@ -11,10 +11,8 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   createRegionAdmin,
   getRegionsAdmin,
-  getUsers,
   updateRegionAdmin,
   type AdminRegion,
-  type AdminUser,
 } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
 import {
@@ -31,7 +29,6 @@ import {
   ToggleField,
   matchesSearch,
   paginate,
-  toLabel,
   getToneForStatus,
 } from "./admin-shared";
 
@@ -45,7 +42,6 @@ type RegionFormState = {
   primaryPincode: string;
   additionalPincodes: string;
   isActive: boolean;
-  managerUserId: string;
 };
 
 type RegionFormErrors = Partial<Record<keyof RegionFormState, string>>;
@@ -60,7 +56,6 @@ const emptyForm: RegionFormState = {
   primaryPincode: "",
   additionalPincodes: "",
   isActive: true,
-  managerUserId: "",
 };
 
 const parsePincodeList = (value: string) =>
@@ -72,7 +67,6 @@ const normalizePincodeInput = (value: string) => value.replace(/\D/g, "").slice(
 
 export const AdminRegionsPage = () => {
   const [regions, setRegions] = useState<AdminRegion[]>([]);
-  const [managers, setManagers] = useState<AdminUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [search, setSearch] = useState("");
@@ -112,8 +106,8 @@ export const AdminRegionsPage = () => {
     setIsLoading(true);
 
     try {
-      const [regionRows, regionalManagers, legacyManagers] = await Promise.all([
-        getRegionsAdmin({
+      setRegions(
+        await getRegionsAdmin({
           search: search || undefined,
           isActive: statusFilter === "ALL" ? undefined : statusFilter === "ACTIVE",
           assignmentStatus:
@@ -121,20 +115,6 @@ export const AdminRegionsPage = () => {
               ? undefined
               : (assignmentFilter as "ASSIGNED" | "UNASSIGNED"),
         }),
-        getUsers({ role: "REGIONAL_MANAGER" }),
-        getUsers({ role: "OPERATIONS_MANAGER" }),
-      ]);
-
-      const managerMap = new Map<number, AdminUser>();
-      [...regionalManagers, ...legacyManagers].forEach((manager) => {
-        managerMap.set(manager.id, manager);
-      });
-
-      setRegions(regionRows);
-      setManagers(
-        [...managerMap.values()].sort((left, right) =>
-          left.fullName.localeCompare(right.fullName, "en-IN"),
-        ),
       );
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to load regions."));
@@ -166,7 +146,6 @@ export const AdminRegionsPage = () => {
       primaryPincode: region.primaryPincode ?? "",
       additionalPincodes: formatAdditionalPincodes(region.additionalPincodes),
       isActive: region.isActive,
-      managerUserId: region.manager?.id ? String(region.manager.id) : "",
     });
     setFormErrors({});
     setIsModalOpen(true);
@@ -187,8 +166,6 @@ export const AdminRegionsPage = () => {
           region.additionalPincodes.join(" "),
           region.code,
           region.slug,
-          region.manager?.fullName ?? "",
-          region.manager?.email ?? "",
         ].join(" "),
         search,
       ),
@@ -279,7 +256,6 @@ export const AdminRegionsPage = () => {
       primaryPincode: form.primaryPincode.trim() || undefined,
       additionalPincodes: additionalPincodeList,
       isActive: form.isActive,
-      managerUserId: form.managerUserId ? Number(form.managerUserId) : null,
     };
 
     try {
@@ -305,7 +281,7 @@ export const AdminRegionsPage = () => {
       <SectionHeading
         eyebrow="Regions"
         title="District-level region ownership for the operations network."
-        description="Create districts as managed regions, review coverage, and assign each region to the right regional manager without leaving the main admin shell."
+        description="Create and maintain district regions, review coverage, and keep assignment edits centralized in the dedicated Regional Managers admin workflow."
         action={
           <div className="flex gap-3">
             <RefreshButton onClick={() => void loadRegions()} />
@@ -320,7 +296,7 @@ export const AdminRegionsPage = () => {
           setSearch(value);
           setPage(1);
         }}
-        searchPlaceholder="Search by region name, district, state, PIN code, code, slug, or manager"
+        searchPlaceholder="Search by region name, district, state, PIN code, code, or slug"
         filters={
           <>
             <Select
@@ -406,17 +382,17 @@ export const AdminRegionsPage = () => {
                 ),
               },
               {
-                key: "manager",
-                label: "Regional manager",
+                key: "assignment",
+                label: "Assignment",
                 render: (region) =>
                   region.manager ? (
                     <div>
                       <p className="font-semibold text-ink">{region.manager.fullName}</p>
                       <p className="text-xs text-ink-muted">{region.manager.email}</p>
-                      <p className="text-xs text-ink-muted">{toLabel(region.manager.role)}</p>
+                      <p className="text-xs text-ink-muted">Managed from Regional Managers</p>
                     </div>
                   ) : (
-                    <span className="text-sm text-ink-muted">No manager assigned</span>
+                    <span className="text-sm text-ink-muted">No manager assigned yet</span>
                   ),
               },
               {
@@ -470,23 +446,6 @@ export const AdminRegionsPage = () => {
               onChange={(event) => handleFieldChange("name", event.target.value)}
               placeholder="Defaults to district, state"
             />
-            <Select
-              label="Assigned regional manager"
-              value={form.managerUserId}
-              onChange={(event) => handleFieldChange("managerUserId", event.target.value)}
-              error={formErrors.managerUserId}
-            >
-              <option value="">No assigned manager</option>
-              {managers.map((manager) => (
-                <option key={manager.id} value={manager.id}>
-                  {manager.fullName} - {toLabel(manager.role)}
-                  {!manager.isActive ? " - Inactive" : ""}
-                  {manager.opsDistrict && manager.opsState
-                    ? ` - ${manager.opsDistrict}, ${manager.opsState}`
-                    : " - Available"}
-                </option>
-              ))}
-            </Select>
             <Select
               label="State / Union territory"
               value={form.stateName}

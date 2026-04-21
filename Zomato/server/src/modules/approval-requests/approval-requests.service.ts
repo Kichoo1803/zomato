@@ -353,4 +353,3 @@ export const approvalRequestsService = {
     return toApprovalRequest(reviewedRequest);
   },
 };
-

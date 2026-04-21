@@ -3,6 +3,7 @@ import type { RequestHandler } from "express";
 import { StatusCodes } from "http-status-codes";
 import { AppError } from "../utils/app-error.js";
 import { verifyAccessToken } from "../utils/jwt.js";
+import { normalizeRoleValue } from "../utils/roles.js";
 
 const extractBearerToken = (authorizationHeader?: string) => {
   if (!authorizationHeader?.startsWith("Bearer ")) {
@@ -21,10 +22,17 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
   }
 
   const payload = verifyAccessToken(token);
+  const normalizedRole = normalizeRoleValue(payload.role);
+
+  if (!normalizedRole) {
+    next(new AppError(StatusCodes.UNAUTHORIZED, "Invalid access token", "INVALID_ACCESS_TOKEN"));
+    return;
+  }
+
   req.user = {
     id: Number(payload.sub),
     email: payload.email,
-    role: payload.role,
+    role: normalizedRole,
   };
 
   next();

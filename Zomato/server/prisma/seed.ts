@@ -332,12 +332,12 @@ const adminSeed: UserSeed = {
   role: Role.ADMIN,
 };
 
-const operationsSeed: UserSeed = {
+const regionalManagerSeed: UserSeed = {
   key: "ananya_rao_ops",
   fullName: "Ananya Rao",
   email: "ops@zomatoluxe.dev",
   phone: "+919840000401",
-  role: Role.OPERATIONS_MANAGER,
+  role: Role.REGIONAL_MANAGER,
 };
 
 const ownerSeeds: UserSeed[] = [
@@ -2861,7 +2861,7 @@ async function main() {
   const menuItemMap = new Map<string, Awaited<ReturnType<typeof prisma.menuItem.create>>>();
   const addonMap = new Map<string, Awaited<ReturnType<typeof prisma.itemAddon.create>>>();
 
-  const allUsers = [adminSeed, operationsSeed, ...ownerSeeds, ...deliveryPartnerSeeds, ...customerSeeds];
+  const allUsers = [adminSeed, regionalManagerSeed, ...ownerSeeds, ...deliveryPartnerSeeds, ...customerSeeds];
   for (const [index, userSeed] of allUsers.entries()) {
     const assignment = regionAssignmentMap.get(userSeed.key);
     const user = await prisma.user.create({
@@ -2893,7 +2893,7 @@ async function main() {
         district: noteSeed.district,
         title: noteSeed.title,
         message: noteSeed.message,
-        updatedById: userMap.get(operationsSeed.key)!.id,
+        updatedById: userMap.get(regionalManagerSeed.key)!.id,
       },
     });
   }

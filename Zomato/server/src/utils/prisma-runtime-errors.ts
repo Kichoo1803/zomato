@@ -64,6 +64,8 @@ export const getPrismaRuntimeErrorResponse = (
     error instanceof Prisma.PrismaClientInitializationError ||
     (error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2010" &&
+      includesAnyFragment(errorMessage, mongoConnectionFragments)) ||
+    (error instanceof Prisma.PrismaClientUnknownRequestError &&
       includesAnyFragment(errorMessage, mongoConnectionFragments))
   ) {
     return {

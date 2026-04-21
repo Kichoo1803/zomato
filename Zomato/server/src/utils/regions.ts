@@ -1,4 +1,5 @@
 import { Role } from "../constants/enums.js";
+import { normalizeRoleValue } from "./roles.js";
 
 export const normalizeRegionValue = (value?: string | null) => {
   const trimmed = value?.trim();
@@ -33,5 +34,4 @@ export const buildRegionIdentity = (state?: string | null, district?: string | n
 };
 
 export const isRegionalOperationsRole = (role?: string | null) =>
-  role === Role.REGIONAL_MANAGER || role === Role.OPERATIONS_MANAGER;
-
+  normalizeRoleValue(role) === Role.REGIONAL_MANAGER;

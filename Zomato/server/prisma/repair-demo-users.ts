@@ -25,7 +25,7 @@ const demoUsers: DemoUser[] = [
     fullName: "Ananya Rao",
     email: "ops@zomatoluxe.dev",
     phone: "+919840000401",
-    role: Role.OPERATIONS_MANAGER,
+    role: Role.REGIONAL_MANAGER,
   },
   {
     fullName: "Aarav Mehta",

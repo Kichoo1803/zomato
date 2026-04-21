@@ -57,6 +57,12 @@ const regionAdminSelect = {
   },
 } satisfies Prisma.RegionSelect;
 
+const managedRegionScopeSelect = {
+  id: true,
+  stateName: true,
+  districtName: true,
+} satisfies Prisma.RegionSelect;
+
 const normalizeRegionCode = (value?: string | null) => {
   const trimmed = value?.trim();
   return trimmed ? trimmed.toUpperCase() : null;
@@ -169,67 +175,162 @@ const validateManagerCandidate = async (client: RegionWriteClient, managerUserId
   return user;
 };
 
-const clearManagerRegionScope = async (
-  client: RegionWriteClient,
-  userId: number,
-  regionId: number,
-) => {
+const getManagedRegionsForManager = async (client: RegionWriteClient, managerUserId: number) =>
+  client.region.findMany({
+    where: {
+      managerUserId,
+    },
+    select: managedRegionScopeSelect,
+    orderBy: [{ stateName: "asc" }, { districtName: "asc" }, { id: "asc" }],
+  });
+
+const syncRegionalManagerScope = async (client: RegionWriteClient, managerUserId: number) => {
+  const [primaryRegion] = await getManagedRegionsForManager(client, managerUserId);
+
   await client.user.updateMany({
     where: {
-      id: userId,
-      regionId,
+      id: managerUserId,
     },
     data: {
-      regionId: null,
-      opsState: null,
-      opsDistrict: null,
+      regionId: primaryRegion?.id ?? null,
+      opsState: primaryRegion?.stateName ?? null,
+      opsDistrict: primaryRegion?.districtName ?? null,
     },
   });
 };
 
-const syncRegionManagerAssignment = async (
+const assertAssignableRegionIds = async (client: RegionWriteClient, regionIds: number[]) => {
+  const uniqueRegionIds = [...new Set(regionIds)];
+
+  if (!uniqueRegionIds.length) {
+    return uniqueRegionIds;
+  }
+
+  const regions = await client.region.findMany({
+    where: {
+      id: {
+        in: uniqueRegionIds,
+      },
+    },
+    select: {
+      id: true,
+      isActive: true,
+    },
+  });
+
+  if (regions.length !== uniqueRegionIds.length) {
+    throw new AppError(StatusCodes.NOT_FOUND, "One or more regions were not found", "REGION_NOT_FOUND");
+  }
+
+  if (regions.some((region) => !region.isActive)) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Inactive regions cannot be assigned to a regional manager",
+      "REGION_INACTIVE",
+    );
+  }
+
+  return uniqueRegionIds;
+};
+
+export const clearRegionalManagerAssignments = async (
   client: RegionWriteClient,
-  input: {
-    regionId: number;
-    stateName: string;
-    districtName: string;
-    nextManagerUserId: number | null;
-    previousManagerUserId: number | null;
-  },
+  managerUserId: number,
 ) => {
-  if (
-    input.previousManagerUserId &&
-    input.previousManagerUserId !== input.nextManagerUserId
-  ) {
-    await clearManagerRegionScope(client, input.previousManagerUserId, input.regionId);
-  }
-
-  if (!input.nextManagerUserId) {
-    return;
-  }
-
-  await validateManagerCandidate(client, input.nextManagerUserId);
-
   await client.region.updateMany({
     where: {
-      managerUserId: input.nextManagerUserId,
-      NOT: {
-        id: input.regionId,
-      },
+      managerUserId,
     },
     data: {
       managerUserId: null,
     },
   });
 
-  await client.user.update({
-    where: { id: input.nextManagerUserId },
+  await syncRegionalManagerScope(client, managerUserId);
+};
+
+export const replaceRegionalManagerAssignments = async (
+  client: RegionWriteClient,
+  managerUserId: number,
+  regionIds: number[],
+) => {
+  await validateManagerCandidate(client, managerUserId);
+  const nextRegionIds = await assertAssignableRegionIds(client, regionIds);
+  const targetRegions = nextRegionIds.length
+    ? await client.region.findMany({
+        where: {
+          id: {
+            in: nextRegionIds,
+          },
+        },
+        select: {
+          id: true,
+          managerUserId: true,
+        },
+      })
+    : [];
+
+  const affectedManagerIds = new Set<number>([managerUserId]);
+  targetRegions.forEach((region) => {
+    if (region.managerUserId && region.managerUserId !== managerUserId) {
+      affectedManagerIds.add(region.managerUserId);
+    }
+  });
+
+  await client.region.updateMany({
+    where: {
+      managerUserId,
+      ...(nextRegionIds.length
+        ? {
+            id: {
+              notIn: nextRegionIds,
+            },
+          }
+        : {}),
+    },
     data: {
-      regionId: input.regionId,
-      opsState: input.stateName,
-      opsDistrict: input.districtName,
+      managerUserId: null,
     },
   });
+
+  if (nextRegionIds.length) {
+    await client.region.updateMany({
+      where: {
+        id: {
+          in: nextRegionIds,
+        },
+      },
+      data: {
+        managerUserId,
+      },
+    });
+  }
+
+  await Promise.all([...affectedManagerIds].map((userId) => syncRegionalManagerScope(client, userId)));
+};
+
+const syncRegionManagerAssignment = async (
+  client: RegionWriteClient,
+  input: {
+    nextManagerUserId: number | null;
+    previousManagerUserId: number | null;
+  },
+) => {
+  if (input.nextManagerUserId) {
+    await validateManagerCandidate(client, input.nextManagerUserId);
+  }
+
+  const affectedManagerIds = new Set<number>();
+
+  if (input.previousManagerUserId) {
+    affectedManagerIds.add(input.previousManagerUserId);
+  }
+
+  if (input.nextManagerUserId) {
+    affectedManagerIds.add(input.nextManagerUserId);
+  }
+
+  await Promise.all([...affectedManagerIds].map((userId) => syncRegionalManagerScope(client, userId)));
 };
 
 const assertRegionUniqueness = async (
@@ -523,9 +624,6 @@ export const regionsAdminService = {
       });
 
       await syncRegionManagerAssignment(tx, {
-        regionId: createdRegion.id,
-        stateName: nextStateName,
-        districtName: nextDistrictName,
         nextManagerUserId,
         previousManagerUserId: null,
       });
@@ -664,9 +762,6 @@ export const regionsAdminService = {
 
       if (managerChanged || stateChanged || districtChanged) {
         await syncRegionManagerAssignment(tx, {
-          regionId,
-          stateName: nextStateName,
-          districtName: nextDistrictName,
           nextManagerUserId: nextManagerUserId ?? null,
           previousManagerUserId: existingRegion.managerUserId ?? null,
         });

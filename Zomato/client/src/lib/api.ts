@@ -1,5 +1,6 @@
 import axios from "axios";
 import { resolveApiBaseUrl } from "@/lib/runtime-urls";
+import { normalizeStoredAuthUser } from "@/lib/roles";
 import { useAuthStore } from "@/store/auth.store";
 
 const baseURL = resolveApiBaseUrl();
@@ -41,7 +42,7 @@ apiClient.interceptors.response.use(
       .post("/auth/refresh")
       .then((response) => {
         const accessToken = response.data?.data?.accessToken as string | undefined;
-        const user = response.data?.data?.user;
+        const user = normalizeStoredAuthUser(response.data?.data?.user ?? null);
 
         if (accessToken && user) {
           useAuthStore.getState().setSession({ accessToken, user });

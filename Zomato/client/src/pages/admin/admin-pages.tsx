@@ -1,6 +1,7 @@
 export { AdminDashboardPage } from "./admin-dashboard-page";
 export { AdminLiveMapPage } from "./admin-live-map-page";
 export { AdminRegionsPage } from "./admin-regions-page";
+export { AdminRegionalManagersPage } from "./admin-regional-managers-page";
 export { AdminUsersPage } from "./admin-users-page";
 export { AdminRestaurantsPage } from "./admin-restaurants-page";
 export { AdminDeliveryPartnersPage } from "./admin-delivery-partners-page";

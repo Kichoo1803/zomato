@@ -578,9 +578,11 @@ export const createUser = async (payload: {
   phone?: string;
   password: string;
   role: UserRole;
+  managedRegionIds?: number[];
   profileImage?: string;
   walletBalance?: number;
   isActive?: boolean;
+  opsNotes?: string;
 }) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ user: AdminUser }>>("/users", payload)).user;
 
@@ -592,9 +594,11 @@ export const updateUser = async (
     phone?: string;
     password: string;
     role: UserRole;
+    managedRegionIds: number[];
     profileImage?: string;
     walletBalance?: number;
     isActive: boolean;
+    opsNotes: string;
   }>,
 ) => unwrapData(await apiClient.patch<ApiEnvelope<{ user: AdminUser }>>(`/users/${userId}`, payload)).user;
 

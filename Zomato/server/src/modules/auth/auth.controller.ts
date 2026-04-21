@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import type { Request } from "express";
 import { StatusCodes } from "http-status-codes";
 import { logger } from "../../lib/logger.js";
@@ -29,6 +30,7 @@ export const register = asyncHandler(async (req, res) => {
 });
 
 export const login = asyncHandler(async (req, res) => {
+  const requestStartedAt = performance.now();
   const result = await authService.login(req.body, getSessionMeta(req));
 
   res.cookie(REFRESH_COOKIE_NAME, result.refreshToken, getRefreshCookieOptions());
@@ -37,6 +39,9 @@ export const login = asyncHandler(async (req, res) => {
     userId: result.user.id,
     email: result.user.email,
     role: result.user.role,
+    ipAddress: req.ip,
+    origin: req.get("origin") ?? undefined,
+    totalDurationMs: Number((performance.now() - requestStartedAt).toFixed(1)),
   });
 
   return sendSuccess(res, {

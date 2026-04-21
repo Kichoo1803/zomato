@@ -64,6 +64,7 @@ const adminUserBodyBaseSchema = z.object({
   phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
   password: passwordSchema.optional(),
   role: z.nativeEnum(Role),
+  managedRegionIds: z.array(z.coerce.number().int().positive()).optional(),
   opsState: optionalRegionString,
   opsDistrict: optionalRegionString,
   opsNotes: z.string().trim().max(1000).optional(),
@@ -82,6 +83,18 @@ const withAdminUserBodyValidation = <T extends z.ZodTypeAny>(schema: T) =>
         path: ["opsDistrict"],
         message: "Select a state before choosing a district.",
       });
+    }
+
+    if (values.managedRegionIds) {
+      const uniqueIds = new Set(values.managedRegionIds);
+
+      if (uniqueIds.size !== values.managedRegionIds.length) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["managedRegionIds"],
+          message: "Assigned regions must be unique.",
+        });
+      }
     }
   });
 

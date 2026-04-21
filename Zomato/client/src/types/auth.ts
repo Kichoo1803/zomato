@@ -1,10 +1,12 @@
-export type UserRole =
-  | "CUSTOMER"
-  | "RESTAURANT_OWNER"
-  | "DELIVERY_PARTNER"
-  | "REGIONAL_MANAGER"
-  | "OPERATIONS_MANAGER"
-  | "ADMIN";
+export const USER_ROLES = [
+  "CUSTOMER",
+  "RESTAURANT_OWNER",
+  "DELIVERY_PARTNER",
+  "REGIONAL_MANAGER",
+  "ADMIN",
+] as const;
+
+export type UserRole = (typeof USER_ROLES)[number];
 
 export type MembershipTier = "CLASSIC" | "GOLD" | "PLATINUM";
 export type MembershipStatus = "ACTIVE" | "INACTIVE" | "EXPIRED";

@@ -67,7 +67,10 @@ const adminNavItems = [
   { to: "/admin/dashboard", label: "Overview", icon: LayoutDashboard },
   { to: "/admin/live-map", label: "Live map", icon: Map },
   { to: "/admin/regions", label: "Regions", icon: MapPinned },
+  { to: "/admin/regional-managers", label: "Regional managers", icon: BriefcaseBusiness },
   { to: "/admin/users", label: "Users", icon: Users },
+  { to: "/ops/restaurant-owners", label: "Owner ops", icon: Store },
+  { to: "/ops/delivery-partners", label: "Delivery ops", icon: Bike },
   { to: "/admin/restaurants", label: "Restaurants", icon: Store },
   { to: "/admin/delivery-partners", label: "Delivery", icon: Bike },
   { to: "/admin/dishes", label: "Dishes", icon: UtensilsCrossed },
@@ -139,7 +142,7 @@ export const DashboardLayout = () => {
   const currentSection = sectionMeta[section];
   const shouldShowRealtimeNotifications = Boolean(
     user?.role &&
-      ["RESTAURANT_OWNER", "DELIVERY_PARTNER", "REGIONAL_MANAGER", "OPERATIONS_MANAGER", "ADMIN"].includes(user.role),
+      ["RESTAURANT_OWNER", "DELIVERY_PARTNER", "REGIONAL_MANAGER", "ADMIN"].includes(user.role),
   );
   const { unreadCount } = useNotificationInbox({
     enabled: shouldShowRealtimeNotifications,

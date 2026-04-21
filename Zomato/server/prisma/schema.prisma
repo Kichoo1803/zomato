@@ -41,7 +41,7 @@ model User {
   ownedRestaurants        Restaurant[]           @relation("RestaurantOwnerRestaurants")
   approvalRequestsCreated ApprovalRequest[]      @relation("ApprovalRequestRequester")
   approvalRequestsReviewed ApprovalRequest[]     @relation("ApprovalRequestReviewer")
-  managedRegion           Region?                @relation("RegionManager")
+  managedRegions          Region[]               @relation("RegionManager")
   region                  Region?                @relation("RegionUsers", fields: [regionId], references: [id], onDelete: SetNull)
   refreshTokens           RefreshToken[]
   reservations            Reservation[]
@@ -712,7 +712,7 @@ model Region {
   primaryPincode   String?                @map("primary_pincode")
   additionalPincodes String[]             @default([]) @map("additional_pincodes")
   isActive         Boolean                @default(true) @map("is_active")
-  managerUserId    Int?                   @unique @map("manager_user_id")
+  managerUserId    Int?                   @map("manager_user_id")
   createdAt        DateTime               @default(now()) @map("created_at")
   updatedAt        DateTime               @updatedAt @map("updated_at")
   approvalRequests ApprovalRequest[]
@@ -723,6 +723,7 @@ model Region {
 
   @@index([stateName, districtName])
   @@index([isActive])
+  @@index([managerUserId])
   @@map("regions")
 }
 

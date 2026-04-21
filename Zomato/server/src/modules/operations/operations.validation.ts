@@ -2,6 +2,15 @@ import { DeliveryAvailabilityStatus } from "../../constants/enums.js";
 import { z } from "zod";
 
 const optionalRegionString = z.string().trim().min(2).max(120).optional();
+const requiredRegionString = z.string().trim().min(2).max(120);
+const phoneSchema = z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional();
+const passwordSchema = z
+  .string()
+  .min(8, "Password must be at least 8 characters long")
+  .regex(/[A-Z]/, "Password must include an uppercase letter")
+  .regex(/[a-z]/, "Password must include a lowercase letter")
+  .regex(/[0-9]/, "Password must include a number")
+  .regex(/[^A-Za-z0-9]/, "Password must include a special character");
 
 const withRegionFields = <T extends z.ZodRawShape>(shape: T) =>
   z
@@ -80,5 +89,42 @@ export const updateOperationsRegionNoteSchema = {
   body: withRegionFields({
     title: z.string().trim().min(2).max(160).optional(),
     message: z.string().trim().min(2).max(1600).optional(),
+  }),
+};
+
+export const createOperationsOwnerSchema = {
+  body: z.object({
+    fullName: z.string().trim().min(2).max(120),
+    email: z.string().trim().email(),
+    phone: phoneSchema,
+    password: passwordSchema,
+    profileImage: z.string().trim().url().optional(),
+    state: requiredRegionString,
+    district: requiredRegionString,
+    notes: z.string().trim().max(1000).optional(),
+  }),
+};
+
+export const createOperationsDeliveryPartnerSchema = {
+  body: z.object({
+    fullName: z.string().trim().min(2).max(120),
+    email: z.string().trim().email(),
+    phone: phoneSchema,
+    password: passwordSchema,
+    profileImage: z.string().trim().url().optional(),
+    vehicleType: z.enum(["BIKE", "CYCLE", "SCOOTER", "CAR"]),
+    vehicleNumber: z.string().trim().max(50).optional(),
+    licenseNumber: z.string().trim().max(120).optional(),
+    availabilityStatus: z
+      .enum([
+        DeliveryAvailabilityStatus.ONLINE,
+        DeliveryAvailabilityStatus.OFFLINE,
+        DeliveryAvailabilityStatus.BUSY,
+      ])
+      .optional(),
+    isVerified: z.boolean().optional(),
+    state: requiredRegionString,
+    district: requiredRegionString,
+    notes: z.string().trim().max(1000).optional(),
   }),
 };

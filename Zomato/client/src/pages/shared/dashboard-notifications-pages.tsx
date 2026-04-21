@@ -151,12 +151,9 @@ export const OperationsNotificationsPage = () => (
 );
 
 const OperationsNotificationsContent = () => {
-  const { user } = useAuth();
-  const role = user?.role === "REGIONAL_MANAGER" ? "REGIONAL_MANAGER" : "OPERATIONS_MANAGER";
-
   return (
     <DashboardNotificationsPage
-      role={role}
+      role="REGIONAL_MANAGER"
       eyebrow="Operations"
       title="Regional coordination alerts."
       description="Dispatch coverage reminders and operations follow-ups stay organized inside the current dashboard shell."

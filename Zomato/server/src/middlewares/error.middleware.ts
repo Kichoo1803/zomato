@@ -10,6 +10,11 @@ import { getPrismaRuntimeErrorResponse } from "../utils/prisma-runtime-errors.js
 
 const { JsonWebTokenError, TokenExpiredError } = jwt;
 
+const isJsonBodySyntaxError = (error: unknown) =>
+  error instanceof SyntaxError &&
+  typeof error.message === "string" &&
+  "body" in error;
+
 export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   if (res.headersSent) {
     next(error);
@@ -22,6 +27,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
         ? "error"
         : "warn"
       : error instanceof ZodError ||
+          isJsonBodySyntaxError(error) ||
           error instanceof TokenExpiredError ||
           error instanceof JsonWebTokenError
         ? "warn"
@@ -55,6 +61,15 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       success: false,
       code: "CORS_NOT_ALLOWED",
       message: "This frontend origin is not allowed to access the API",
+    });
+    return;
+  }
+
+  if (isJsonBodySyntaxError(error)) {
+    res.status(StatusCodes.BAD_REQUEST).json({
+      success: false,
+      code: "BAD_REQUEST",
+      message: "Request body must be valid JSON",
     });
     return;
   }

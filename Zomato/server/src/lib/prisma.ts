@@ -7,6 +7,32 @@ const globalForPrisma = globalThis as unknown as {
 };
 
 const sleep = (durationMs: number) => new Promise((resolve) => setTimeout(resolve, durationMs));
+const DEFAULT_MONGO_SERVER_SELECTION_TIMEOUT_MS = 5000;
+const DEFAULT_MONGO_CONNECT_TIMEOUT_MS = 5000;
+
+const applyMongoConnectionTimeouts = (databaseUrl: string) => {
+  if (!databaseUrl.startsWith("mongodb://") && !databaseUrl.startsWith("mongodb+srv://")) {
+    return databaseUrl;
+  }
+
+  try {
+    const url = new URL(databaseUrl);
+
+    if (!url.searchParams.has("serverSelectionTimeoutMS")) {
+      url.searchParams.set("serverSelectionTimeoutMS", String(DEFAULT_MONGO_SERVER_SELECTION_TIMEOUT_MS));
+    }
+
+    if (!url.searchParams.has("connectTimeoutMS")) {
+      url.searchParams.set("connectTimeoutMS", String(DEFAULT_MONGO_CONNECT_TIMEOUT_MS));
+    }
+
+    return url.toString();
+  } catch {
+    return databaseUrl;
+  }
+};
+
+const runtimeDatabaseUrl = applyMongoConnectionTimeouts(env.DATABASE_URL);
 
 const summarizeDatabaseTarget = (databaseUrl: string) => {
   if (databaseUrl.startsWith("file:")) {
@@ -30,10 +56,36 @@ const summarizeDatabaseTarget = (databaseUrl: string) => {
   }
 };
 
-export const prismaConnectionInfo = summarizeDatabaseTarget(env.DATABASE_URL);
+const getMongoConnectionTimeouts = (databaseUrl: string) => {
+  if (!databaseUrl.startsWith("mongodb://") && !databaseUrl.startsWith("mongodb+srv://")) {
+    return {};
+  }
+
+  try {
+    const url = new URL(databaseUrl);
+    return {
+      serverSelectionTimeoutMs: Number(
+        url.searchParams.get("serverSelectionTimeoutMS") ?? DEFAULT_MONGO_SERVER_SELECTION_TIMEOUT_MS,
+      ),
+      connectTimeoutMs: Number(url.searchParams.get("connectTimeoutMS") ?? DEFAULT_MONGO_CONNECT_TIMEOUT_MS),
+    };
+  } catch {
+    return {};
+  }
+};
+
+export const prismaConnectionInfo = {
+  ...summarizeDatabaseTarget(runtimeDatabaseUrl),
+  ...getMongoConnectionTimeouts(runtimeDatabaseUrl),
+};
 
 const createPrisma = () =>
   createPrismaClient({
+    datasources: {
+      db: {
+        url: runtimeDatabaseUrl,
+      },
+    },
     log: env.isDevelopment ? ["query", "warn", "error"] : ["warn", "error"],
   });
 

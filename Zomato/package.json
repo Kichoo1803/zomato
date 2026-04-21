@@ -24,6 +24,7 @@
     "db:migrate:deploy": "npm run db:push",
     "db:seed": "npm run prisma:seed -w server",
     "db:repair:demo-users": "npm run prisma:repair:demo-users -w server",
+    "db:migrate:operations-manager-role": "npm run prisma:migrate:operations-manager-role -w server",
     "db:migrate:sqlite-to-mongo": "npm run prisma:migrate:sqlite-to-mongo -w server",
     "db:validate:migration": "npm run prisma:validate:sqlite-to-mongo -w server"
   },
