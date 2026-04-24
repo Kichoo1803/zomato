@@ -4,6 +4,7 @@ import { logger } from "./lib/logger.js";
 import { connectPrisma } from "./lib/prisma.js";
 
 let prismaReadyPromise: Promise<void> | null = null;
+const INTERNAL_ROUTE_QUERY_KEY = "__vercel_route";
 
 const ensurePrismaConnected = () => {
   if (!prismaReadyPromise) {
@@ -24,8 +25,25 @@ const hasKnownApiPrefix = (requestUrl: string) =>
   requestUrl.startsWith("/api/v1/") ||
   requestUrl.startsWith("/api/v1?");
 
-const normalizeApiRequestUrl = (requestUrl?: string) => {
+const restoreRewrittenApiUrl = (requestUrl?: string) => {
   const nextUrl = requestUrl?.trim() || "/";
+  const parsedUrl = new URL(nextUrl, "http://127.0.0.1");
+  const rewrittenRoute = parsedUrl.searchParams.get(INTERNAL_ROUTE_QUERY_KEY)?.trim();
+
+  if (parsedUrl.pathname === "/api/index") {
+    parsedUrl.pathname = "/api";
+  } else if (parsedUrl.pathname === "/api/[...route]" && rewrittenRoute) {
+    parsedUrl.pathname = `/api/${rewrittenRoute.replace(/^\/+|\/+$/g, "")}`;
+  }
+
+  parsedUrl.searchParams.delete(INTERNAL_ROUTE_QUERY_KEY);
+
+  const normalizedSearch = parsedUrl.searchParams.toString();
+  return `${parsedUrl.pathname}${normalizedSearch ? `?${normalizedSearch}` : ""}`;
+};
+
+const normalizeApiRequestUrl = (requestUrl?: string) => {
+  const nextUrl = restoreRewrittenApiUrl(requestUrl);
 
   if (hasKnownApiPrefix(nextUrl)) {
     return nextUrl;

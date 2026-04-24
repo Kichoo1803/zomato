@@ -25,6 +25,18 @@ import { usersRouter } from "../modules/users/users.routes.js";
 
 export const apiRouter = Router();
 
+apiRouter.get("/ping", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "pong",
+    data: {
+      method: req.method,
+      path: req.originalUrl,
+      timestamp: new Date().toISOString(),
+    },
+  });
+});
+
 apiRouter.get("/health", (_req, res) => {
   res.status(200).json({
     success: true,
