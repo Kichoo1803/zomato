@@ -6,6 +6,7 @@ import { connectPrisma, disconnectPrisma, prismaConnectionInfo } from "./lib/pri
 import { createSocketServer } from "./socket/index.js";
 import { app } from "./app.js";
 
+// Local development entrypoint. Vercel uses the root /api functions instead.
 const httpServer = createServer(app);
 createSocketServer(httpServer);
 

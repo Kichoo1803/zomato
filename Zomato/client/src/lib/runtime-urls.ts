@@ -10,14 +10,14 @@ const shouldMirrorCurrentHostname = (targetUrl: URL, currentHostname: string) =>
 
 const getDefaultApiBaseUrl = () => {
   if (typeof window === "undefined") {
-    return "/api/v1";
+    return "/api";
   }
 
   if (devClientPorts.has(window.location.port)) {
-    return `${window.location.protocol}//${window.location.hostname}:4000/api/v1`;
+    return `${window.location.protocol}//${window.location.hostname}:4000/api`;
   }
 
-  return `${window.location.origin}/api/v1`;
+  return `${window.location.origin}/api`;
 };
 
 const getDefaultRealtimeServerUrl = () => {

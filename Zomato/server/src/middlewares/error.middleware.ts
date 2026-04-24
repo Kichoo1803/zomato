@@ -15,6 +15,9 @@ const isJsonBodySyntaxError = (error: unknown) =>
   typeof error.message === "string" &&
   "body" in error;
 
+const authRoutePrefixes = ["/api/auth/", "/api/v1/auth/"];
+const loginRoutes = new Set(["/api/auth/login", "/api/v1/auth/login"]);
+
 export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   if (res.headersSent) {
     next(error);
@@ -75,11 +78,11 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   }
 
   if (error instanceof ZodError) {
-    const isAuthRequest = req.originalUrl.startsWith("/api/v1/auth/");
+    const isAuthRequest = authRoutePrefixes.some((prefix) => req.originalUrl.startsWith(prefix));
     const flattenedError = error.flatten();
 
     if (isAuthRequest) {
-      const isLoginRequest = req.originalUrl === "/api/v1/auth/login";
+      const isLoginRequest = loginRoutes.has(req.originalUrl);
 
       if (isLoginRequest) {
         const emailErrors = flattenedError.fieldErrors.email ?? [];

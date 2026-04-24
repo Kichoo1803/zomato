@@ -13,6 +13,7 @@ import { loggerStream } from "./lib/logger.js";
 import { apiRouter } from "./routes/index.js";
 
 export const app = express();
+const apiBasePaths = ["/api", "/api/v1"] as const;
 
 app.set("trust proxy", 1);
 
@@ -39,13 +40,19 @@ app.use(
   }),
 );
 
-app.get("/", (_req, res) => {
+const sendApiWelcome = (_req: express.Request, res: express.Response) => {
   res.status(200).json({
     success: true,
     message: "Welcome to the Zomato Luxe API",
   });
-});
+};
 
+app.get("/", sendApiWelcome);
+app.get([...apiBasePaths], sendApiWelcome);
+
+app.use("/api", apiRouter);
 app.use("/api/v1", apiRouter);
 app.use(notFoundHandler);
 app.use(errorHandler);
+
+export default app;
