@@ -2,6 +2,7 @@
   "name": "zomato-luxe-platform",
   "private": true,
   "version": "0.1.0",
+  "type": "module",
   "description": "Production-style Zomato-inspired food delivery monorepo",
   "workspaces": [
     "client",
