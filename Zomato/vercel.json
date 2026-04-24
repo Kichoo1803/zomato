@@ -1,20 +1,27 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
   "framework": null,
   "buildCommand": "npm run build",
   "outputDirectory": "client/dist",
-  "rewrites": [
+  "routes": [
     {
-      "source": "/api",
-      "destination": "/api"
+      "src": "^/api$",
+      "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+      "dest": "/api/index.ts"
     },
     {
-      "source": "/api/:path*",
-      "destination": "/api/:path*"
+      "src": "^/api/(.*)$",
+      "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+      "dest": "/api/[...route].ts"
     },
     {
-      "source": "/:path((?!api(?:/|$)).*)",
-      "destination": "/index.html"
+      "src": "^/(.*)$",
+      "check": true
+    },
+    {
+      "src": "^/(.*)$",
+      "dest": "/index.html"
     }
   ]
 }
