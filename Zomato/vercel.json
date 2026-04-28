@@ -1,4 +1,8 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm install --workspaces --production=false",
+  "buildCommand": "npm run build -w client",
+  "outputDirectory": "client/dist",
   "rewrites": [
     {
       "source": "/api/:path*",
