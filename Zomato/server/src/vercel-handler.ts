@@ -69,6 +69,37 @@ const normalizeApiRequestUrl = (requestUrl?: string) => {
   return `/api${nextUrl.startsWith("/") ? nextUrl : `/${nextUrl}`}`;
 };
 
+const logServerlessError = (request: IncomingMessage, error: unknown) => {
+  logger.error("Vercel serverless handler failed", {
+    method: request.method,
+    url: request.url,
+    error: error instanceof Error ? error.message : "Unknown serverless error",
+    stack: error instanceof Error ? error.stack : undefined,
+  });
+};
+
+const sendServerlessErrorResponse = (
+  response: ServerResponse<IncomingMessage>,
+  error: unknown,
+) => {
+  if (response.headersSent) {
+    if (!response.writableEnded) {
+      response.end();
+    }
+    return;
+  }
+
+  response.statusCode = 500;
+  response.setHeader("content-type", "application/json");
+  response.end(
+    JSON.stringify({
+      success: false,
+      code: "SERVERLESS_FUNCTION_ERROR",
+      message: "Serverless function failed",
+    }),
+  );
+};
+
 export default async function handler(request: IncomingMessage, response: ServerResponse<IncomingMessage>) {
   try {
     const normalizedRequestUrl = normalizeApiRequestUrl(request.url);
@@ -80,25 +111,7 @@ export default async function handler(request: IncomingMessage, response: Server
 
     app(request as Parameters<typeof app>[0], response as Parameters<typeof app>[1]);
   } catch (error) {
-    logger.error("Failed to initialize Vercel API handler", {
-      error: error instanceof Error ? error.message : "Unknown initialization error",
-      path: request.url,
-      stack: error instanceof Error ? error.stack : undefined,
-    });
-
-    if (response.headersSent) {
-      response.end();
-      return;
-    }
-
-    response.statusCode = 500;
-    response.setHeader("content-type", "application/json");
-    response.end(
-      JSON.stringify({
-        success: false,
-        code: "INTERNAL_SERVER_ERROR",
-        message: "Something went wrong on the server",
-      }),
-    );
+    logServerlessError(request, error);
+    sendServerlessErrorResponse(response, error);
   }
 }
