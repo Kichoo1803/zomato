@@ -12,6 +12,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
+    "postinstall": "npm run prisma:generate -w server && npm run prisma:generate:legacy -w server",
     "dev": "concurrently -n client,server -c red,cyan \"npm run dev -w client\" \"npm run dev -w server\"",
     "build": "npm run build -w client && npm run build -w server",
     "lint": "npm run lint -w client && npm run lint -w server",

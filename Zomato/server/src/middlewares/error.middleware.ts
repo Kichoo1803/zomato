@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import type { ErrorRequestHandler } from "express";
 import { StatusCodes } from "http-status-codes";
 import jwt from "jsonwebtoken";
@@ -17,12 +16,28 @@ const isJsonBodySyntaxError = (error: unknown) =>
 
 const authRoutePrefixes = ["/api/auth/", "/api/v1/auth/"];
 const loginRoutes = new Set(["/api/auth/login", "/api/v1/auth/login"]);
+const isNamedError = (error: unknown, name: string): error is Error =>
+  error instanceof Error && error.name === name;
+
+const isPrismaKnownRequestError = (
+  error: unknown,
+): error is Error & { code: string; meta?: unknown } =>
+  isNamedError(error, "PrismaClientKnownRequestError") &&
+  typeof (error as { code?: unknown }).code === "string";
+
+const isPrismaInitializationError = (error: unknown): error is Error =>
+  isNamedError(error, "PrismaClientInitializationError");
+
+const isPrismaValidationError = (error: unknown): error is Error =>
+  isNamedError(error, "PrismaClientValidationError");
 
 export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   if (res.headersSent) {
     next(error);
     return;
   }
+
+  const errorMessage = error instanceof Error ? error.message : "Unknown error";
 
   const logLevel =
     error instanceof AppError
@@ -34,16 +49,16 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
           error instanceof TokenExpiredError ||
           error instanceof JsonWebTokenError
         ? "warn"
-        : error instanceof Prisma.PrismaClientKnownRequestError
+        : isPrismaKnownRequestError(error)
           ? ["P2002"].includes(error.code)
             ? "warn"
             : "error"
-          : error instanceof Prisma.PrismaClientInitializationError ||
-              error instanceof Prisma.PrismaClientValidationError
+          : isPrismaInitializationError(error) ||
+              isPrismaValidationError(error)
             ? "error"
             : "error";
 
-  logger[logLevel](error.message, {
+  logger[logLevel](errorMessage, {
     path: req.originalUrl,
     method: req.method,
     stack: env.isProduction ? undefined : error instanceof Error ? error.stack : undefined,
@@ -150,7 +165,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     return;
   }
 
-  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+  if (isPrismaKnownRequestError(error)) {
     if (error.code === "P2002") {
       res.status(StatusCodes.CONFLICT).json({
         success: false,

@@ -1,5 +1,3 @@
-import { Prisma } from "@prisma/client";
-
 type PrismaRuntimeErrorResponse = {
   statusCode: number;
   code: string;
@@ -7,20 +5,45 @@ type PrismaRuntimeErrorResponse = {
   details?: unknown;
 };
 
-const getKnownRequestMetaMessage = (error: Prisma.PrismaClientKnownRequestError) => {
-  const metaMessage = error.meta?.message;
+type PrismaLikeKnownRequestError = Error & {
+  code: string;
+  meta?: unknown;
+};
+
+const isNamedError = (error: unknown, name: string): error is Error =>
+  error instanceof Error && error.name === name;
+
+const isPrismaKnownRequestError = (error: unknown): error is PrismaLikeKnownRequestError =>
+  isNamedError(error, "PrismaClientKnownRequestError") &&
+  typeof (error as { code?: unknown }).code === "string";
+
+const isPrismaInitializationError = (error: unknown): error is Error =>
+  isNamedError(error, "PrismaClientInitializationError");
+
+const isPrismaValidationError = (error: unknown): error is Error =>
+  isNamedError(error, "PrismaClientValidationError");
+
+const isPrismaUnknownRequestError = (error: unknown): error is Error =>
+  isNamedError(error, "PrismaClientUnknownRequestError");
+
+const getKnownRequestMetaMessage = (error: PrismaLikeKnownRequestError) => {
+  if (!error.meta || typeof error.meta !== "object") {
+    return "";
+  }
+
+  const metaMessage = Reflect.get(error.meta, "message");
   return typeof metaMessage === "string" ? metaMessage : "";
 };
 
 const getErrorMessage = (error: unknown) => {
-  if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    return getKnownRequestMetaMessage(error);
+  if (isPrismaKnownRequestError(error)) {
+    return getKnownRequestMetaMessage(error) || error.message;
   }
 
   if (
-    error instanceof Prisma.PrismaClientInitializationError ||
-    error instanceof Prisma.PrismaClientValidationError ||
-    error instanceof Prisma.PrismaClientUnknownRequestError
+    isPrismaInitializationError(error) ||
+    isPrismaValidationError(error) ||
+    isPrismaUnknownRequestError(error)
   ) {
     return error.message;
   }
@@ -61,11 +84,11 @@ export const getPrismaRuntimeErrorResponse = (
   const errorMessage = getErrorMessage(error).toLowerCase();
 
   if (
-    error instanceof Prisma.PrismaClientInitializationError ||
-    (error instanceof Prisma.PrismaClientKnownRequestError &&
+    isPrismaInitializationError(error) ||
+    (isPrismaKnownRequestError(error) &&
       error.code === "P2010" &&
       includesAnyFragment(errorMessage, mongoConnectionFragments)) ||
-    (error instanceof Prisma.PrismaClientUnknownRequestError &&
+    (isPrismaUnknownRequestError(error) &&
       includesAnyFragment(errorMessage, mongoConnectionFragments))
   ) {
     return {
@@ -79,10 +102,10 @@ export const getPrismaRuntimeErrorResponse = (
   }
 
   if (
-    (error instanceof Prisma.PrismaClientKnownRequestError &&
+    (isPrismaKnownRequestError(error) &&
       error.code === "P2010" &&
       includesAnyFragment(errorMessage, mongoReplicaSetFragments)) ||
-    (error instanceof Prisma.PrismaClientUnknownRequestError &&
+    (isPrismaUnknownRequestError(error) &&
       includesAnyFragment(errorMessage, mongoReplicaSetFragments))
   ) {
     return {
@@ -95,7 +118,7 @@ export const getPrismaRuntimeErrorResponse = (
     };
   }
 
-  if (error instanceof Prisma.PrismaClientValidationError) {
+  if (isPrismaValidationError(error)) {
     return {
       statusCode: 500,
       code: "PRISMA_CLIENT_OUT_OF_SYNC",
@@ -105,7 +128,7 @@ export const getPrismaRuntimeErrorResponse = (
     };
   }
 
-  if (error instanceof Prisma.PrismaClientKnownRequestError && ["P2021", "P2022"].includes(error.code)) {
+  if (isPrismaKnownRequestError(error) && ["P2021", "P2022"].includes(error.code)) {
     return {
       statusCode: 500,
       code: "DATABASE_SCHEMA_NOT_READY",
