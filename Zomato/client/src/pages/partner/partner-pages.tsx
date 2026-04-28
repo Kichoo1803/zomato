@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { AnalyticsChart } from "@/components/ui/analytics-chart";
 import { Button } from "@/components/ui/button";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Table } from "@/components/ui/table";
@@ -186,7 +187,7 @@ export const PartnerSettingsPage = () => {
         <SurfaceCard className="space-y-5">
           <Input label="Restaurant name" defaultValue={partnerRestaurant.name} />
           <Input label="Primary email" defaultValue="hello@saffronstory.in" />
-          <Input label="Contact phone" defaultValue="+91 99000 10101" />
+          <IndianPhoneInput label="Contact phone" defaultValue="+91 99000 10101" />
           <Input label="Operating hours" defaultValue={`${partnerRestaurant.hours} daily`} />
         </SurfaceCard>
 

@@ -41,6 +41,9 @@ model User {
   ownedRestaurants        Restaurant[]           @relation("RestaurantOwnerRestaurants")
   approvalRequestsCreated ApprovalRequest[]      @relation("ApprovalRequestRequester")
   approvalRequestsReviewed ApprovalRequest[]     @relation("ApprovalRequestReviewer")
+  assignedRegistrationApplications RegistrationApplication[] @relation("RegistrationApplicationAssignee")
+  reviewedRegistrationApplications RegistrationApplication[] @relation("RegistrationApplicationReviewer")
+  approvedRegistrationApplications RegistrationApplication[] @relation("RegistrationApplicationApprovedUser")
   managedRegions          Region[]               @relation("RegionManager")
   region                  Region?                @relation("RegionUsers", fields: [regionId], references: [id], onDelete: SetNull)
   refreshTokens           RefreshToken[]
@@ -568,6 +571,7 @@ model SavedPaymentMethod {
   label        String?
   holderName   String?  @map("holder_name")
   maskedEnding String?  @map("masked_ending")
+  cardBrand    String?  @map("card_brand")
   expiryMonth  String?  @map("expiry_month")
   expiryYear   String?  @map("expiry_year")
   upiId        String?  @map("upi_id")
@@ -718,6 +722,7 @@ model Region {
   approvalRequests ApprovalRequest[]
   manager          User?                  @relation("RegionManager", fields: [managerUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   operationsNotes  OperationsRegionNote[] @relation("RegionOperationsNotes")
+  registrationApplications RegistrationApplication[]
   restaurants      Restaurant[]           @relation("RegionRestaurants")
   users            User[]                 @relation("RegionUsers")
 
@@ -774,6 +779,51 @@ model ApprovalRequest {
   @@index([regionId, status])
   @@index([targetEntityType, targetEntityId])
   @@map("approval_requests")
+}
+
+model RegistrationApplication {
+  mongoId                 String   @id @default(auto()) @map("_id") @db.ObjectId
+  id                      Int      @unique @default(0)
+  roleType                String   @map("role_type")
+  fullName                String   @map("full_name")
+  email                   String
+  phone                   String
+  alternatePhone          String?  @map("alternate_phone")
+  passwordHash            String   @map("password_hash")
+  addressLine             String   @map("address_line")
+  state                   String
+  district                String
+  pincode                 String
+  regionId                Int?     @map("region_id")
+  restaurantName          String?  @map("restaurant_name")
+  restaurantAddress       String?  @map("restaurant_address")
+  fssaiCertificateNumber  String?  @map("fssai_certificate_number")
+  idProofType             String   @map("id_proof_type")
+  idProofNumber           String   @map("id_proof_number")
+  vehicleType             String?  @map("vehicle_type")
+  vehicleNumber           String?  @map("vehicle_number")
+  drivingLicenseNumber    String?  @map("driving_license_number")
+  payoutDetails           String?  @map("payout_details")
+  documents               String?  @map("documents")
+  status                  String   @default("PENDING")
+  assignedRegionalManagerId Int?   @map("assigned_regional_manager_id")
+  reviewedById            Int?     @map("reviewed_by_id")
+  approvedUserId          Int?     @map("approved_user_id")
+  reviewRemarks           String?  @map("review_remarks")
+  reviewedAt              DateTime? @map("reviewed_at")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+  approvedUser            User?    @relation("RegistrationApplicationApprovedUser", fields: [approvedUserId], references: [id], onDelete: SetNull)
+  assignedRegionalManager User?    @relation("RegistrationApplicationAssignee", fields: [assignedRegionalManagerId], references: [id], onDelete: SetNull)
+  region                  Region?  @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  reviewedBy              User?    @relation("RegistrationApplicationReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([roleType, status])
+  @@index([status, createdAt])
+  @@index([regionId, status])
+  @@index([assignedRegionalManagerId, status])
+  @@index([email, status])
+  @@map("registration_applications")
 }
 
 model Reservation {

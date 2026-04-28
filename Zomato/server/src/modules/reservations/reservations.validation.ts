@@ -1,4 +1,5 @@
 import { ReservationStatus } from "../../constants/enums.js";
+import { optionalIndianPhoneSchema } from "../../utils/phone.js";
 import { z } from "zod";
 
 export const createReservationSchema = {
@@ -8,7 +9,7 @@ export const createReservationSchema = {
     guests: z.coerce.number().int().positive().max(20),
     slot: z.string().trim().min(2).max(50),
     specialRequest: z.string().trim().max(500).optional(),
-    contactPhone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
+    contactPhone: optionalIndianPhoneSchema("Enter a valid 10-digit contact phone number."),
   }),
 };
 

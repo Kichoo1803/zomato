@@ -11,6 +11,11 @@ import {
 } from "../regions/regions.service.js";
 import { notificationsService } from "../notifications/notifications.service.js";
 import { AppError } from "../../utils/app-error.js";
+import {
+  areIndianPhoneNumbersEqual,
+  getIndianPhoneSearchVariants,
+  normalizeIndianPhoneNumber,
+} from "../../utils/phone.js";
 
 const userSelect = {
   id: true,
@@ -88,10 +93,10 @@ const ensureAdminUserUniqueness = async (input: {
   excludeUserId?: number;
 }) => {
   const normalizedEmail = input.email?.trim();
-  const normalizedPhone = input.phone?.trim();
+  const normalizedPhone = normalizeIndianPhoneNumber(input.phone);
   const uniqueConditions = [
     ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
-    ...(normalizedPhone ? [{ phone: normalizedPhone }] : []),
+    ...getIndianPhoneSearchVariants(normalizedPhone).map((phone) => ({ phone })),
   ];
 
   if (!uniqueConditions.length) {
@@ -121,7 +126,7 @@ const ensureAdminUserUniqueness = async (input: {
   }
 
   const conflictsWithEmail = normalizedEmail && existingUser.email === normalizedEmail;
-  const conflictsWithPhone = normalizedPhone && existingUser.phone === normalizedPhone;
+  const conflictsWithPhone = normalizedPhone && areIndianPhoneNumbersEqual(existingUser.phone, normalizedPhone);
 
   throw new AppError(
     StatusCodes.CONFLICT,
@@ -197,9 +202,11 @@ export const usersService = {
   },
 
   async create(input: AdminUserInput & { password: string }) {
+    const normalizedPhone = normalizeIndianPhoneNumber(input.phone);
+
     await ensureAdminUserUniqueness({
       email: input.email,
-      phone: input.phone,
+      phone: normalizedPhone,
     });
 
     assertRegionalManagerAssignmentInput({
@@ -219,7 +226,7 @@ export const usersService = {
         data: {
           fullName: input.fullName,
           email: input.email,
-          phone: input.phone,
+          phone: normalizedPhone,
           passwordHash,
           role: input.role,
           regionId: region?.id ?? null,
@@ -260,9 +267,12 @@ export const usersService = {
       throw new AppError(StatusCodes.NOT_FOUND, "User not found", "USER_NOT_FOUND");
     }
 
+    const normalizedPhone =
+      input.phone !== undefined ? normalizeIndianPhoneNumber(input.phone) : undefined;
+
     await ensureAdminUserUniqueness({
       email: input.email,
-      phone: input.phone,
+      phone: normalizedPhone,
       excludeUserId: userId,
     });
 
@@ -302,7 +312,7 @@ export const usersService = {
         data: {
           ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
           ...(input.email !== undefined ? { email: input.email } : {}),
-          ...(input.phone !== undefined ? { phone: input.phone } : {}),
+          ...(input.phone !== undefined ? { phone: normalizedPhone } : {}),
           ...(input.password !== undefined ? { passwordHash: await bcrypt.hash(input.password, 12) } : {}),
           ...(input.role !== undefined ? { role: input.role } : {}),
           ...(nextRole !== Role.REGIONAL_MANAGER && input.opsState !== undefined
@@ -378,9 +388,21 @@ export const usersService = {
   },
 
   async updateProfile(userId: number, input: { fullName?: string; phone?: string; profileImage?: string }) {
+    const normalizedPhone =
+      input.phone !== undefined ? normalizeIndianPhoneNumber(input.phone) : undefined;
+
+    await ensureAdminUserUniqueness({
+      phone: normalizedPhone,
+      excludeUserId: userId,
+    });
+
     return prisma.user.update({
       where: { id: userId },
-      data: input,
+      data: {
+        ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
+        ...(input.phone !== undefined ? { phone: normalizedPhone } : {}),
+        ...(input.profileImage !== undefined ? { profileImage: input.profileImage } : {}),
+      },
       select: userSelect,
     });
   },

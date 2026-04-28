@@ -1,4 +1,5 @@
 import { Role } from "../../constants/enums.js";
+import { optionalIndianPhoneSchema } from "../../utils/phone.js";
 import { z } from "zod";
 
 const discoveryLocationQuerySchema = z.object({
@@ -39,7 +40,7 @@ const restaurantBodySchema = z.object({
   name: z.string().trim().min(2).max(191),
   description: z.string().trim().max(500).optional(),
   email: z.string().trim().email().optional(),
-  phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
+  phone: optionalIndianPhoneSchema(),
   coverImage: z.string().trim().url().optional(),
   logoImage: z.string().trim().url().optional(),
   licenseNumber: z.string().trim().max(120).optional(),

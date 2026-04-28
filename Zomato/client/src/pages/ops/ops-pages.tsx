@@ -1,4 +1,5 @@
 export { OpsDashboardPage } from "./ops-dashboard-page";
+export { OpsApplicationsPage } from "./ops-applications-page";
 export { OpsRegionsPage } from "./ops-regions-page";
 export { OpsRestaurantOwnersPage } from "./ops-restaurant-owners-page";
 export { OpsDeliveryPartnersPage } from "./ops-delivery-partners-page";

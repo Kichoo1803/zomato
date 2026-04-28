@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { AdminLoadingState } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { useAuth } from "@/hooks/use-auth";
@@ -98,7 +99,7 @@ export const OwnerProfilePage = () => {
           <form className="space-y-4" onSubmit={handleSubmit}>
             <Input label="Full name" value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} required />
             <Input label="Email" value={form.email} disabled />
-            <Input label="Phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+            <IndianPhoneInput label="Phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
             <Input label="Profile image URL" value={form.profileImage} onChange={(event) => setForm({ ...form, profileImage: event.target.value })} />
             <div className="flex flex-wrap justify-end gap-3">
               <Button type="button" variant="secondary" onClick={handleLogout} disabled={isLoggingOut}>

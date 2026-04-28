@@ -77,9 +77,10 @@ export const AdminDashboardPage = () => {
           <SectionHeading title="Quick actions" description="Jump into the parts of the platform that need attention now." />
           <div className="grid gap-4">
             <QuickLinkCard to="/admin/users" title="Review new accounts" description="Open customer and operator management." />
+            <QuickLinkCard to="/admin/applications" title="Review applications" description="Approve or reject owner and delivery partner onboarding requests." />
             <QuickLinkCard to="/admin/orders" title="Watch live orders" description="Track updates, assignments, and delivery progress." />
             <QuickLinkCard to="/admin/live-map" title="Open live map" description="Monitor riders, active deliveries, and ETA signals." />
-            <QuickLinkCard to="/admin/restaurants" title="Manage partners" description="Edit partner storefronts and featured listings." />
+            <QuickLinkCard to="/admin/analytics" title="Open analytics" description="Track revenue, approval trends, and region-wise platform coverage." />
           </div>
         </SurfaceCard>
       </div>

@@ -122,8 +122,6 @@ const paymentGatewayForMethod = (paymentMethod: PaymentMethod) => {
       return "Razorpay";
     case PaymentMethod.WALLET:
       return "Wallet";
-    case PaymentMethod.NET_BANKING:
-      return "PayU";
     case PaymentMethod.COD:
     default:
       return "Cash";
@@ -336,6 +334,10 @@ const createOrderNotification = async (
   options?: {
     meta?: string;
     dedupe?: boolean;
+    realtimeTarget?: {
+      restaurantId?: number | null;
+      deliveryPartnerId?: number | null;
+    };
   },
 ) => {
   const meta = options?.meta ?? JSON.stringify({ orderId });
@@ -366,7 +368,13 @@ const createOrderNotification = async (
     },
   });
 
-  emitNotification(userId, notification);
+  // Keep persisted notifications as the REST fallback, then fan them out live over Socket.IO.
+  emitNotification({
+    userId,
+    restaurantId: options?.realtimeTarget?.restaurantId,
+    deliveryPartnerId: options?.realtimeTarget?.deliveryPartnerId,
+    notification,
+  });
   return notification;
 };
 
@@ -389,6 +397,7 @@ const notifyAvailableDeliveryPartners = async (order: OrderWithRealtimeContext) 
       },
     },
     select: {
+      id: true,
       userId: true,
     },
   });
@@ -417,6 +426,9 @@ const notifyAvailableDeliveryPartners = async (order: OrderWithRealtimeContext) 
           status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
         }),
         dedupe: true,
+        realtimeTarget: {
+          deliveryPartnerId: partner.id,
+        },
       }),
     ),
   );
@@ -473,6 +485,8 @@ export const ordersService = {
       cartId: number;
       addressId: number;
       paymentMethod: PaymentMethod;
+      paymentMethodId?: number;
+      savedPaymentMethodId?: number;
       tipAmount?: number;
       specialInstructions?: string;
     },
@@ -546,6 +560,45 @@ export const ordersService = {
 
     if (!address) {
       throw new AppError(StatusCodes.BAD_REQUEST, "Address is not serviceable", "ADDRESS_NOT_SERVICEABLE");
+    }
+
+    const selectedSavedPaymentMethodId = input.savedPaymentMethodId ?? input.paymentMethodId;
+
+    if (input.paymentMethod === PaymentMethod.CARD || input.paymentMethod === PaymentMethod.UPI) {
+      if (!selectedSavedPaymentMethodId) {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "Select a saved card or UPI ID before continuing",
+          "PAYMENT_METHOD_REQUIRED",
+        );
+      }
+
+      const paymentMethod = await prisma.savedPaymentMethod.findFirst({
+        where: {
+          id: selectedSavedPaymentMethodId,
+          userId: user.id,
+        },
+        select: {
+          id: true,
+          type: true,
+        },
+      });
+
+      if (!paymentMethod) {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "Select a valid saved card or UPI ID before continuing",
+          "PAYMENT_METHOD_INVALID",
+        );
+      }
+
+      if (paymentMethod.type !== input.paymentMethod) {
+        throw new AppError(
+          StatusCodes.BAD_REQUEST,
+          "Selected payment details do not match the chosen payment mode",
+          "PAYMENT_METHOD_MODE_MISMATCH",
+        );
+      }
     }
 
     const subtotal = decimalToNumber(cart.totalAmount);
@@ -698,6 +751,9 @@ export const ordersService = {
           eventKey: "owner:new-order",
           status: OrderStatus.PLACED,
         }),
+        realtimeTarget: {
+          restaurantId: placedOrder.restaurant.id,
+        },
       },
     );
 
@@ -705,6 +761,7 @@ export const ordersService = {
       orderId: placedOrder.id,
       userId: user.id,
       ownerId: placedOrder.restaurant.ownerId,
+      restaurantId: placedOrder.restaurant.id,
       status: OrderStatus.PLACED,
       note: "Order placed successfully.",
     });
@@ -938,6 +995,9 @@ export const ordersService = {
             eventKey: "owner:order-status-update",
             status: input.status,
           }),
+          realtimeTarget: {
+            restaurantId: updatedOrder.restaurant.id,
+          },
         },
       );
     }
@@ -967,6 +1027,9 @@ export const ordersService = {
             eventKey: "delivery:order-status-update",
             status: input.status,
           }),
+          realtimeTarget: {
+            deliveryPartnerId: updatedOrder.deliveryPartnerId,
+          },
         },
       );
     }
@@ -992,6 +1055,8 @@ export const ordersService = {
       userId: updatedOrder.userId,
       ownerId: updatedOrder.restaurant.ownerId,
       deliveryPartnerUserId,
+      restaurantId: updatedOrder.restaurant.id,
+      deliveryPartnerId: updatedOrder.deliveryPartnerId,
       status: input.status,
       note: input.note,
     });
@@ -1170,6 +1235,7 @@ export const ordersService = {
       select: {
         deliveryPartner: {
           select: {
+            id: true,
             userId: true,
           },
         },
@@ -1304,6 +1370,9 @@ export const ordersService = {
           eventKey: "owner:delivery-partner-accepted",
           status: nextStatus,
         }),
+        realtimeTarget: {
+          restaurantId: acceptedOrder.restaurant.id,
+        },
       },
     );
 
@@ -1312,6 +1381,7 @@ export const ordersService = {
         orderId,
         state: DeliveryOfferStatus.MISSED,
         userIds: [...new Set(competingOfferUsers.map((offer) => offer.deliveryPartner.userId))],
+        deliveryPartnerIds: [...new Set(competingOfferUsers.map((offer) => offer.deliveryPartner.id))],
       });
     }
 
@@ -1320,6 +1390,8 @@ export const ordersService = {
       userId: acceptedOrder.userId,
       ownerId: acceptedOrder.restaurant.ownerId,
       deliveryPartnerUserId: deliveryPartner.user.id,
+      restaurantId: acceptedOrder.restaurant.id,
+      deliveryPartnerId: acceptedOrder.deliveryPartnerId,
       status: nextStatus,
       note: "Delivery partner accepted the order.",
     });
@@ -1522,6 +1594,9 @@ export const ordersService = {
           eventKey: "delivery:assigned",
           status: nextStatus,
         }),
+        realtimeTarget: {
+          deliveryPartnerId: deliveryPartner.id,
+        },
       },
     );
     await createOrderNotification(
@@ -1542,6 +1617,8 @@ export const ordersService = {
       userId: assignedOrder.userId,
       ownerId: assignedOrder.restaurant.ownerId,
       deliveryPartnerUserId: getDeliveryPartnerUserId(assignedOrder.deliveryPartner),
+      restaurantId: assignedOrder.restaurant.id,
+      deliveryPartnerId: assignedOrder.deliveryPartnerId,
       status: nextStatus,
       note: nextStatus === OrderStatus.DELIVERY_PARTNER_ASSIGNED ? overrideReason : undefined,
     });

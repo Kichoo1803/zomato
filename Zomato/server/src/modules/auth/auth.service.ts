@@ -13,6 +13,7 @@ import { durationToMs } from "../../utils/cookies.js";
 import { hashValue } from "../../utils/hash.js";
 import { getPrismaRuntimeErrorResponse } from "../../utils/prisma-runtime-errors.js";
 import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from "../../utils/jwt.js";
+import { getIndianPhoneSearchVariants, normalizeIndianPhoneNumber } from "../../utils/phone.js";
 import { normalizeRoleValue } from "../../utils/roles.js";
 
 const publicUserSelect = {
@@ -193,10 +194,11 @@ export const authService = {
     meta?: SessionMeta,
   ) {
     const email = input.email.trim().toLowerCase();
+    const phone = normalizeIndianPhoneNumber(input.phone);
 
     const existingUser = await prisma.user.findFirst({
       where: {
-        OR: [{ email }, ...(input.phone ? [{ phone: input.phone }] : [])],
+        OR: [{ email }, ...getIndianPhoneSearchVariants(phone).map((value) => ({ phone: value }))],
       },
       select: {
         id: true,
@@ -216,7 +218,7 @@ export const authService = {
       data: {
         fullName: input.fullName,
         email,
-        phone: input.phone,
+        phone,
         passwordHash,
         role: input.role,
         emailVerified: false,

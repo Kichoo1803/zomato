@@ -2800,8 +2800,6 @@ const paymentGatewayForMethod = (method: PaymentMethod) => {
       return "Razorpay";
     case PaymentMethod.WALLET:
       return "Wallet";
-    case PaymentMethod.NET_BANKING:
-      return "PayU";
     case PaymentMethod.COD:
     default:
       return "Cash";
@@ -2841,6 +2839,10 @@ async function clearDatabase() {
   await prisma.restaurant.deleteMany();
   await prisma.address.deleteMany();
   await prisma.refreshToken.deleteMany();
+
+  // Delete regions before users because Region has a required RegionManager relation to User.
+  await prisma.region.deleteMany();
+
   await prisma.user.deleteMany();
   await prisma.idCounter.deleteMany();
 }

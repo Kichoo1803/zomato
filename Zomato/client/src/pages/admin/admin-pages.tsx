@@ -1,4 +1,5 @@
 export { AdminDashboardPage } from "./admin-dashboard-page";
+export { AdminApplicationsPage } from "./admin-applications-page";
 export { AdminLiveMapPage } from "./admin-live-map-page";
 export { AdminRegionsPage } from "./admin-regions-page";
 export { AdminRegionalManagersPage } from "./admin-regional-managers-page";

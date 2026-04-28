@@ -1,4 +1,5 @@
 import { Role } from "../../constants/enums.js";
+import { optionalIndianPhoneSchema } from "../../utils/phone.js";
 import { z } from "zod";
 
 const optionalRegionString = z.string().trim().min(2).max(120).optional();
@@ -6,7 +7,7 @@ const optionalRegionString = z.string().trim().min(2).max(120).optional();
 export const updateProfileSchema = {
   body: z.object({
     fullName: z.string().trim().min(2).max(120).optional(),
-    phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
+    phone: optionalIndianPhoneSchema(),
     profileImage: z.string().trim().url().optional(),
   }),
 };
@@ -61,7 +62,7 @@ export const listUsersQuerySchema = {
 const adminUserBodyBaseSchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   email: z.string().trim().email(),
-  phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
+  phone: optionalIndianPhoneSchema(),
   password: passwordSchema.optional(),
   role: z.nativeEnum(Role),
   managedRegionIds: z.array(z.coerce.number().int().positive()).optional(),

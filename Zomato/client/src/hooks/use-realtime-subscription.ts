@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
 import {
   type RealtimeDispatchQueueUpdate,
-  getRealtimeSocket,
   type RealtimeDeliveryLocationUpdate,
   type RealtimeNotification,
   type RealtimeOrderStatusUpdate,
-} from "@/lib/realtime";
+} from "@/lib/socket";
+import { useNotificationSocket } from "@/providers/NotificationSocketProvider";
 
 type UseRealtimeSubscriptionOptions = {
   enabled: boolean;
@@ -30,6 +30,7 @@ export const useRealtimeSubscription = ({
   onDispatchQueueUpdate,
 }: UseRealtimeSubscriptionOptions) => {
   const orderRoomIds = useMemo(() => normalizeOrderIds(orderIds), [orderIds]);
+  const { socket } = useNotificationSocket();
   const notificationHandlerRef = useRef<typeof onNotification>();
   const orderStatusHandlerRef = useRef<typeof onOrderStatusUpdate>();
   const deliveryLocationHandlerRef = useRef<typeof onDeliveryLocationUpdate>();
@@ -47,7 +48,6 @@ export const useRealtimeSubscription = ({
       return;
     }
 
-    const socket = getRealtimeSocket(userId);
     if (!socket) {
       return;
     }
@@ -68,24 +68,32 @@ export const useRealtimeSubscription = ({
       dispatchQueueHandlerRef.current?.(payload);
     };
 
+    const joinOrderRooms = () => {
+      orderRoomIds.forEach((orderId) => {
+        socket.emit("join:order", orderId);
+      });
+    };
+
     socket.on("notification:new", handleNotification);
     socket.on("order:status:update", handleOrderStatusUpdate);
     socket.on("delivery:location:update", handleDeliveryLocationUpdate);
     socket.on("delivery:dispatch:update", handleDispatchQueueUpdate);
+    socket.on("connect", joinOrderRooms);
 
-    orderRoomIds.forEach((orderId) => {
-      socket.emit("join:order", orderId);
-    });
+    if (socket.connected) {
+      joinOrderRooms();
+    }
 
     return () => {
       socket.off("notification:new", handleNotification);
       socket.off("order:status:update", handleOrderStatusUpdate);
       socket.off("delivery:location:update", handleDeliveryLocationUpdate);
       socket.off("delivery:dispatch:update", handleDispatchQueueUpdate);
+      socket.off("connect", joinOrderRooms);
 
       orderRoomIds.forEach((orderId) => {
         socket.emit("leave:order", orderId);
       });
     };
-  }, [enabled, orderRoomIds, userId]);
+  }, [enabled, orderRoomIds, socket, userId]);
 };

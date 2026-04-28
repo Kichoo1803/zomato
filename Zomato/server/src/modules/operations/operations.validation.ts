@@ -1,9 +1,10 @@
 import { DeliveryAvailabilityStatus } from "../../constants/enums.js";
+import { optionalIndianPhoneSchema } from "../../utils/phone.js";
 import { z } from "zod";
 
 const optionalRegionString = z.string().trim().min(2).max(120).optional();
 const requiredRegionString = z.string().trim().min(2).max(120);
-const phoneSchema = z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional();
+const phoneSchema = optionalIndianPhoneSchema();
 const passwordSchema = z
   .string()
   .min(8, "Password must be at least 8 characters long")

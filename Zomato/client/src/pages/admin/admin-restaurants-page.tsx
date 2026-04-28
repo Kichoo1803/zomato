@@ -9,6 +9,7 @@ import {
 } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
@@ -26,6 +27,7 @@ import {
   type Lookups,
 } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
+import { formatIndianPhoneDisplay } from "@/lib/phone";
 import {
   AddButton,
   ChipSelector,
@@ -137,8 +139,8 @@ export const AdminRestaurantsPage = () => {
       ownerId: String(restaurant.ownerId),
       name: restaurant.name,
       description: restaurant.description ?? "",
-      email: restaurant.owner.email,
-      phone: restaurant.owner.phone ?? "",
+      email: restaurant.email ?? "",
+      phone: restaurant.phone ?? "",
       coverImage: restaurant.coverImage ?? "",
       logoImage: "",
       openingTime: "",
@@ -298,7 +300,7 @@ export const AdminRestaurantsPage = () => {
             </Select>
             <Input label="Restaurant name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
             <Input label="Contact email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-            <Input label="Phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+            <IndianPhoneInput label="Phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
             <Input label="Opening time" value={form.openingTime} onChange={(event) => setForm({ ...form, openingTime: event.target.value })} placeholder="12:00" />
             <Input label="Closing time" value={form.closingTime} onChange={(event) => setForm({ ...form, closingTime: event.target.value })} placeholder="23:00" />
             <Input label="Area" value={form.area} onChange={(event) => setForm({ ...form, area: event.target.value })} />
@@ -334,6 +336,8 @@ export const AdminRestaurantsPage = () => {
           <div className="space-y-5">
             <AdminDetailsGrid items={[
               { label: "Owner", value: `${detailsRestaurant.owner.fullName} (${detailsRestaurant.owner.email})` },
+              { label: "Contact email", value: detailsRestaurant.email ?? "Not available" },
+              { label: "Contact phone", value: formatIndianPhoneDisplay(detailsRestaurant.phone) || "Not available" },
               { label: "Location", value: `${detailsRestaurant.area ?? "Area not available"}, ${detailsRestaurant.city}` },
               { label: "Address line", value: detailsRestaurant.addressLine ?? "Not available" },
               { label: "Rating", value: `${detailsRestaurant.avgRating.toFixed(1)} from ${detailsRestaurant.totalReviews} reviews` },

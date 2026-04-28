@@ -10,6 +10,11 @@ import { prisma } from "../../lib/prisma.js";
 import { emitDeliveryLocationUpdate, emitOrderStatusUpdate } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
+import {
+  areIndianPhoneNumbersEqual,
+  getIndianPhoneSearchVariants,
+  normalizeIndianPhoneNumber,
+} from "../../utils/phone.js";
 import { orderDispatchService } from "../orders/order-dispatch.service.js";
 import { resolveRegionIdForAssignment } from "../regions/regions.service.js";
 
@@ -27,6 +32,58 @@ const getPartnerByUserId = async (userId: number) => {
   }
 
   return partner;
+};
+
+const ensureDeliveryPartnerUserUniqueness = async (input: {
+  email?: string;
+  phone?: string;
+  excludeUserId?: number;
+}) => {
+  const normalizedEmail = input.email?.trim();
+  const normalizedPhone = normalizeIndianPhoneNumber(input.phone);
+  const uniqueConditions = [
+    ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
+    ...getIndianPhoneSearchVariants(normalizedPhone).map((phone) => ({ phone })),
+  ];
+
+  if (!uniqueConditions.length) {
+    return;
+  }
+
+  const existingUser = await prisma.user.findFirst({
+    where: {
+      OR: uniqueConditions,
+      ...(input.excludeUserId
+        ? {
+            NOT: {
+              id: input.excludeUserId,
+            },
+          }
+        : {}),
+    },
+    select: {
+      id: true,
+      email: true,
+      phone: true,
+    },
+  });
+
+  if (!existingUser) {
+    return;
+  }
+
+  const conflictsWithEmail = normalizedEmail && existingUser.email === normalizedEmail;
+  const conflictsWithPhone = normalizedPhone && areIndianPhoneNumbersEqual(existingUser.phone, normalizedPhone);
+
+  throw new AppError(
+    StatusCodes.CONFLICT,
+    conflictsWithEmail
+      ? "An account with this email already exists"
+      : conflictsWithPhone
+        ? "An account with this phone number already exists"
+        : "An account with these details already exists",
+    "ACCOUNT_ALREADY_EXISTS",
+  );
 };
 
 const adminPartnerInclude = {
@@ -176,20 +233,13 @@ export const deliveryPartnersService = {
     opsDistrict?: string;
     opsNotes?: string;
   }) {
-    const existingUser = await prisma.user.findFirst({
-      where: {
-        OR: [{ email: input.email }, ...(input.phone ? [{ phone: input.phone }] : [])],
-      },
-      select: { id: true },
-    });
+    const email = input.email.trim().toLowerCase();
+    const phone = normalizeIndianPhoneNumber(input.phone);
 
-    if (existingUser) {
-      throw new AppError(
-        StatusCodes.CONFLICT,
-        "An account with these details already exists",
-        "ACCOUNT_ALREADY_EXISTS",
-      );
-    }
+    await ensureDeliveryPartnerUserUniqueness({
+      email,
+      phone,
+    });
 
     const passwordHash = await bcrypt.hash(input.password, 12);
     const region = await resolveRegionIdForAssignment(prisma, input.opsState, input.opsDistrict);
@@ -198,8 +248,8 @@ export const deliveryPartnersService = {
       const user = await tx.user.create({
         data: {
           fullName: input.fullName,
-          email: input.email,
-          phone: input.phone,
+          email,
+          phone,
           passwordHash,
           profileImage: input.profileImage,
           role: Role.DELIVERY_PARTNER,
@@ -251,13 +301,23 @@ export const deliveryPartnersService = {
       throw new AppError(StatusCodes.NOT_FOUND, "Delivery partner not found", "DELIVERY_PARTNER_NOT_FOUND");
     }
 
+    const email = input.email?.trim().toLowerCase();
+    const phone =
+      input.phone !== undefined ? normalizeIndianPhoneNumber(input.phone) : undefined;
+
+    await ensureDeliveryPartnerUserUniqueness({
+      email,
+      phone,
+      excludeUserId: partner.userId,
+    });
+
     await prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: partner.userId },
         data: {
           ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
-          ...(input.email !== undefined ? { email: input.email } : {}),
-          ...(input.phone !== undefined ? { phone: input.phone } : {}),
+          ...(input.email !== undefined ? { email } : {}),
+          ...(input.phone !== undefined ? { phone } : {}),
           ...(input.password !== undefined ? { passwordHash: await bcrypt.hash(input.password, 12) } : {}),
           ...(input.profileImage !== undefined ? { profileImage: input.profileImage } : {}),
         },
@@ -329,13 +389,20 @@ export const deliveryPartnersService = {
     },
   ) {
     const partner = await getPartnerByUserId(userId);
+    const phone =
+      input.phone !== undefined ? normalizeIndianPhoneNumber(input.phone) : undefined;
+
+    await ensureDeliveryPartnerUserUniqueness({
+      phone,
+      excludeUserId: partner.userId,
+    });
 
     await prisma.$transaction(async (tx) => {
       await tx.user.update({
         where: { id: partner.userId },
         data: {
           ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
-          ...(input.phone !== undefined ? { phone: input.phone } : {}),
+          ...(input.phone !== undefined ? { phone } : {}),
         },
       });
 
@@ -429,6 +496,7 @@ export const deliveryPartnersService = {
       include: {
         restaurant: {
           select: {
+            id: true,
             ownerId: true,
             latitude: true,
             longitude: true,
@@ -479,6 +547,8 @@ export const deliveryPartnersService = {
         userId: order.userId,
         ownerId: order.restaurant.ownerId,
         deliveryPartnerUserId: partner.userId,
+        restaurantId: order.restaurant.id,
+        deliveryPartnerId: partner.id,
       });
 
       emitOrderStatusUpdate({
@@ -486,6 +556,8 @@ export const deliveryPartnersService = {
         userId: order.userId,
         ownerId: order.restaurant.ownerId,
         deliveryPartnerUserId: partner.userId,
+        restaurantId: order.restaurant.id,
+        deliveryPartnerId: partner.id,
         status: "LOCATION_UPDATED",
         note: "Delivery partner location refreshed.",
       });

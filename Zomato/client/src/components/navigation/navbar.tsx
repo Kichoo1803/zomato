@@ -1,5 +1,5 @@
 import { Link, NavLink } from "react-router-dom";
-import { Bell, Search, ShoppingBag, UserRound } from "lucide-react";
+import { Bell, ShoppingBag, UserRound } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useNotificationInbox } from "@/hooks/use-notification-inbox";
 import { getDefaultRedirectPath } from "@/lib/auth";
@@ -12,6 +12,7 @@ export const Navbar = () => {
     { label: "Restaurants", to: "/restaurants" },
     { label: "Offers", to: "/offers" },
     { label: "Membership", to: "/membership" },
+    { label: "Search", to: "/search" },
   ];
   const { unreadCount } = useNotificationInbox({
     enabled: isCustomerSession,
@@ -55,13 +56,14 @@ export const Navbar = () => {
         </nav>
 
         <div className="flex items-center gap-2">
-          <Link
-            to="/search"
-            className="hidden rounded-full border border-accent/10 bg-white px-4 py-2 text-sm font-semibold text-ink shadow-soft lg:flex lg:items-center lg:gap-2"
-          >
-            <Search className="h-4 w-4 text-accent" />
-            Search dishes
-          </Link>
+          {!isAuthenticated ? (
+            <Link
+              to="/register"
+              className="rounded-full border border-accent/15 bg-white px-4 py-2 text-sm font-semibold text-ink shadow-soft transition hover:border-accent/30 hover:text-accent"
+            >
+              Register
+            </Link>
+          ) : null}
           <Link to="/cart" className="rounded-full bg-accent p-3 text-white shadow-soft">
             <ShoppingBag className="h-4 w-4" />
           </Link>

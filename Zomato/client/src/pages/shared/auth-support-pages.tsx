@@ -52,7 +52,7 @@ export const ForgotPasswordPage = () => {
           Return to login
         </Link>
         <Link
-          to="/signup"
+          to="/register/user"
           className="inline-flex rounded-full border border-accent/15 bg-white px-5 py-3 text-sm font-semibold text-ink shadow-soft"
         >
           Create account

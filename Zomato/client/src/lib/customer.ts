@@ -322,11 +322,15 @@ export type CustomerPaymentMethod = {
   type: "CARD" | "UPI";
   label?: string | null;
   holderName?: string | null;
+  cardholderName?: string | null;
   maskedEnding?: string | null;
+  cardLast4?: string | null;
+  cardBrand?: string | null;
   expiryMonth?: string | null;
   expiryYear?: string | null;
   upiId?: string | null;
   isPrimary: boolean;
+  isDefault?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -335,17 +339,22 @@ export type CustomerPaymentMethodPayload =
   | {
       type: "CARD";
       label: string;
-      holderName: string;
-      maskedEnding: string;
+      holderName?: string;
+      cardholderName?: string;
+      maskedEnding?: string;
+      cardLast4?: string;
+      cardBrand?: string;
       expiryMonth: string;
       expiryYear: string;
       isPrimary?: boolean;
+      isDefault?: boolean;
     }
   | {
       type: "UPI";
       label?: string;
       upiId: string;
       isPrimary?: boolean;
+      isDefault?: boolean;
     };
 
 export type CustomerOffer = {
@@ -384,6 +393,8 @@ export type PublicRestaurantQuery = {
   latitude?: number;
   longitude?: number;
   radiusKm?: number;
+  page?: number;
+  limit?: number;
 };
 
 export type CustomerLocationLookup = {
@@ -652,25 +663,48 @@ export const clearCustomerCart = async (cartId: number) =>
 export const getCustomerAddresses = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ addresses: CustomerAddress[] }>>("/addresses")).addresses;
 
-export const getCustomerPaymentMethods = async () =>
-  unwrapData(await apiClient.get<ApiEnvelope<{ paymentMethods: CustomerPaymentMethod[] }>>("/payments/methods"))
+export const getCustomerSavedPaymentMethods = async () =>
+  unwrapData(await apiClient.get<ApiEnvelope<{ paymentMethods: CustomerPaymentMethod[] }>>("/saved-payment-methods"))
     .paymentMethods;
 
-export const createCustomerPaymentMethod = async (payload: CustomerPaymentMethodPayload) =>
+export const createCustomerSavedPaymentMethod = async (payload: CustomerPaymentMethodPayload) =>
   unwrapData(
-    await apiClient.post<ApiEnvelope<{ paymentMethod: CustomerPaymentMethod }>>("/payments/methods", payload),
+    await apiClient.post<ApiEnvelope<{ paymentMethod: CustomerPaymentMethod }>>("/saved-payment-methods", payload),
   ).paymentMethod;
 
-export const updateCustomerPaymentMethod = async (
+export const updateCustomerSavedPaymentMethod = async (
   paymentMethodId: number,
   payload: CustomerPaymentMethodPayload,
 ) =>
   unwrapData(
     await apiClient.patch<ApiEnvelope<{ paymentMethod: CustomerPaymentMethod }>>(
-      `/payments/methods/${paymentMethodId}`,
+      `/saved-payment-methods/${paymentMethodId}`,
       payload,
     ),
   ).paymentMethod;
+
+export const deleteCustomerSavedPaymentMethod = async (paymentMethodId: number) =>
+  unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/saved-payment-methods/${paymentMethodId}`));
+
+export const setDefaultCustomerSavedPaymentMethod = async (paymentMethodId: number) =>
+  unwrapData(
+    await apiClient.patch<ApiEnvelope<{ paymentMethod: CustomerPaymentMethod }>>(
+      `/saved-payment-methods/${paymentMethodId}/default`,
+    ),
+  ).paymentMethod;
+
+export const getCustomerPaymentMethods = async () => getCustomerSavedPaymentMethods();
+
+export const createCustomerPaymentMethod = async (payload: CustomerPaymentMethodPayload) =>
+  createCustomerSavedPaymentMethod(payload);
+
+export const updateCustomerPaymentMethod = async (
+  paymentMethodId: number,
+  payload: CustomerPaymentMethodPayload,
+) => updateCustomerSavedPaymentMethod(paymentMethodId, payload);
+
+export const deleteCustomerPaymentMethod = async (paymentMethodId: number) =>
+  deleteCustomerSavedPaymentMethod(paymentMethodId);
 
 export const updateCustomerProfile = async (payload: {
   fullName?: string;
@@ -710,6 +744,8 @@ export const placeCustomerOrder = async (payload: {
   cartId: number;
   addressId: number;
   paymentMethod: string;
+  savedPaymentMethodId?: number;
+  paymentMethodId?: number;
   tipAmount?: number;
   specialInstructions?: string;
 }) =>

@@ -159,6 +159,8 @@ const adminListSelect = {
   name: true,
   slug: true,
   description: true,
+  email: true,
+  phone: true,
   addressLine: true,
   city: true,
   state: true,

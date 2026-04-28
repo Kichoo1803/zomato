@@ -10,6 +10,7 @@ export const Footer = () => {
     { label: "Restaurants", to: "/restaurants" },
     { label: "Offers", to: "/offers" },
     { label: "Membership", to: "/membership" },
+    { label: "Search", to: "/search" },
     ...(isAuthenticated && user && user.role !== "CUSTOMER"
       ? [{ label: "Dashboard", to: getDefaultRedirectPath(user.role) }]
       : isCustomerSession

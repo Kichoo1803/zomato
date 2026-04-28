@@ -81,7 +81,6 @@ export const PaymentMethod = {
   CARD: "CARD",
   UPI: "UPI",
   WALLET: "WALLET",
-  NET_BANKING: "NET_BANKING",
 } as const;
 export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 

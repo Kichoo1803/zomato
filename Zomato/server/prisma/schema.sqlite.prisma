@@ -533,6 +533,7 @@ model SavedPaymentMethod {
   label        String?
   holderName   String?  @map("holder_name")
   maskedEnding String?  @map("masked_ending")
+  cardBrand    String?  @map("card_brand")
   expiryMonth  String?  @map("expiry_month")
   expiryYear   String?  @map("expiry_year")
   upiId        String?  @map("upi_id")

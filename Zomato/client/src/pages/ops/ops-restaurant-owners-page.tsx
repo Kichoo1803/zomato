@@ -8,6 +8,7 @@ import {
 } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
@@ -356,7 +357,7 @@ export const OpsRestaurantOwnersPage = () => {
               onChange={(event) => setCreateForm({ ...createForm, email: event.target.value })}
               required
             />
-            <Input
+            <IndianPhoneInput
               label="Phone"
               value={createForm.phone}
               onChange={(event) => setCreateForm({ ...createForm, phone: event.target.value })}

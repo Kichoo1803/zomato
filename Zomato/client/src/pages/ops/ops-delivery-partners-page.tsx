@@ -7,6 +7,7 @@ import {
   AdminToolbar,
 } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
@@ -348,7 +349,7 @@ export const OpsDeliveryPartnersPage = () => {
               onChange={(event) => setCreateForm({ ...createForm, email: event.target.value })}
               required
             />
-            <Input
+            <IndianPhoneInput
               label="Phone"
               value={createForm.phone}
               onChange={(event) => setCreateForm({ ...createForm, phone: event.target.value })}

@@ -132,6 +132,7 @@ export const OpsDashboardPage = () => {
           <SectionHeading title="Quick actions" description="Move straight into regional coordination tasks that need attention." />
           <div className="grid gap-4">
             <QuickLinkCard to="/ops/regions" title="Open region control" description="Drill from state to district and inspect readiness in one workflow." />
+            <QuickLinkCard to="/ops/applications" title="Review applications" description="Approve or reject owner and rider onboarding requests in your assigned districts." />
             <QuickLinkCard to="/ops/restaurant-owners" title="Review owner coverage" description="Check linked restaurants, assignment status, and operational notes." />
             <QuickLinkCard to="/ops/delivery-partners" title="Review rider coverage" description="Filter partners by state, district, availability, and assignment readiness." />
             <QuickLinkCard to="/ops/assignments" title="Fix unassigned queues" description="Map missing owners and riders into the right India region hierarchy." />

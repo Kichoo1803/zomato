@@ -2,19 +2,34 @@ import { OrderStatus, PaymentMethod } from "../../constants/enums.js";
 import { z } from "zod";
 
 export const placeOrderSchema = {
-  body: z.object({
-    cartId: z.coerce.number().int().positive(),
-    addressId: z.coerce.number().int().positive(),
-    paymentMethod: z.enum([
-      PaymentMethod.COD,
-      PaymentMethod.CARD,
-      PaymentMethod.UPI,
-      PaymentMethod.WALLET,
-      PaymentMethod.NET_BANKING,
-    ]),
-    tipAmount: z.coerce.number().min(0).max(500).optional(),
-    specialInstructions: z.string().trim().max(500).optional(),
-  }),
+  body: z
+    .object({
+      cartId: z.coerce.number().int().positive(),
+      addressId: z.coerce.number().int().positive(),
+      paymentMethod: z.enum([
+        PaymentMethod.COD,
+        PaymentMethod.CARD,
+        PaymentMethod.UPI,
+        PaymentMethod.WALLET,
+      ]),
+      paymentMethodId: z.coerce.number().int().positive().optional(),
+      savedPaymentMethodId: z.coerce.number().int().positive().optional(),
+      tipAmount: z.coerce.number().min(0).max(500).optional(),
+      specialInstructions: z.string().trim().max(500).optional(),
+    })
+    .superRefine((values, context) => {
+      if (
+        (values.paymentMethod === PaymentMethod.CARD || values.paymentMethod === PaymentMethod.UPI) &&
+        !values.paymentMethodId &&
+        !values.savedPaymentMethodId
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Select a saved card or UPI ID before continuing.",
+          path: ["savedPaymentMethodId"],
+        });
+      }
+    }),
 };
 
 export const ordersListQuerySchema = {

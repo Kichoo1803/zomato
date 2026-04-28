@@ -317,6 +317,10 @@ const createDispatchNotification = async (
   title: string,
   message: string,
   meta: string,
+  realtimeTarget?: {
+    restaurantId?: number | null;
+    deliveryPartnerId?: number | null;
+  },
 ) => {
   const notification = await prisma.notification.create({
     data: {
@@ -328,7 +332,13 @@ const createDispatchNotification = async (
     },
   });
 
-  emitNotification(userId, notification);
+  // Keep persisted notifications as the REST fallback, then fan them out live over Socket.IO.
+  emitNotification({
+    userId,
+    restaurantId: realtimeTarget?.restaurantId,
+    deliveryPartnerId: realtimeTarget?.deliveryPartnerId,
+    notification,
+  });
 };
 
 const getNextRadiusSequence = (lastRadiusKm?: number | null) => {
@@ -401,6 +411,7 @@ const closePendingOffersForOrder = async (
       id: true,
       deliveryPartner: {
         select: {
+          id: true,
           userId: true,
         },
       },
@@ -428,6 +439,7 @@ const closePendingOffersForOrder = async (
     orderId,
     state: payload.status,
     userIds: offers.map((offer) => offer.deliveryPartner.userId),
+    deliveryPartnerIds: offers.map((offer) => offer.deliveryPartner.id),
   });
 
   return offers.length;
@@ -622,6 +634,7 @@ const syncOrderDispatch = async (orderId: number) => {
       id: true,
       deliveryPartner: {
         select: {
+          id: true,
           userId: true,
         },
       },
@@ -646,6 +659,7 @@ const syncOrderDispatch = async (orderId: number) => {
       orderId,
       state: DeliveryOfferStatus.EXPIRED,
       userIds: expiredOffers.map((offer) => offer.deliveryPartner.userId),
+      deliveryPartnerIds: expiredOffers.map((offer) => offer.deliveryPartner.id),
     });
   }
 
@@ -724,6 +738,9 @@ const syncOrderDispatch = async (orderId: number) => {
               batchNumber,
             },
           }),
+          {
+            deliveryPartnerId: partner.id,
+          },
         ),
       ),
     );
@@ -732,6 +749,7 @@ const syncOrderDispatch = async (orderId: number) => {
       orderId,
       state: DeliveryOfferStatus.PENDING,
       userIds: partners.map((partner) => partner.userId),
+      deliveryPartnerIds: partners.map((partner) => partner.id),
     });
 
     return {
@@ -825,6 +843,7 @@ const declineOffer = async (userId: number, orderId: number) => {
     orderId,
     state: DeliveryOfferStatus.REJECTED,
     userIds: [partner.userId],
+    deliveryPartnerIds: [partner.id],
   });
 
   await syncOrderDispatch(orderId);
@@ -957,6 +976,9 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
           orderNumber: releasedOrder.orderNumber,
           status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
         }),
+        {
+          restaurantId: releasedOrder.restaurant.id,
+        },
       ),
     ]);
 
@@ -964,6 +986,7 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
       orderId,
       userId: releasedOrder.userId,
       ownerId: releasedOrder.restaurant.ownerId,
+      restaurantId: releasedOrder.restaurant.id,
       status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
       note: releaseNote,
     });
@@ -973,6 +996,7 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
     orderId,
     state: DeliveryOfferStatus.RELEASED,
     userIds: [partner.userId],
+    deliveryPartnerIds: [partner.id],
   });
 
   await syncOrderDispatch(orderId);
@@ -1034,11 +1058,13 @@ const rebroadcastUnassignedOrders = async () => {
       deliveryPartnerId: true,
       restaurant: {
         select: {
+          id: true,
           ownerId: true,
         },
       },
       deliveryPartner: {
         select: {
+          id: true,
           userId: true,
         },
       },
@@ -1112,6 +1138,7 @@ const rebroadcastUnassignedOrders = async () => {
       orderId: order.id,
       userId: order.userId,
       ownerId: order.restaurant.ownerId,
+      restaurantId: order.restaurant.id,
       status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
       note: "Delivery partner confirmation timed out. Restarting nearby rider search.",
     });
@@ -1119,6 +1146,7 @@ const rebroadcastUnassignedOrders = async () => {
       orderId: order.id,
       state: DeliveryOfferStatus.RELEASED,
       userIds: [deliveryPartnerUserId],
+      deliveryPartnerIds: [deliveryPartnerId],
     });
     await syncOrderDispatch(order.id);
   }

@@ -68,13 +68,22 @@ export type AdminRegion = {
 };
 
 export type AdminDashboard = {
+  filters: {
+    regionId?: number | null;
+    startDate?: string | null;
+    endDate?: string | null;
+  };
   stats: {
     usersCount: number;
     restaurantsCount: number;
+    restaurantOwnersCount: number;
     deliveryPartnersCount: number;
     ordersCount: number;
     deliveredOrders: number;
     activeOrders: number;
+    pendingApplicationsCount: number;
+    approvedApplicationsCount: number;
+    rejectedApplicationsCount: number;
     grossMerchandiseValue: number;
   };
   ordersByStatus: Array<{
@@ -83,6 +92,14 @@ export type AdminDashboard = {
   }>;
   usersByRole: Array<{
     role: string;
+    count: number;
+  }>;
+  applicationsByStatus: Array<{
+    status: string;
+    count: number;
+  }>;
+  applicationsByRole: Array<{
+    roleType: string;
     count: number;
   }>;
   topRestaurants: Array<{
@@ -117,6 +134,31 @@ export type AdminDashboard = {
     createdAt: string;
     isActive: boolean;
   }>;
+  regionMetrics: Array<{
+    regionId: number;
+    name: string;
+    stateName: string;
+    districtName: string;
+    restaurantsCount: number;
+    deliveryPartnersCount: number;
+    usersCount: number;
+    ordersCount: number;
+  }>;
+  dailyOrderTrends: Array<{
+    date: string;
+    label: string;
+    value: number;
+  }>;
+  weeklyOrderTrends: Array<{
+    date: string;
+    label: string;
+    value: number;
+  }>;
+  monthlyOrderTrends: Array<{
+    date: string;
+    label: string;
+    value: number;
+  }>;
 };
 
 export type AdminRestaurant = {
@@ -125,6 +167,8 @@ export type AdminRestaurant = {
   name: string;
   slug: string;
   description?: string | null;
+  email?: string | null;
+  phone?: string | null;
   addressLine?: string | null;
   city: string;
   state: string;
@@ -562,8 +606,11 @@ export const toSessionUser = (user: AdminUser): AuthUser =>
     walletBalance: user.walletBalance,
   });
 
-export const getAdminDashboard = async () =>
-  unwrapData(await apiClient.get<ApiEnvelope<AdminDashboard>>("/admin/analytics/dashboard"));
+export const getAdminDashboard = async (params?: {
+  regionId?: number;
+  startDate?: string;
+  endDate?: string;
+}) => unwrapData(await apiClient.get<ApiEnvelope<AdminDashboard>>("/admin/analytics/dashboard", { params }));
 
 export const getUsers = async (params?: {
   role?: UserRole;

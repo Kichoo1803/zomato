@@ -1,4 +1,5 @@
 import { Role } from "../../constants/enums.js";
+import { optionalIndianPhoneSchema } from "../../utils/phone.js";
 import { z } from "zod";
 
 const passwordSchema = z
@@ -13,7 +14,7 @@ export const registerSchema = {
   body: z.object({
     fullName: z.string().trim().min(2).max(120),
     email: z.string().trim().email(),
-    phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
+    phone: optionalIndianPhoneSchema(),
     password: passwordSchema,
     role: z
       .enum([Role.CUSTOMER, Role.RESTAURANT_OWNER, Role.DELIVERY_PARTNER])

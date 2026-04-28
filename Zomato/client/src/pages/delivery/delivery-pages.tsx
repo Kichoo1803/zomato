@@ -7,6 +7,7 @@ import { RouteMap } from "@/components/maps/route-map";
 import { Button } from "@/components/ui/button";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { useRealtimeSubscription } from "@/hooks/use-realtime-subscription";
@@ -1021,7 +1022,7 @@ export const DeliveryProfilePage = () => {
           <SurfaceCard className="space-y-5">
             <Input label="Full name" defaultValue={user?.fullName ?? "Ravi Kumar"} />
             <Input label="Email" defaultValue={user?.email ?? "ravi.kumar@zomatoluxe.dev"} />
-            <Input label="Phone" defaultValue={user?.phone ?? "+91 98200 00201"} />
+            <IndianPhoneInput label="Phone" defaultValue={user?.phone ?? "+91 98200 00201"} />
             <Input label="Vehicle number" defaultValue="KA03EX1045" />
           </SurfaceCard>
 
@@ -1111,7 +1112,7 @@ export const DeliveryProfilePage = () => {
             readOnly={!isEditingProfile}
           />
           <Input label="Email" value={profile?.user.email ?? ""} readOnly />
-          <Input
+          <IndianPhoneInput
             label="Phone"
             value={isEditingProfile ? form.phone : profile?.user.phone ?? ""}
             onChange={(event) => setForm({ ...form, phone: event.target.value })}

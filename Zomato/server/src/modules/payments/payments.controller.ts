@@ -38,3 +38,20 @@ export const updatePaymentMethod = asyncHandler(async (req, res) => {
     data: { paymentMethod },
   });
 });
+
+export const setDefaultPaymentMethod = asyncHandler(async (req, res) => {
+  const paymentMethod = await paymentsService.setDefaultMethod(req.user!.id, Number(req.params.paymentMethodId));
+
+  return sendSuccess(res, {
+    message: "Default payment method updated successfully",
+    data: { paymentMethod },
+  });
+});
+
+export const deletePaymentMethod = asyncHandler(async (req, res) => {
+  await paymentsService.deleteMethod(req.user!.id, Number(req.params.paymentMethodId));
+
+  return sendSuccess(res, {
+    message: "Payment method deleted successfully",
+  });
+});

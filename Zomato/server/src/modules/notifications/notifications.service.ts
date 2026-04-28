@@ -58,6 +58,7 @@ const createNotificationRecord = async (input: {
     },
   });
 
+  // Keep REST inbox reads unchanged while new notifications appear instantly in connected clients.
   emitNotification(input.userId, notification);
   return notification;
 };

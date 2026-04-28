@@ -1,5 +1,5 @@
 const localhostHostnames = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"]);
-const devClientPorts = new Set(["5173", "4173"]);
+const devClientPorts = new Set(["5173", "5174", "4173"]);
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 
@@ -50,8 +50,13 @@ const resolveConfiguredUrl = (configuredUrl: string | undefined, fallbackUrl: st
   }
 };
 
-export const resolveApiBaseUrl = () =>
-  resolveConfiguredUrl(import.meta.env.VITE_API_BASE_URL as string | undefined, getDefaultApiBaseUrl());
+export const resolveApiBaseUrl = () => {
+  const configuredApiUrl =
+    (import.meta.env.VITE_API_URL as string | undefined) ??
+    (import.meta.env.VITE_API_BASE_URL as string | undefined);
+
+  return resolveConfiguredUrl(configuredApiUrl, getDefaultApiBaseUrl());
+};
 
 export const resolveRealtimeServerUrl = () => {
   const configuredSocketUrl = import.meta.env.VITE_SOCKET_URL as string | undefined;

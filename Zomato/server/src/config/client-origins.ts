@@ -4,7 +4,9 @@ const localhostHostnames = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"])
 const privateIpv4Pattern = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/;
 const defaultDevClientOrigins = [
   "http://localhost:5173",
+  "http://localhost:5174",
   "http://127.0.0.1:5173",
+  "http://127.0.0.1:5174",
   "http://localhost:4173",
   "http://127.0.0.1:4173",
 ];

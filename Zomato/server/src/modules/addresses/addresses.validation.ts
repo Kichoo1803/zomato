@@ -1,11 +1,12 @@
 import { AddressType } from "../../constants/enums.js";
+import { requiredIndianPhoneSchema } from "../../utils/phone.js";
 import { z } from "zod";
 
 const addressBodySchema = z.object({
   addressType: z.enum([AddressType.HOME, AddressType.WORK, AddressType.OTHER]).default(AddressType.HOME),
   title: z.string().trim().min(1).max(80).optional(),
   recipientName: z.string().trim().min(2).max(120),
-  contactPhone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/),
+  contactPhone: requiredIndianPhoneSchema("Enter a valid 10-digit contact phone number."),
   houseNo: z.string().trim().min(1).max(80).optional(),
   street: z.string().trim().min(2).max(150),
   landmark: z.string().trim().max(150).optional(),

@@ -17,6 +17,11 @@ const ensurePrismaConnected = () => {
   return prismaReadyPromise;
 };
 
+const isFullHealthRequest = (requestUrl: string) => {
+  const { pathname } = new URL(requestUrl, "http://127.0.0.1");
+  return pathname === "/api/health/full" || pathname === "/api/v1/health/full";
+};
+
 const hasKnownApiPrefix = (requestUrl: string) =>
   requestUrl === "/api" ||
   requestUrl.startsWith("/api/") ||
@@ -66,13 +71,19 @@ const normalizeApiRequestUrl = (requestUrl?: string) => {
 
 export default async function handler(request: IncomingMessage, response: ServerResponse<IncomingMessage>) {
   try {
-    await ensurePrismaConnected();
-    request.url = normalizeApiRequestUrl(request.url);
+    const normalizedRequestUrl = normalizeApiRequestUrl(request.url);
+    request.url = normalizedRequestUrl;
+
+    if (!isFullHealthRequest(normalizedRequestUrl)) {
+      await ensurePrismaConnected().catch(() => undefined);
+    }
+
     app(request as Parameters<typeof app>[0], response as Parameters<typeof app>[1]);
   } catch (error) {
     logger.error("Failed to initialize Vercel API handler", {
       error: error instanceof Error ? error.message : "Unknown initialization error",
       path: request.url,
+      stack: error instanceof Error ? error.stack : undefined,
     });
 
     if (response.headersSent) {

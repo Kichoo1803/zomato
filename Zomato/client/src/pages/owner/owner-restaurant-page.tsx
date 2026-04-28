@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { AdminLoadingState } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
@@ -299,7 +300,7 @@ export const OwnerRestaurantPage = () => {
           <div className="grid gap-4 md:grid-cols-2">
             <Input label="Restaurant name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
             <Input label="Contact email" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-            <Input label="Contact phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+            <IndianPhoneInput label="Contact phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
             <Input label="Cover image URL" value={form.coverImage} onChange={(event) => setForm({ ...form, coverImage: event.target.value })} />
             <Input label="Logo image URL" value={form.logoImage} onChange={(event) => setForm({ ...form, logoImage: event.target.value })} />
             <Input label="Opening time" value={form.openingTime} onChange={(event) => setForm({ ...form, openingTime: event.target.value })} placeholder="09:00" />

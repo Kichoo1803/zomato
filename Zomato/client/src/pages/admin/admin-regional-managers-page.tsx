@@ -7,6 +7,7 @@ import {
   ConfirmDangerModal,
 } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
@@ -56,17 +57,6 @@ const emptyForm: RegionalManagerFormState = {
   opsNotes: "",
   isActive: true,
   managedRegionIds: [],
-};
-
-const normalizePhoneInput = (value: string) => {
-  const hasLeadingPlus = value.trimStart().startsWith("+");
-  const digits = value.replace(/\D/g, "");
-
-  if (hasLeadingPlus) {
-    return digits ? `+${digits}` : "+";
-  }
-
-  return digits;
 };
 
 const formatRegionLabel = (region: AdminRegion) => `${region.districtName}, ${region.stateName}`;
@@ -481,13 +471,10 @@ export const AdminRegionalManagersPage = () => {
               onChange={(event) => setForm({ ...form, email: event.target.value })}
               required
             />
-            <Input
+            <IndianPhoneInput
               label="Phone"
-              type="tel"
-              autoComplete="tel"
-              inputMode="tel"
               value={form.phone}
-              onChange={(event) => setForm({ ...form, phone: normalizePhoneInput(event.target.value) })}
+              onChange={(event) => setForm({ ...form, phone: event.target.value })}
             />
             <Input
               label={editingManager ? "New password (optional)" : "Password"}

@@ -26,6 +26,7 @@ import {
   PaymentPage,
 } from "@/pages/customer/order-pages";
 import {
+  AdminApplicationsPage,
   AdminAddonsPage,
   AdminCategoriesPage,
   AdminCombosPage,
@@ -67,6 +68,7 @@ import {
 } from "@/pages/owner/owner-pages";
 import {
   OpsAssignmentsPage,
+  OpsApplicationsPage,
   OpsCommunicationsPage,
   OpsDashboardPage,
   OpsDeliveryPartnersPage,
@@ -75,6 +77,7 @@ import {
   OpsRestaurantOwnersPage,
 } from "@/pages/ops/ops-pages";
 import { LandingPage } from "@/pages/shared/landing-page";
+import { RegistrationSelectionPage } from "@/pages/shared/registration-selection-page";
 import { ForgotPasswordPage, OtpVerificationPage } from "@/pages/shared/auth-support-pages";
 import { LoginPage } from "@/pages/shared/login-page";
 import { NotFoundPage } from "@/pages/shared/not-found-page";
@@ -83,6 +86,10 @@ import {
   OperationsNotificationsPage,
   OwnerNotificationsPage,
 } from "@/pages/shared/dashboard-notifications-pages";
+import {
+  DeliveryPartnerRegistrationPage as DeliveryPartnerApplyPage,
+  RestaurantOwnerRegistrationPage as RestaurantOwnerApplyPage,
+} from "@/pages/shared/partner-onboarding-page";
 import { ProtectedRoute } from "./protected-route";
 
 export const AppRouter = () => {
@@ -96,6 +103,12 @@ export const AppRouter = () => {
           <Route path="/restaurants/:slug" element={<RestaurantDetailsPage />} />
           <Route path="/offers" element={<OffersPage />} />
           <Route path="/membership" element={<MembershipPage />} />
+          <Route path="/register" element={<RegistrationSelectionPage />} />
+          <Route path="/partner/register" element={<Navigate to="/register/restaurant-owner" replace />} />
+          <Route path="/owner/register" element={<Navigate to="/register/restaurant-owner" replace />} />
+          <Route path="/delivery/register" element={<Navigate to="/register/delivery-partner" replace />} />
+          <Route path="/register/restaurant-owner" element={<RestaurantOwnerApplyPage />} />
+          <Route path="/register/delivery-partner" element={<DeliveryPartnerApplyPage />} />
 
           <Route element={<ProtectedRoute roles={["CUSTOMER"]} />}>
             <Route path="/cart" element={<CartPage />} />
@@ -116,6 +129,7 @@ export const AppRouter = () => {
         <Route element={<AuthLayout />}>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<LoginPage />} />
+          <Route path="/register/user" element={<LoginPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/verify-otp" element={<OtpVerificationPage />} />
           <Route path="/partner/login" element={<LoginPage />} />
@@ -175,6 +189,7 @@ export const AppRouter = () => {
             <Route path="/ops/restaurant-owners" element={<OpsRestaurantOwnersPage />} />
             <Route path="/ops/delivery-partners" element={<OpsDeliveryPartnersPage />} />
             <Route path="/ops/assignments" element={<OpsAssignmentsPage />} />
+            <Route path="/ops/applications" element={<OpsApplicationsPage />} />
             <Route path="/ops/communications" element={<OpsCommunicationsPage />} />
             <Route path="/ops/notifications" element={<OperationsNotificationsPage />} />
             <Route path="/ops/profile" element={<OpsProfilePage />} />
@@ -189,6 +204,7 @@ export const AppRouter = () => {
             <Route path="/admin/regions" element={<AdminRegionsPage />} />
             <Route path="/admin/regional-managers" element={<AdminRegionalManagersPage />} />
             <Route path="/admin/users" element={<AdminUsersPage />} />
+            <Route path="/admin/applications" element={<AdminApplicationsPage />} />
             <Route path="/admin/restaurants" element={<AdminRestaurantsPage />} />
             <Route path="/admin/delivery-partners" element={<AdminDeliveryPartnersPage />} />
             <Route path="/admin/dishes" element={<AdminDishesPage />} />
@@ -200,10 +216,11 @@ export const AppRouter = () => {
             <Route path="/admin/notifications" element={<AdminNotificationsPage />} />
             <Route path="/admin/payments" element={<AdminPaymentsPage />} />
             <Route path="/admin/reviews" element={<AdminReviewsPage />} />
+            <Route path="/admin/analytics" element={<AdminReportsPage />} />
             <Route path="/admin/reports" element={<AdminReportsPage />} />
             <Route path="/admin/profile" element={<AdminProfilePage />} />
             <Route path="/admin/settings" element={<AdminSettingsPage />} />
-            <Route path="/analytics" element={<Navigate to="/admin/reports" replace />} />
+            <Route path="/analytics" element={<Navigate to="/admin/analytics" replace />} />
             <Route path="/team" element={<Navigate to="/admin/users" replace />} />
           </Route>
         </Route>

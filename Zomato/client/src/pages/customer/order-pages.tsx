@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Sparkles } from "lucide-react";
+import { CreditCard, Edit3, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
+import { ConfirmDangerModal } from "@/components/admin/admin-ui";
 import { RouteMap } from "@/components/maps/route-map";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Modal } from "@/components/ui/modal";
 import { PageShell, SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
@@ -20,6 +22,7 @@ import { useRealtimeSubscription } from "@/hooks/use-realtime-subscription";
 import { getApiErrorMessage } from "@/lib/auth";
 import {
   createCustomerAddress,
+  deleteCustomerPaymentMethod,
   createCustomerPaymentMethod,
   createCustomerReview,
   clearCustomerCart,
@@ -34,6 +37,7 @@ import {
   readPendingCustomerCouponSelection,
   removeCustomerCartItem,
   removeCustomerCartOffer,
+  setDefaultCustomerSavedPaymentMethod,
   type CustomerAddressPayload,
   type CustomerPaymentMethod,
   type CustomerOffer,
@@ -47,7 +51,13 @@ import {
   type CustomerOrder,
   applyCustomerCartOffer,
 } from "@/lib/customer";
+import { cn } from "@/utils/cn";
 import { getOrderById, getStatusTone, orders, paymentMethods, savedAddresses } from "@/lib/demo-data";
+import {
+  formatIndianPhoneDisplay,
+  getIndianPhoneInputValue,
+  requiredIndianPhoneSchema,
+} from "@/lib/phone";
 
 const linkButtonClassName =
   "inline-flex items-center justify-center rounded-full bg-accent px-5 py-3 text-sm font-semibold text-white shadow-soft";
@@ -372,6 +382,8 @@ const paymentModeContent = {
   },
 } as const;
 
+type CheckoutPaymentTab = keyof typeof paymentModeContent;
+
 type StoredCardDetails = {
   label: string;
   holderName: string;
@@ -384,6 +396,7 @@ type StoredCardDetails = {
 type StoredUpiDetails = {
   upiId: string;
   appLabel?: string;
+  isPrimary: boolean;
 };
 
 type StoredPaymentPreferences = {
@@ -408,6 +421,7 @@ const upiDetailsSchema = z.object({
     .trim()
     .regex(/^[a-zA-Z0-9._-]{2,256}@[a-zA-Z]{2,64}$/, "Enter a valid UPI ID."),
   appLabel: z.string().trim().max(40).optional().or(z.literal("")),
+  isPrimary: z.boolean().default(true),
 });
 
 type CardDetailsFormValues = z.infer<typeof cardDetailsSchema>;
@@ -465,8 +479,52 @@ const toStoredUpiDetails = (paymentMethod: CustomerPaymentMethod | null): Stored
     ? {
         upiId: paymentMethod.upiId?.trim() || "",
         appLabel: paymentMethod.label?.trim() || undefined,
+        isPrimary: paymentMethod.isPrimary,
       }
     : null;
+
+const getSavedPaymentMethodTitle = (paymentMethod: CustomerPaymentMethod) => {
+  if (paymentMethod.type === "CARD") {
+    return `${paymentMethod.label ?? "Card"} - **** **** **** ${paymentMethod.maskedEnding ?? "0000"}`;
+  }
+
+  return paymentMethod.label?.trim()
+    ? `${paymentMethod.label} - ${paymentMethod.upiId ?? ""}`
+    : `UPI - ${paymentMethod.upiId ?? "No ID"}`;
+};
+
+const getSavedPaymentMethodSubtitle = (paymentMethod: CustomerPaymentMethod) => {
+  if (paymentMethod.type === "CARD") {
+    const details = [
+      paymentMethod.holderName?.trim(),
+      paymentMethod.expiryMonth && paymentMethod.expiryYear
+        ? `Expires ${paymentMethod.expiryMonth}/${paymentMethod.expiryYear}`
+        : null,
+    ].filter(Boolean);
+
+    return details.join(" - ") || "Masked card summary";
+  }
+
+  return paymentMethod.isPrimary ? "Primary UPI method" : "Ready for quick checkout";
+};
+
+const toPaymentMethodPayload = (paymentMethod: CustomerPaymentMethod) =>
+  paymentMethod.type === "CARD"
+    ? ({
+        type: "CARD",
+        label: paymentMethod.label?.trim() || "Saved card",
+        holderName: paymentMethod.holderName?.trim() || "",
+        maskedEnding: paymentMethod.maskedEnding?.trim() || "",
+        expiryMonth: paymentMethod.expiryMonth?.trim() || "",
+        expiryYear: paymentMethod.expiryYear?.trim() || "",
+        isPrimary: paymentMethod.isPrimary,
+      } as const)
+    : ({
+        type: "UPI",
+        label: paymentMethod.label?.trim() || undefined,
+        upiId: paymentMethod.upiId?.trim() || "",
+        isPrimary: paymentMethod.isPrimary,
+      } as const);
 
 const CardDetailsModal = ({
   open,
@@ -602,6 +660,7 @@ const UpiDetailsModal = ({
     defaultValues: {
       upiId: details?.upiId ?? "",
       appLabel: details?.appLabel ?? "",
+      isPrimary: details?.isPrimary ?? true,
     },
   });
 
@@ -613,6 +672,7 @@ const UpiDetailsModal = ({
     form.reset({
       upiId: details?.upiId ?? "",
       appLabel: details?.appLabel ?? "",
+      isPrimary: details?.isPrimary ?? true,
     });
   }, [details, form, open]);
 
@@ -620,6 +680,7 @@ const UpiDetailsModal = ({
     await onSubmit({
       upiId: values.upiId.trim(),
       appLabel: values.appLabel?.trim() ?? "",
+      isPrimary: values.isPrimary,
     });
   });
 
@@ -641,6 +702,10 @@ const UpiDetailsModal = ({
         <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
           Use an app tag like GPay, PhonePe, or Paytm if you want the summary card to read more naturally.
         </div>
+        <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream-soft/60 px-4 py-3">
+          <span className="text-sm font-semibold text-ink">Mark as primary UPI ID</span>
+          <input type="checkbox" className="h-4 w-4 accent-[rgb(139,30,36)]" {...form.register("isPrimary")} />
+        </label>
         <div className="flex flex-wrap justify-end gap-3">
           <Button type="button" variant="secondary" onClick={onClose} disabled={isSubmitting}>
             Cancel
@@ -664,10 +729,7 @@ const checkoutAddressSchema = z.object({
   addressType: z.enum(["HOME", "WORK", "OTHER"]),
   title: z.string().trim().max(80).optional().or(z.literal("")),
   recipientName: z.string().trim().min(2, "Recipient name is required.").max(120),
-  contactPhone: z
-    .string()
-    .trim()
-    .regex(/^\+?[1-9]\d{9,14}$/, "Enter a valid contact phone."),
+  contactPhone: requiredIndianPhoneSchema("Enter a valid 10-digit contact phone number."),
   houseNo: z.string().trim().max(80).optional().or(z.literal("")),
   street: z.string().trim().min(2, "Street or area is required.").max(150),
   landmark: z.string().trim().max(150).optional().or(z.literal("")),
@@ -699,7 +761,7 @@ const mapCheckoutAddressToFormValues = (
   addressType: (address?.addressType as CheckoutAddressFormValues["addressType"] | undefined) ?? "HOME",
   title: normalizeText(address?.title),
   recipientName: normalizeText(address?.recipientName) || normalizeText(defaults?.recipientName),
-  contactPhone: normalizeText(address?.contactPhone) || normalizeText(defaults?.contactPhone),
+  contactPhone: getIndianPhoneInputValue(address?.contactPhone) || getIndianPhoneInputValue(defaults?.contactPhone),
   houseNo: normalizeText(address?.houseNo),
   street: normalizeText(address?.street),
   landmark: normalizeText(address?.landmark),
@@ -860,10 +922,8 @@ const CheckoutAddressFormModal = ({
             error={form.formState.errors.recipientName?.message}
             {...form.register("recipientName")}
           />
-          <Input
+          <IndianPhoneInput
             label="Contact phone"
-            type="tel"
-            placeholder="+919830000301"
             error={form.formState.errors.contactPhone?.message}
             {...form.register("contactPhone")}
           />
@@ -1437,7 +1497,7 @@ export const CheckoutPage = () => {
                         </div>
                         {addressLines.line1 ? <p className="mt-3 text-sm text-ink-soft">{addressLines.line1}</p> : null}
                         {addressLines.line2 ? <p className="text-sm text-ink-soft">{addressLines.line2}</p> : null}
-                        {address.contactPhone ? <p className="mt-2 text-sm text-ink-muted">{address.contactPhone}</p> : null}
+                        {address.contactPhone ? <p className="mt-2 text-sm text-ink-muted">{formatIndianPhoneDisplay(address.contactPhone)}</p> : null}
                       </div>
                     );
                   })
@@ -1594,7 +1654,7 @@ export const PaymentPage = () => {
   const navigate = useNavigate();
   const { isAuthenticated, user } = useAuth();
   const [params] = useSearchParams();
-  const [activeMethod, setActiveMethod] = useState("CARD");
+  const [activeMethod, setActiveMethod] = useState<CheckoutPaymentTab>("CARD");
   const [carts, setCarts] = useState<CustomerCart[]>([]);
   const [availableOffers, setAvailableOffers] = useState<CustomerOffer[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -1603,9 +1663,16 @@ export const PaymentPage = () => {
   const [isApplyingCoupon, setIsApplyingCoupon] = useState(false);
   const [savedPaymentPreferences, setSavedPaymentPreferences] = useState<StoredPaymentPreferences>({});
   const [savedPaymentMethods, setSavedPaymentMethods] = useState<CustomerPaymentMethod[]>([]);
+  const [selectedCardMethodId, setSelectedCardMethodId] = useState<number | null>(null);
+  const [selectedUpiMethodId, setSelectedUpiMethodId] = useState<number | null>(null);
+  const [editingCardMethod, setEditingCardMethod] = useState<CustomerPaymentMethod | null>(null);
+  const [editingUpiMethod, setEditingUpiMethod] = useState<CustomerPaymentMethod | null>(null);
+  const [deleteTargetPaymentMethod, setDeleteTargetPaymentMethod] = useState<CustomerPaymentMethod | null>(null);
   const [isCardModalOpen, setIsCardModalOpen] = useState(false);
   const [isUpiModalOpen, setIsUpiModalOpen] = useState(false);
   const [isSavingPaymentDetails, setIsSavingPaymentDetails] = useState(false);
+  const [isDeletingPaymentMethod, setIsDeletingPaymentMethod] = useState(false);
+  const [cardSecurityCode, setCardSecurityCode] = useState("");
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [couponCode, setCouponCode] = useState("");
   const [couponMessage, setCouponMessage] = useState<string | null>(null);
@@ -1619,6 +1686,8 @@ export const PaymentPage = () => {
   );
   const cartParam = params.get("cartId");
   const couponParam = normalizeCouponCode(params.get("coupon"));
+  const savedCardMethods = useLiveFlow ? savedPaymentMethods.filter((paymentMethod) => paymentMethod.type === "CARD") : [];
+  const savedUpiMethods = useLiveFlow ? savedPaymentMethods.filter((paymentMethod) => paymentMethod.type === "UPI") : [];
 
   const loadSavedPaymentMethods = async () => {
     const paymentMethodRows = await getCustomerPaymentMethods();
@@ -1683,7 +1752,55 @@ export const PaymentPage = () => {
 
   useEffect(() => {
     setPaymentError(null);
-  }, [activeMethod, savedPaymentMethods, savedPaymentPreferences, user?.walletBalance]);
+  }, [
+    activeMethod,
+    cardSecurityCode,
+    savedPaymentMethods,
+    savedPaymentPreferences,
+    selectedCardMethodId,
+    selectedUpiMethodId,
+    user?.walletBalance,
+  ]);
+
+  useEffect(() => {
+    if (!useLiveFlow) {
+      setSelectedCardMethodId(null);
+      return;
+    }
+
+    if (!savedCardMethods.length) {
+      setSelectedCardMethodId(null);
+      return;
+    }
+
+    setSelectedCardMethodId((currentId) =>
+      currentId && savedCardMethods.some((paymentMethod) => paymentMethod.id === currentId)
+        ? currentId
+        : getPreferredPaymentMethod(savedCardMethods, "CARD")?.id ?? savedCardMethods[0]?.id ?? null,
+    );
+  }, [savedCardMethods, useLiveFlow]);
+
+  useEffect(() => {
+    setCardSecurityCode("");
+  }, [selectedCardMethodId]);
+
+  useEffect(() => {
+    if (!useLiveFlow) {
+      setSelectedUpiMethodId(null);
+      return;
+    }
+
+    if (!savedUpiMethods.length) {
+      setSelectedUpiMethodId(null);
+      return;
+    }
+
+    setSelectedUpiMethodId((currentId) =>
+      currentId && savedUpiMethods.some((paymentMethod) => paymentMethod.id === currentId)
+        ? currentId
+        : getPreferredPaymentMethod(savedUpiMethods, "UPI")?.id ?? savedUpiMethods[0]?.id ?? null,
+    );
+  }, [savedUpiMethods, useLiveFlow]);
 
   useEffect(() => {
     if (!useLiveFlow) {
@@ -1705,10 +1822,42 @@ export const PaymentPage = () => {
   const specialInstructions = params.get("notes") ?? undefined;
   const tipAmount = sanitizeTipAmount(params.get("tip"));
   const payableWithTip = (selectedCart?.summary.payableTotal ?? 0) + tipAmount;
-  const savedCardMethod = useLiveFlow ? getPreferredPaymentMethod(savedPaymentMethods, "CARD") : null;
-  const savedUpiMethod = useLiveFlow ? getPreferredPaymentMethod(savedPaymentMethods, "UPI") : null;
-  const savedCardDetails = useLiveFlow ? toStoredCardDetails(savedCardMethod) : savedPaymentPreferences.card ?? null;
-  const savedUpiDetails = useLiveFlow ? toStoredUpiDetails(savedUpiMethod) : savedPaymentPreferences.upi ?? null;
+  const selectedCardMethod =
+    (useLiveFlow
+      ? savedCardMethods.find((paymentMethod) => paymentMethod.id === selectedCardMethodId) ??
+        getPreferredPaymentMethod(savedCardMethods, "CARD")
+      : null) ?? null;
+  const selectedUpiMethod =
+    (useLiveFlow
+      ? savedUpiMethods.find((paymentMethod) => paymentMethod.id === selectedUpiMethodId) ??
+        getPreferredPaymentMethod(savedUpiMethods, "UPI")
+      : null) ?? null;
+  const savedCardDetails = useLiveFlow ? toStoredCardDetails(selectedCardMethod) : savedPaymentPreferences.card ?? null;
+  const savedUpiDetails = useLiveFlow ? toStoredUpiDetails(selectedUpiMethod) : savedPaymentPreferences.upi ?? null;
+  const editingCardDetails = useLiveFlow ? toStoredCardDetails(editingCardMethod) : savedCardDetails;
+  const editingUpiDetails = useLiveFlow ? toStoredUpiDetails(editingUpiMethod) : savedUpiDetails;
+  const selectedPaymentSummary =
+    activeMethod === "CARD"
+      ? useLiveFlow
+        ? selectedCardMethod
+          ? getSavedPaymentMethodTitle(selectedCardMethod)
+          : "No saved card selected"
+        : savedCardDetails
+          ? `${savedCardDetails.label} - **** **** **** ${savedCardDetails.last4}`
+          : "No saved card selected"
+      : activeMethod === "UPI"
+        ? useLiveFlow
+          ? selectedUpiMethod
+            ? getSavedPaymentMethodTitle(selectedUpiMethod)
+            : "No saved UPI selected"
+          : savedUpiDetails
+            ? savedUpiDetails.appLabel
+              ? `${savedUpiDetails.appLabel} - ${savedUpiDetails.upiId}`
+              : `UPI - ${savedUpiDetails.upiId}`
+            : "No saved UPI selected"
+        : activeMethod === "WALLET"
+          ? paymentModeContent.WALLET.title
+          : paymentModeContent.COD.title;
   const walletSubtitle = useLiveFlow
     ? `${formatCurrency(user?.walletBalance ?? 0)} available for checkout.`
     : paymentModeContent.WALLET.subtitle;
@@ -1759,11 +1908,117 @@ export const PaymentPage = () => {
     setSavedPaymentPreferences(nextValue);
   };
 
+  const handleCreateCard = () => {
+    setEditingCardMethod(null);
+    setIsCardModalOpen(true);
+  };
+
+  const handleEditCard = (paymentMethod: CustomerPaymentMethod) => {
+    setEditingCardMethod(paymentMethod);
+    setSelectedCardMethodId(paymentMethod.id);
+    setIsCardModalOpen(true);
+  };
+
+  const handleCreateUpi = () => {
+    setEditingUpiMethod(null);
+    setIsUpiModalOpen(true);
+  };
+
+  const handleEditUpi = (paymentMethod: CustomerPaymentMethod) => {
+    setEditingUpiMethod(paymentMethod);
+    setSelectedUpiMethodId(paymentMethod.id);
+    setIsUpiModalOpen(true);
+  };
+
+  const handleSetDefaultPaymentMethod = async (paymentMethod: CustomerPaymentMethod) => {
+    if (paymentMethod.isDefault ?? paymentMethod.isPrimary) {
+      if (paymentMethod.type === "CARD") {
+        setSelectedCardMethodId(paymentMethod.id);
+      } else {
+        setSelectedUpiMethodId(paymentMethod.id);
+      }
+
+      return;
+    }
+
+    setIsSavingPaymentDetails(true);
+
+    try {
+      await setDefaultCustomerSavedPaymentMethod(paymentMethod.id);
+      await loadSavedPaymentMethods();
+      if (paymentMethod.type === "CARD") {
+        setSelectedCardMethodId(paymentMethod.id);
+      } else {
+        setSelectedUpiMethodId(paymentMethod.id);
+      }
+
+      toast.success(paymentMethod.type === "CARD" ? "Default card updated." : "Default UPI ID updated.");
+    } catch (error) {
+      toast.error(
+        getApiErrorMessage(
+          error,
+          paymentMethod.type === "CARD"
+            ? "Unable to update the default card right now."
+            : "Unable to update the default UPI ID right now.",
+        ),
+      );
+    } finally {
+      setIsSavingPaymentDetails(false);
+    }
+  };
+
+  const handleDeleteSelectedPaymentMethod = async () => {
+    if (!deleteTargetPaymentMethod) {
+      return;
+    }
+
+    setIsDeletingPaymentMethod(true);
+
+    try {
+      await deleteCustomerPaymentMethod(deleteTargetPaymentMethod.id);
+      const nextMethods = await loadSavedPaymentMethods();
+      const nextCards = nextMethods.filter((paymentMethod) => paymentMethod.type === "CARD");
+      const nextUpiMethods = nextMethods.filter((paymentMethod) => paymentMethod.type === "UPI");
+
+      if (deleteTargetPaymentMethod.type === "CARD") {
+        setSelectedCardMethodId(
+          nextCards.find((paymentMethod) => paymentMethod.isPrimary)?.id ?? nextCards[0]?.id ?? null,
+        );
+        setEditingCardMethod(null);
+      } else {
+        setSelectedUpiMethodId(
+          nextUpiMethods.find((paymentMethod) => paymentMethod.isPrimary)?.id ?? nextUpiMethods[0]?.id ?? null,
+        );
+        setEditingUpiMethod(null);
+      }
+
+      setDeleteTargetPaymentMethod(null);
+      toast.success(deleteTargetPaymentMethod.type === "CARD" ? "Saved card removed." : "Saved UPI ID removed.");
+    } catch (error) {
+      toast.error(
+        getApiErrorMessage(
+          error,
+          deleteTargetPaymentMethod.type === "CARD"
+            ? "Unable to remove this saved card right now."
+            : "Unable to remove this saved UPI ID right now.",
+        ),
+      );
+    } finally {
+      setIsDeletingPaymentMethod(false);
+    }
+  };
+
   const getPaymentValidationMessage = () => {
     if (activeMethod === "CARD") {
-      return cardDetailsSchema.safeParse(savedCardDetails).success
-        ? null
-        : "Add card details before continuing.";
+      if (!cardDetailsSchema.safeParse(savedCardDetails).success) {
+        return "Add a saved card before continuing.";
+      }
+
+      if (!/^\d{3,4}$/.test(cardSecurityCode.trim())) {
+        return "Enter the card CVV for this payment. It is never stored.";
+      }
+
+      return null;
     }
 
     if (activeMethod === "UPI") {
@@ -1790,8 +2045,8 @@ export const PaymentPage = () => {
 
     try {
       if (useLiveFlow) {
-        if (savedCardMethod) {
-          await updateCustomerPaymentMethod(savedCardMethod.id, {
+        if (editingCardMethod) {
+          const updatedMethod = await updateCustomerPaymentMethod(editingCardMethod.id, {
             type: "CARD",
             label: values.label,
             holderName: values.holderName,
@@ -1800,8 +2055,9 @@ export const PaymentPage = () => {
             expiryYear: values.expiryYear,
             isPrimary: values.isPrimary,
           });
+          setSelectedCardMethodId(updatedMethod.id);
         } else {
-          await createCustomerPaymentMethod({
+          const createdMethod = await createCustomerPaymentMethod({
             type: "CARD",
             label: values.label,
             holderName: values.holderName,
@@ -1810,6 +2066,7 @@ export const PaymentPage = () => {
             expiryYear: values.expiryYear,
             isPrimary: values.isPrimary,
           });
+          setSelectedCardMethodId(createdMethod.id);
         }
 
         await loadSavedPaymentMethods();
@@ -1822,6 +2079,7 @@ export const PaymentPage = () => {
       }
 
       toast.success("Card summary saved.");
+      setEditingCardMethod(null);
       setIsCardModalOpen(false);
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to save the card summary right now."));
@@ -1835,20 +2093,22 @@ export const PaymentPage = () => {
 
     try {
       if (useLiveFlow) {
-        if (savedUpiMethod) {
-          await updateCustomerPaymentMethod(savedUpiMethod.id, {
+        if (editingUpiMethod) {
+          const updatedMethod = await updateCustomerPaymentMethod(editingUpiMethod.id, {
             type: "UPI",
             upiId: values.upiId,
             label: values.appLabel || undefined,
-            isPrimary: true,
+            isPrimary: values.isPrimary,
           });
+          setSelectedUpiMethodId(updatedMethod.id);
         } else {
-          await createCustomerPaymentMethod({
+          const createdMethod = await createCustomerPaymentMethod({
             type: "UPI",
             upiId: values.upiId,
             label: values.appLabel || undefined,
-            isPrimary: true,
+            isPrimary: values.isPrimary,
           });
+          setSelectedUpiMethodId(createdMethod.id);
         }
 
         await loadSavedPaymentMethods();
@@ -1858,12 +2118,14 @@ export const PaymentPage = () => {
           upi: {
             upiId: values.upiId,
             appLabel: values.appLabel || undefined,
+            isPrimary: values.isPrimary,
           },
         };
         persistPaymentPreferences(nextValue);
       }
 
       toast.success("UPI ID saved.");
+      setEditingUpiMethod(null);
       setIsUpiModalOpen(false);
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to save the UPI ID right now."));
@@ -2009,6 +2271,232 @@ export const PaymentPage = () => {
           Keep exact change handy if possible for a smoother handoff at delivery.
         </p>
       </div>
+    );
+
+  const paymentPanel =
+    activeMethod === "CARD" ? (
+      <div className="space-y-4 rounded-[1.75rem] bg-cream px-5 py-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="font-semibold text-ink">Saved cards</p>
+            <p className="mt-2 text-sm text-ink-soft">
+              Select a saved card, switch the default, or add a new masked summary without leaving checkout.
+            </p>
+          </div>
+          <Button type="button" variant="secondary" className="px-4 py-2 text-xs" onClick={handleCreateCard}>
+            Add new card
+          </Button>
+        </div>
+
+        {savedCardMethods.length ? (
+          <div className="max-h-[360px] space-y-3 overflow-y-auto pr-1">
+            {savedCardMethods.map((paymentMethod) => {
+              const isSelected = selectedCardMethod?.id === paymentMethod.id;
+
+              return (
+                <div
+                  key={paymentMethod.id}
+                  className={cn(
+                    "rounded-[1.5rem] border bg-white shadow-soft transition",
+                    isSelected ? "border-accent/40 bg-accent/[0.04]" : "border-accent/10",
+                  )}
+                >
+                  <button
+                    type="button"
+                    className="w-full px-4 py-4 text-left"
+                    onClick={() => setSelectedCardMethodId(paymentMethod.id)}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="flex items-start gap-4">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+                          <CreditCard className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-semibold text-ink">{getSavedPaymentMethodTitle(paymentMethod)}</p>
+                            {isSelected ? <StatusPill label="Selected" tone="success" /> : null}
+                            {paymentMethod.isPrimary ? <StatusPill label="Default" tone="info" /> : null}
+                          </div>
+                          <p className="mt-1 text-sm text-ink-soft">{getSavedPaymentMethodSubtitle(paymentMethod)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+
+                  <div className="flex flex-wrap gap-2 px-4 pb-4">
+                    {!paymentMethod.isPrimary ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="px-3 py-2 text-xs"
+                        onClick={() => void handleSetDefaultPaymentMethod(paymentMethod)}
+                        disabled={isSavingPaymentDetails}
+                      >
+                        Set default
+                      </Button>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => handleEditCard(paymentMethod)}
+                      disabled={isSavingPaymentDetails}
+                    >
+                      <Edit3 className="mr-2 h-4 w-4" />
+                      Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => setDeleteTargetPaymentMethod(paymentMethod)}
+                      disabled={isDeletingPaymentMethod}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-[1.5rem] border border-accent/10 bg-white px-5 py-4 text-sm text-ink-soft">
+            Add a masked card summary once and reuse it during checkout. Full card numbers and CVV are never stored.
+          </div>
+        )}
+
+        <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 text-accent">
+              <ShieldCheck className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-ink">
+                {selectedCardMethod ? `Paying with ${getSavedPaymentMethodTitle(selectedCardMethod)}` : "Card security check"}
+              </p>
+              <p className="mt-1 text-sm text-ink-soft">Enter CVV only for this payment. It is never saved.</p>
+              {selectedCardMethod ? (
+                <div className="mt-4 max-w-[180px]">
+                  <Input
+                    label="CVV"
+                    placeholder="123"
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={cardSecurityCode}
+                    onChange={(event) => setCardSecurityCode(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                  />
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </div>
+    ) : activeMethod === "UPI" ? (
+      <div className="space-y-4 rounded-[1.75rem] bg-cream px-5 py-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="font-semibold text-ink">Saved UPI IDs</p>
+            <p className="mt-2 text-sm text-ink-soft">
+              Pick a saved UPI ID, switch the default, or add a new one without interrupting checkout.
+            </p>
+          </div>
+          <Button type="button" variant="secondary" className="px-4 py-2 text-xs" onClick={handleCreateUpi}>
+            Add new UPI
+          </Button>
+        </div>
+
+        {savedUpiMethods.length ? (
+          <div className="max-h-[360px] space-y-3 overflow-y-auto pr-1">
+            {savedUpiMethods.map((paymentMethod) => {
+              const isSelected = selectedUpiMethod?.id === paymentMethod.id;
+
+              return (
+                <div
+                  key={paymentMethod.id}
+                  className={cn(
+                    "rounded-[1.5rem] border bg-white shadow-soft transition",
+                    isSelected ? "border-accent/40 bg-accent/[0.04]" : "border-accent/10",
+                  )}
+                >
+                  <button
+                    type="button"
+                    className="w-full px-4 py-4 text-left"
+                    onClick={() => setSelectedUpiMethodId(paymentMethod.id)}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="flex items-start gap-4">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+                          <Sparkles className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-semibold text-ink">{getSavedPaymentMethodTitle(paymentMethod)}</p>
+                            {isSelected ? <StatusPill label="Selected" tone="success" /> : null}
+                            {paymentMethod.isPrimary ? <StatusPill label="Default" tone="info" /> : null}
+                          </div>
+                          <p className="mt-1 text-sm text-ink-soft">{getSavedPaymentMethodSubtitle(paymentMethod)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+
+                  <div className="flex flex-wrap gap-2 px-4 pb-4">
+                    {!paymentMethod.isPrimary ? (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="px-3 py-2 text-xs"
+                        onClick={() => void handleSetDefaultPaymentMethod(paymentMethod)}
+                        disabled={isSavingPaymentDetails}
+                      >
+                        Set default
+                      </Button>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => handleEditUpi(paymentMethod)}
+                      disabled={isSavingPaymentDetails}
+                    >
+                      <Edit3 className="mr-2 h-4 w-4" />
+                      Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => setDeleteTargetPaymentMethod(paymentMethod)}
+                      disabled={isDeletingPaymentMethod}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-[1.5rem] border border-accent/10 bg-white px-5 py-4 text-sm text-ink-soft">
+            Add a UPI ID like `name@bank` once and reuse it during checkout.
+          </div>
+        )}
+
+        <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4">
+          <p className="font-semibold text-ink">
+            {selectedUpiMethod ? `Paying with ${getSavedPaymentMethodTitle(selectedUpiMethod)}` : "UPI checkout ready"}
+          </p>
+          <p className="mt-1 text-sm text-ink-soft">
+            {selectedUpiMethod
+              ? "Your selected UPI ID will be sent with this order."
+              : "Add a valid UPI ID like `name@bank` for faster payment."}
+          </p>
+        </div>
+      </div>
+    ) : (
+      selectedPaymentPanel
     );
 
   const couponSection = useLiveFlow && selectedCart ? (
@@ -2158,10 +2646,14 @@ export const PaymentPage = () => {
 
     setIsSubmitting(true);
     try {
+      const selectedSavedPaymentMethodId =
+        activeMethod === "CARD" ? selectedCardMethod?.id : activeMethod === "UPI" ? selectedUpiMethod?.id : undefined;
       const order = await placeCustomerOrder({
         cartId: selectedCart.id,
         addressId,
         paymentMethod: activeMethod,
+        paymentMethodId: selectedSavedPaymentMethodId,
+        savedPaymentMethodId: selectedSavedPaymentMethodId,
         tipAmount,
         specialInstructions,
       });
@@ -2192,9 +2684,10 @@ export const PaymentPage = () => {
               { value: "card", label: "Cards" },
               { value: "upi", label: "UPI" },
               { value: "wallet", label: "Wallet" },
+              { value: "cod", label: "Cash" },
             ]}
             value={activeMethod.toLowerCase()}
-            onChange={(value) => setActiveMethod(value.toUpperCase())}
+            onChange={(value) => setActiveMethod(value.toUpperCase() as CheckoutPaymentTab)}
           />
           <div className="grid gap-4 lg:grid-cols-3">{selectedPaymentPanel}</div>
           {paymentError ? (
@@ -2203,7 +2696,7 @@ export const PaymentPage = () => {
             </div>
           ) : null}
           <div className="rounded-[1.75rem] border border-accent/10 bg-accent/[0.03] px-5 py-4 text-sm text-ink-soft">
-            Selected method: <span className="font-semibold text-ink">{activeMethod}</span>
+            Selected method: <span className="font-semibold text-ink">{selectedPaymentSummary}</span>
           </div>
         </SurfaceCard>
       </PageShell>
@@ -2230,9 +2723,9 @@ export const PaymentPage = () => {
               { value: "COD", label: "Cash" },
             ]}
             value={activeMethod}
-            onChange={setActiveMethod}
+            onChange={(value) => setActiveMethod(value as CheckoutPaymentTab)}
           />
-          <div className="grid gap-4 lg:grid-cols-3">{selectedPaymentPanel}</div>
+          <div className="grid gap-4 lg:grid-cols-3">{paymentPanel}</div>
           {paymentError ? (
             <div className="rounded-[1.75rem] border border-accent/10 bg-white px-5 py-4 text-sm text-accent-soft shadow-soft">
               {paymentError}
@@ -2241,11 +2734,15 @@ export const PaymentPage = () => {
           <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
             <div className="space-y-4">
               <div className="rounded-[1.75rem] border border-accent/10 bg-accent/[0.03] px-5 py-4 text-sm text-ink-soft">
-                Selected method: <span className="font-semibold text-ink">{toLabel(activeMethod)}</span>
+                Selected method: <span className="font-semibold text-ink">{selectedPaymentSummary}</span>
               </div>
               {couponSection}
             </div>
             <div className="space-y-3 rounded-[1.75rem] bg-cream px-5 py-5 text-sm text-ink-soft">
+              <div className="flex items-start justify-between gap-4">
+                <span>Payment</span>
+                <span className="max-w-[190px] text-right font-semibold text-ink">{selectedPaymentSummary}</span>
+              </div>
               <div className="flex items-center justify-between">
                 <span>Subtotal</span>
                 <span>{formatCurrency(selectedCart.summary.subtotal)}</span>
@@ -2300,18 +2797,37 @@ export const PaymentPage = () => {
       )}
       <CardDetailsModal
         open={isCardModalOpen}
-        details={savedCardDetails}
+        details={editingCardDetails}
         defaultHolderName={user?.fullName}
         isSubmitting={isSavingPaymentDetails}
-        onClose={() => setIsCardModalOpen(false)}
+        onClose={() => {
+          setEditingCardMethod(null);
+          setIsCardModalOpen(false);
+        }}
         onSubmit={handleSaveCardDetails}
       />
       <UpiDetailsModal
         open={isUpiModalOpen}
-        details={savedUpiDetails}
+        details={editingUpiDetails}
         isSubmitting={isSavingPaymentDetails}
-        onClose={() => setIsUpiModalOpen(false)}
+        onClose={() => {
+          setEditingUpiMethod(null);
+          setIsUpiModalOpen(false);
+        }}
         onSubmit={handleSaveUpiDetails}
+      />
+      <ConfirmDangerModal
+        open={Boolean(deleteTargetPaymentMethod)}
+        title={deleteTargetPaymentMethod?.type === "CARD" ? "Delete saved card" : "Delete saved UPI ID"}
+        description={
+          deleteTargetPaymentMethod?.type === "CARD"
+            ? "This masked card summary will be removed from your saved payment methods."
+            : "This saved UPI ID will be removed from your payment methods."
+        }
+        confirmLabel="Delete"
+        isSubmitting={isDeletingPaymentMethod}
+        onClose={() => setDeleteTargetPaymentMethod(null)}
+        onConfirm={() => void handleDeleteSelectedPaymentMethod()}
       />
     </PageShell>
   );
@@ -2754,7 +3270,7 @@ export const OrderTrackingPage = () => {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="font-semibold text-ink">{order.deliveryPartner?.user.fullName ?? "Assignment pending"}</p>
-                  <p className="mt-2 text-sm text-ink-soft">{order.deliveryPartner?.user.phone ?? "Phone will appear once assigned."}</p>
+                  <p className="mt-2 text-sm text-ink-soft">{formatIndianPhoneDisplay(order.deliveryPartner?.user.phone) || "Phone will appear once assigned."}</p>
                 </div>
                 <StatusPill label={toLabel(order.status)} tone={getOrderStatusTone(order.status)} />
               </div>

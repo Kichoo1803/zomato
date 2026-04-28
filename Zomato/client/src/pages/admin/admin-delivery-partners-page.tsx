@@ -9,6 +9,7 @@ import {
 } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -241,7 +242,7 @@ export const AdminDeliveryPartnersPage = () => {
           <div className="grid gap-4 md:grid-cols-2">
             <Input label="Full name" value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} required />
             <Input label="Email" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} required />
-            <Input label="Phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+            <IndianPhoneInput label="Phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
             <Input label={editingPartner ? "New password (optional)" : "Password"} type="password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required={!editingPartner} />
             <Input label="Profile image URL" value={form.profileImage} onChange={(event) => setForm({ ...form, profileImage: event.target.value })} />
             <Select label="Vehicle type" value={form.vehicleType} onChange={(event) => setForm({ ...form, vehicleType: event.target.value })}>

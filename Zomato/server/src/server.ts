@@ -3,12 +3,12 @@ import { env } from "./config/env.js";
 import { startCronJobs } from "./jobs/cron.js";
 import { logger } from "./lib/logger.js";
 import { connectPrisma, disconnectPrisma, prismaConnectionInfo } from "./lib/prisma.js";
-import { createSocketServer } from "./socket/index.js";
+import { initSocket } from "./realtime/socket.js";
 import { app } from "./app.js";
 
 // Local development entrypoint. Vercel uses the root /api functions instead.
 const httpServer = createServer(app);
-createSocketServer(httpServer);
+initSocket(httpServer);
 
 const handleListenError = async (error: NodeJS.ErrnoException) => {
   const message =

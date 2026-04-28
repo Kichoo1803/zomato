@@ -2,14 +2,15 @@ import { forwardRef } from "react";
 import type { InputHTMLAttributes, ReactNode } from "react";
 import { cn } from "@/utils/cn";
 
-type InputProps = InputHTMLAttributes<HTMLInputElement> & {
+export type InputProps = InputHTMLAttributes<HTMLInputElement> & {
   label?: string;
   error?: string;
+  leadingContent?: ReactNode;
   trailingContent?: ReactNode;
 };
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ label, error, className, trailingContent, ...props }, ref) => {
+  ({ label, error, className, leadingContent, trailingContent, ...props }, ref) => {
     return (
       <label className="flex flex-col gap-2">
         {label ? <span className="text-sm font-semibold text-ink">{label}</span> : null}
@@ -18,12 +19,16 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             ref={ref}
             className={cn(
               "h-12 w-full rounded-2xl border border-accent/10 bg-white px-4 text-sm text-ink shadow-soft outline-none transition placeholder:text-ink-muted focus:border-accent/40",
+              leadingContent && "pl-20",
               trailingContent && "pr-14",
               error && "border-accent-soft",
               className,
             )}
             {...props}
           />
+          {leadingContent ? (
+            <div className="absolute inset-y-0 left-0 flex items-center pl-4">{leadingContent}</div>
+          ) : null}
           {trailingContent ? (
             <div className="absolute inset-y-0 right-0 flex items-center pr-4">{trailingContent}</div>
           ) : null}

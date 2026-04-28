@@ -12,7 +12,7 @@ export const AuthLayout = () => {
             </h1>
           </div>
           <p className="max-w-md text-sm text-white/80">
-            Customer, partner, delivery, and admin experiences with a single polished workflow.
+            Sign in to continue with the Zomato Luxe experience.
           </p>
         </section>
         <section className="bg-white px-6 py-10 sm:px-10">

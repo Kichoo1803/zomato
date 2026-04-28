@@ -11,6 +11,7 @@ import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
+import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Modal } from "@/components/ui/modal";
 import { PageShell, SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
@@ -34,12 +35,14 @@ import {
 } from "@/lib/customer-location";
 import {
   createCustomerAddress,
+  deleteCustomerPaymentMethod,
   deleteCustomerAddress,
   createCustomerPaymentMethod,
   getCustomerAddresses,
   getCustomerPaymentMethods,
   geocodeCustomerLocation,
   reverseGeocodeCustomerLocation,
+  setDefaultCustomerSavedPaymentMethod,
   type CustomerAddress,
   type CustomerAddressPayload,
   type CustomerPaymentMethod,
@@ -51,6 +54,13 @@ import {
 import { useAuthStore } from "@/store/auth.store";
 import type { AuthUser, MembershipStatus, MembershipTier } from "@/types/auth";
 import { walletTransactions } from "@/lib/demo-data";
+import {
+  formatIndianPhoneDisplay,
+  getIndianPhoneInputValue,
+  optionalIndianPhoneSchema,
+  requiredIndianPhoneSchema,
+} from "@/lib/phone";
+import { cn } from "@/utils/cn";
 
 const linkButtonClassName =
   "inline-flex items-center justify-center rounded-full bg-accent px-5 py-3 text-sm font-semibold text-white shadow-soft";
@@ -119,10 +129,7 @@ const addressFormSchema = z.object({
   addressType: z.enum(["HOME", "WORK", "OTHER"]),
   title: z.string().trim().max(80).optional().or(z.literal("")),
   recipientName: z.string().trim().min(2, "Recipient name is required.").max(120),
-  contactPhone: z
-    .string()
-    .trim()
-    .regex(/^\+?[1-9]\d{9,14}$/, "Enter a valid contact phone."),
+  contactPhone: requiredIndianPhoneSchema("Enter a valid 10-digit contact phone number."),
   houseNo: z.string().trim().max(80).optional().or(z.literal("")),
   street: z.string().trim().min(2, "Street or area is required.").max(150),
   landmark: z.string().trim().max(150).optional().or(z.literal("")),
@@ -139,7 +146,7 @@ const addressFormSchema = z.object({
 const profileFormSchema = z.object({
   fullName: z.string().trim().min(2, "Full name is required.").max(120),
   email: z.string().trim().email("Enter a valid email."),
-  phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/, "Enter a valid phone number.").or(z.literal("")),
+  phone: optionalIndianPhoneSchema().or(z.literal("")),
   profileImage: z.string().trim().url("Enter a valid image URL.").or(z.literal("")),
 });
 
@@ -149,6 +156,7 @@ const paymentMethodFormSchema = z
     label: z.string().trim().max(40).optional().or(z.literal("")),
     holderName: z.string().trim().max(80).optional().or(z.literal("")),
     maskedEnding: z.string().trim().regex(/^\d{4}$/, "Enter the last 4 digits only.").or(z.literal("")),
+    cardBrand: z.string().trim().max(30).optional().or(z.literal("")),
     expiryMonth: z.string().trim().regex(/^(0[1-9]|1[0-2])$/, "Use a valid month like 08.").or(z.literal("")),
     expiryYear: z.string().trim().regex(/^\d{2,4}$/, "Use a valid expiry year.").or(z.literal("")),
     upiId: z
@@ -189,6 +197,7 @@ const paymentMethodFormSchema = z
 type AddressFormValues = z.infer<typeof addressFormSchema>;
 type ProfileFormValues = z.infer<typeof profileFormSchema>;
 type PaymentMethodFormValues = z.infer<typeof paymentMethodFormSchema>;
+type SavedPaymentMethodTab = "CARD" | "UPI";
 
 const PAYMENT_METHOD_TYPE_OPTIONS = [
   { value: "CARD", label: "Card" },
@@ -206,22 +215,27 @@ const normalizeOptional = (value?: string | null) => {
 const mapProfileToFormValues = (user: AuthUser | null): ProfileFormValues => ({
   fullName: normalizeOptional(user?.fullName),
   email: normalizeOptional(user?.email),
-  phone: normalizeOptional(user?.phone),
+  phone: getIndianPhoneInputValue(user?.phone),
   profileImage: normalizeOptional(user?.profileImage),
 });
 
 const mapPaymentMethodToFormValues = (
   paymentMethod: CustomerPaymentMethod | null,
   defaultHolderName?: string | null,
+  forcedType: SavedPaymentMethodTab = paymentMethod?.type ?? "CARD",
 ): PaymentMethodFormValues => ({
-  type: paymentMethod?.type ?? "CARD",
+  type: paymentMethod?.type ?? forcedType,
   label: normalizeOptional(paymentMethod?.label),
-  holderName: paymentMethod?.type === "CARD" ? normalizeOptional(paymentMethod.holderName) : normalizeOptional(defaultHolderName),
-  maskedEnding: normalizeOptional(paymentMethod?.maskedEnding),
+  holderName:
+    (paymentMethod?.type ?? forcedType) === "CARD"
+      ? normalizeOptional(paymentMethod?.cardholderName ?? paymentMethod?.holderName) || normalizeOptional(defaultHolderName)
+      : normalizeOptional(defaultHolderName),
+  maskedEnding: normalizeOptional(paymentMethod?.cardLast4 ?? paymentMethod?.maskedEnding),
+  cardBrand: normalizeOptional(paymentMethod?.cardBrand),
   expiryMonth: normalizeOptional(paymentMethod?.expiryMonth),
   expiryYear: normalizeOptional(paymentMethod?.expiryYear),
   upiId: normalizeOptional(paymentMethod?.upiId),
-  isPrimary: paymentMethod?.isPrimary ?? true,
+  isPrimary: paymentMethod?.isDefault ?? paymentMethod?.isPrimary ?? true,
 });
 
 const mapAddressToFormValues = (
@@ -235,7 +249,7 @@ const mapAddressToFormValues = (
   addressType: (address?.addressType as AddressFormValues["addressType"] | undefined) ?? "HOME",
   title: normalizeOptional(address?.title),
   recipientName: normalizeOptional(address?.recipientName) || normalizeOptional(defaults?.recipientName),
-  contactPhone: normalizeOptional(address?.contactPhone) || normalizeOptional(defaults?.contactPhone),
+  contactPhone: getIndianPhoneInputValue(address?.contactPhone) || getIndianPhoneInputValue(defaults?.contactPhone),
   houseNo: normalizeOptional(address?.houseNo),
   street: normalizeOptional(address?.street),
   landmark: normalizeOptional(address?.landmark),
@@ -295,7 +309,7 @@ const getAddressSubtitle = (address: CustomerAddress) => {
     return "Default delivery address";
   }
 
-  const identity = [address.recipientName, address.contactPhone].filter(Boolean).join(" • ");
+  const identity = [address.recipientName, formatIndianPhoneDisplay(address.contactPhone)].filter(Boolean).join(" • ");
   return identity || "Saved delivery address";
 };
 
@@ -651,10 +665,8 @@ const AddressFormModal = ({
             error={form.formState.errors.recipientName?.message}
             {...form.register("recipientName")}
           />
-          <Input
+          <IndianPhoneInput
             label="Contact phone"
-            type="tel"
-            placeholder="+919830000301"
             error={form.formState.errors.contactPhone?.message}
             {...form.register("contactPhone")}
           />
@@ -776,7 +788,7 @@ const ProfileFormModal = ({
         <div className="grid gap-4 sm:grid-cols-2">
           <Input label="Full name" error={form.formState.errors.fullName?.message} {...form.register("fullName")} />
           <Input label="Email" readOnly {...form.register("email")} />
-          <Input label="Phone" type="tel" error={form.formState.errors.phone?.message} {...form.register("phone")} />
+          <IndianPhoneInput label="Phone" error={form.formState.errors.phone?.message} {...form.register("phone")} />
           <Input
             label="Profile image URL"
             placeholder="https://images.example.com/profile.jpg"
@@ -800,7 +812,7 @@ const ProfileFormModal = ({
 
 const getPaymentMethodTitle = (paymentMethod: CustomerPaymentMethod) => {
   if (paymentMethod.type === "CARD") {
-    return `${paymentMethod.label ?? "Card"} ending ${paymentMethod.maskedEnding ?? "0000"}`;
+    return `${paymentMethod.label ?? "Card"} - **** **** **** ${paymentMethod.cardLast4 ?? paymentMethod.maskedEnding ?? "0000"}`;
   }
 
   return paymentMethod.label?.trim()
@@ -811,7 +823,8 @@ const getPaymentMethodTitle = (paymentMethod: CustomerPaymentMethod) => {
 const getPaymentMethodSubtitle = (paymentMethod: CustomerPaymentMethod) => {
   if (paymentMethod.type === "CARD") {
     const details = [
-      paymentMethod.holderName?.trim(),
+      paymentMethod.cardBrand?.trim(),
+      paymentMethod.cardholderName?.trim() ?? paymentMethod.holderName?.trim(),
       paymentMethod.expiryMonth && paymentMethod.expiryYear
         ? `Expires ${paymentMethod.expiryMonth}/${paymentMethod.expiryYear}`
         : null,
@@ -820,12 +833,13 @@ const getPaymentMethodSubtitle = (paymentMethod: CustomerPaymentMethod) => {
     return details.join(" • ") || "Masked card summary";
   }
 
-  return paymentMethod.isPrimary ? "Primary UPI method" : "Ready for quick checkout";
+  return (paymentMethod.isDefault ?? paymentMethod.isPrimary) ? "Default UPI ID" : "Ready for quick checkout";
 };
 
 const PaymentMethodFormModal = ({
   open,
   paymentMethod,
+  forcedType,
   defaultHolderName,
   isSubmitting,
   onClose,
@@ -833,6 +847,7 @@ const PaymentMethodFormModal = ({
 }: {
   open: boolean;
   paymentMethod: CustomerPaymentMethod | null;
+  forcedType?: SavedPaymentMethodTab | null;
   defaultHolderName?: string | null;
   isSubmitting: boolean;
   onClose: () => void;
@@ -840,7 +855,7 @@ const PaymentMethodFormModal = ({
 }) => {
   const form = useForm<PaymentMethodFormValues>({
     resolver: zodResolver(paymentMethodFormSchema),
-    defaultValues: mapPaymentMethodToFormValues(paymentMethod, defaultHolderName),
+    defaultValues: mapPaymentMethodToFormValues(paymentMethod, defaultHolderName, forcedType ?? paymentMethod?.type ?? "CARD"),
   });
 
   useEffect(() => {
@@ -848,10 +863,18 @@ const PaymentMethodFormModal = ({
       return;
     }
 
-    form.reset(mapPaymentMethodToFormValues(paymentMethod, defaultHolderName));
-  }, [defaultHolderName, form, open, paymentMethod]);
+    form.reset(mapPaymentMethodToFormValues(paymentMethod, defaultHolderName, forcedType ?? paymentMethod?.type ?? "CARD"));
+  }, [defaultHolderName, forcedType, form, open, paymentMethod]);
 
-  const selectedType = form.watch("type");
+  const selectedType = paymentMethod?.type ?? forcedType ?? form.watch("type");
+  const isTypeLocked = Boolean(paymentMethod) || Boolean(forcedType);
+  const modalTitle = paymentMethod
+    ? selectedType === "CARD"
+      ? "Edit saved card"
+      : "Edit saved UPI ID"
+    : selectedType === "CARD"
+      ? "Add new card"
+      : "Add new UPI ID";
 
   const handleSubmit = form.handleSubmit(async (values) => {
     await onSubmit({
@@ -859,6 +882,7 @@ const PaymentMethodFormModal = ({
       label: values.label?.trim() ?? "",
       holderName: values.holderName?.trim() ?? "",
       maskedEnding: values.maskedEnding?.trim() ?? "",
+      cardBrand: values.cardBrand?.trim() ?? "",
       expiryMonth: values.expiryMonth?.trim() ?? "",
       expiryYear: values.expiryYear?.trim() ?? "",
       upiId: values.upiId?.trim() ?? "",
@@ -866,20 +890,17 @@ const PaymentMethodFormModal = ({
   });
 
   return (
-    <Modal open={open} onClose={onClose} title={paymentMethod ? "Edit payment method" : "Add payment method"} className="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={modalTitle} className="max-w-2xl">
       <form onSubmit={handleSubmit} className="space-y-5">
-        <Select
-          label="Payment type"
-          error={form.formState.errors.type?.message}
-          disabled={Boolean(paymentMethod)}
-          {...form.register("type")}
-        >
-          {PAYMENT_METHOD_TYPE_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </Select>
+        {!isTypeLocked ? (
+          <Select label="Payment type" error={form.formState.errors.type?.message} {...form.register("type")}>
+            {PAYMENT_METHOD_TYPE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </Select>
+        ) : null}
 
         {selectedType === "CARD" ? (
           <>
@@ -888,6 +909,7 @@ const PaymentMethodFormModal = ({
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <Input label="Card label" placeholder="Visa Personal" error={form.formState.errors.label?.message} {...form.register("label")} />
+              <Input label="Card brand" placeholder="Visa" error={form.formState.errors.cardBrand?.message} {...form.register("cardBrand")} />
               <Input
                 label="Card holder name"
                 placeholder="Aditi Verma"
@@ -930,7 +952,7 @@ const PaymentMethodFormModal = ({
         )}
 
         <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream-soft/60 px-4 py-3">
-          <span className="text-sm font-semibold text-ink">Mark as primary {selectedType === "CARD" ? "method" : "UPI ID"}</span>
+          <span className="text-sm font-semibold text-ink">Set as default {selectedType === "CARD" ? "card" : "UPI ID"}</span>
           <input type="checkbox" className="h-4 w-4 accent-[rgb(139,30,36)]" {...form.register("isPrimary")} />
         </label>
 
@@ -939,11 +961,347 @@ const PaymentMethodFormModal = ({
             Cancel
           </Button>
           <Button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? "Saving..." : paymentMethod ? "Save changes" : "Add payment method"}
+            {isSubmitting ? "Saving..." : paymentMethod ? "Save changes" : selectedType === "CARD" ? "Add card" : "Add UPI ID"}
           </Button>
         </div>
       </form>
     </Modal>
+  );
+};
+
+const isDefaultPaymentMethod = (paymentMethod: CustomerPaymentMethod) => paymentMethod.isDefault ?? paymentMethod.isPrimary;
+
+const toPaymentMethodPayload = (values: PaymentMethodFormValues): CustomerPaymentMethodPayload => {
+  if (values.type === "CARD") {
+    const holderName = values.holderName?.trim() ?? "";
+    const last4 = values.maskedEnding.trim();
+    const cardBrand = values.cardBrand?.trim() ?? "";
+
+    return {
+      type: "CARD",
+      label: values.label?.trim() ?? "",
+      holderName: holderName || undefined,
+      cardholderName: holderName || undefined,
+      maskedEnding: last4,
+      cardLast4: last4,
+      cardBrand: cardBrand || undefined,
+      expiryMonth: values.expiryMonth.trim(),
+      expiryYear: values.expiryYear.trim(),
+      isPrimary: values.isPrimary,
+      isDefault: values.isPrimary,
+    };
+  }
+
+  return {
+    type: "UPI",
+    label: values.label?.trim() || undefined,
+    upiId: values.upiId.trim(),
+    isPrimary: values.isPrimary,
+    isDefault: values.isPrimary,
+  };
+};
+
+const SavedPaymentDetailsSection = ({
+  title,
+  description,
+  defaultHolderName,
+}: {
+  title: string;
+  description: string;
+  defaultHolderName?: string | null;
+}) => {
+  const [savedPaymentMethods, setSavedPaymentMethods] = useState<CustomerPaymentMethod[]>([]);
+  const [activeTab, setActiveTab] = useState<SavedPaymentMethodTab>("CARD");
+  const [isLoadingPaymentMethods, setIsLoadingPaymentMethods] = useState(true);
+  const [isPaymentMethodModalOpen, setIsPaymentMethodModalOpen] = useState(false);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<CustomerPaymentMethod | null>(null);
+  const [modalType, setModalType] = useState<SavedPaymentMethodTab>("CARD");
+  const [isSubmittingPaymentMethod, setIsSubmittingPaymentMethod] = useState(false);
+  const [defaultingPaymentMethodId, setDefaultingPaymentMethodId] = useState<number | null>(null);
+  const [deleteTargetPaymentMethod, setDeleteTargetPaymentMethod] = useState<CustomerPaymentMethod | null>(null);
+  const [isDeletingPaymentMethod, setIsDeletingPaymentMethod] = useState(false);
+
+  const loadPaymentMethods = async ({ quietly = false }: { quietly?: boolean } = {}) => {
+    if (!quietly) {
+      setIsLoadingPaymentMethods(true);
+    }
+
+    try {
+      setSavedPaymentMethods(await getCustomerPaymentMethods());
+    } catch (error) {
+      setSavedPaymentMethods([]);
+      toast.error(getApiErrorMessage(error, "Unable to load your saved payment methods right now."));
+    } finally {
+      if (!quietly) {
+        setIsLoadingPaymentMethods(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    void loadPaymentMethods();
+  }, []);
+
+  const savedCards = savedPaymentMethods.filter((paymentMethod) => paymentMethod.type === "CARD");
+  const savedUpiMethods = savedPaymentMethods.filter((paymentMethod) => paymentMethod.type === "UPI");
+  const visibleMethods = activeTab === "CARD" ? savedCards : savedUpiMethods;
+
+  const handleCreatePaymentMethod = (type: SavedPaymentMethodTab) => {
+    setActiveTab(type);
+    setModalType(type);
+    setSelectedPaymentMethod(null);
+    setIsPaymentMethodModalOpen(true);
+  };
+
+  const handleEditPaymentMethod = (paymentMethod: CustomerPaymentMethod) => {
+    setActiveTab(paymentMethod.type);
+    setModalType(paymentMethod.type);
+    setSelectedPaymentMethod(paymentMethod);
+    setIsPaymentMethodModalOpen(true);
+  };
+
+  const handleClosePaymentMethodModal = () => {
+    if (isSubmittingPaymentMethod) {
+      return;
+    }
+
+    setIsPaymentMethodModalOpen(false);
+    setSelectedPaymentMethod(null);
+  };
+
+  const handleSubmitPaymentMethod = async (values: PaymentMethodFormValues) => {
+    setIsSubmittingPaymentMethod(true);
+
+    try {
+      const payload = toPaymentMethodPayload(values);
+
+      if (selectedPaymentMethod) {
+        await updateCustomerPaymentMethod(selectedPaymentMethod.id, payload);
+      } else {
+        await createCustomerPaymentMethod(payload);
+      }
+
+      await loadPaymentMethods({ quietly: true });
+      setIsPaymentMethodModalOpen(false);
+      setSelectedPaymentMethod(null);
+      toast.success(
+        selectedPaymentMethod
+          ? values.type === "CARD"
+            ? "Saved card updated."
+            : "Saved UPI ID updated."
+          : values.type === "CARD"
+            ? "Saved card added."
+            : "Saved UPI ID added.",
+      );
+    } catch (error) {
+      toast.error(
+        getApiErrorMessage(
+          error,
+          selectedPaymentMethod
+            ? values.type === "CARD"
+              ? "Unable to update this saved card right now."
+              : "Unable to update this saved UPI ID right now."
+            : values.type === "CARD"
+              ? "Unable to add this saved card right now."
+              : "Unable to add this UPI ID right now.",
+        ),
+      );
+    } finally {
+      setIsSubmittingPaymentMethod(false);
+    }
+  };
+
+  const handleSetDefaultPaymentMethod = async (paymentMethod: CustomerPaymentMethod) => {
+    if (isDefaultPaymentMethod(paymentMethod)) {
+      return;
+    }
+
+    setDefaultingPaymentMethodId(paymentMethod.id);
+
+    try {
+      await setDefaultCustomerSavedPaymentMethod(paymentMethod.id);
+      await loadPaymentMethods({ quietly: true });
+      toast.success(paymentMethod.type === "CARD" ? "Default card updated." : "Default UPI ID updated.");
+    } catch (error) {
+      toast.error(
+        getApiErrorMessage(
+          error,
+          paymentMethod.type === "CARD"
+            ? "Unable to update the default card right now."
+            : "Unable to update the default UPI ID right now.",
+        ),
+      );
+    } finally {
+      setDefaultingPaymentMethodId(null);
+    }
+  };
+
+  const handleDeletePaymentMethod = async () => {
+    if (!deleteTargetPaymentMethod) {
+      return;
+    }
+
+    setIsDeletingPaymentMethod(true);
+
+    try {
+      await deleteCustomerPaymentMethod(deleteTargetPaymentMethod.id);
+      await loadPaymentMethods({ quietly: true });
+      setDeleteTargetPaymentMethod(null);
+      toast.success(deleteTargetPaymentMethod.type === "CARD" ? "Saved card removed." : "Saved UPI ID removed.");
+    } catch (error) {
+      toast.error(
+        getApiErrorMessage(
+          error,
+          deleteTargetPaymentMethod.type === "CARD"
+            ? "Unable to remove this saved card right now."
+            : "Unable to remove this saved UPI ID right now.",
+        ),
+      );
+    } finally {
+      setIsDeletingPaymentMethod(false);
+    }
+  };
+
+  return (
+    <>
+      <SurfaceCard className="space-y-5">
+        <SectionHeading
+          title={title}
+          description={description}
+          action={
+            <Button type="button" variant="secondary" className="px-4 py-2 text-xs" onClick={() => handleCreatePaymentMethod(activeTab)}>
+              {activeTab === "CARD" ? "Add new card" : "Add new UPI"}
+            </Button>
+          }
+        />
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Tabs
+            items={[
+              { value: "CARD", label: "Cards" },
+              { value: "UPI", label: "UPI" },
+            ]}
+            value={activeTab}
+            onChange={(value) => setActiveTab(value as SavedPaymentMethodTab)}
+          />
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">
+            {visibleMethods.length} saved {activeTab === "CARD" ? (visibleMethods.length === 1 ? "card" : "cards") : "UPI IDs"}
+          </p>
+        </div>
+
+        {isLoadingPaymentMethods ? (
+          <div className="rounded-[1.5rem] bg-cream px-5 py-4 text-sm text-ink-soft">Loading your saved payment details.</div>
+        ) : visibleMethods.length ? (
+          <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
+            {visibleMethods.map((paymentMethod) => {
+              const isDefault = isDefaultPaymentMethod(paymentMethod);
+
+              return (
+                <div key={paymentMethod.id} className="rounded-[1.5rem] border border-accent/10 bg-cream px-5 py-4 shadow-soft">
+                  <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                    <div className="flex items-start gap-4">
+                      <div
+                        className={cn(
+                          "flex h-11 w-11 items-center justify-center rounded-2xl shadow-soft",
+                          paymentMethod.type === "CARD" ? "bg-white text-accent" : "bg-accent/10 text-accent",
+                        )}
+                      >
+                        {paymentMethod.type === "CARD" ? <CreditCard className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
+                      </div>
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-semibold text-ink">{getPaymentMethodTitle(paymentMethod)}</p>
+                          {isDefault ? <StatusPill label="Default" tone="info" /> : null}
+                        </div>
+                        <p className="mt-1 text-sm text-ink-soft">{getPaymentMethodSubtitle(paymentMethod)}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {!isDefault ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="px-3 py-2 text-xs"
+                          onClick={() => void handleSetDefaultPaymentMethod(paymentMethod)}
+                          disabled={defaultingPaymentMethodId === paymentMethod.id}
+                        >
+                          {defaultingPaymentMethodId === paymentMethod.id ? "Saving..." : "Set default"}
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="px-3 py-2 text-xs"
+                        onClick={() => handleEditPaymentMethod(paymentMethod)}
+                        disabled={isSubmittingPaymentMethod}
+                      >
+                        <Edit3 className="mr-2 h-4 w-4" />
+                        Edit
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="px-3 py-2 text-xs"
+                        onClick={() => setDeleteTargetPaymentMethod(paymentMethod)}
+                        disabled={isDeletingPaymentMethod}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <EmptyState
+              title={activeTab === "CARD" ? "No saved cards yet" : "No saved UPI IDs yet"}
+              description={
+                activeTab === "CARD"
+                  ? "Save a masked card once and reuse it in checkout. Full card numbers and CVV are never stored."
+                  : "Save a UPI ID like name@bank so checkout can reuse it instantly."
+              }
+            />
+            <div className="flex justify-center">
+              <Button type="button" onClick={() => handleCreatePaymentMethod(activeTab)}>
+                {activeTab === "CARD" ? "Add new card" : "Add new UPI"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </SurfaceCard>
+
+      <PaymentMethodFormModal
+        open={isPaymentMethodModalOpen}
+        paymentMethod={selectedPaymentMethod}
+        forcedType={modalType}
+        defaultHolderName={defaultHolderName}
+        isSubmitting={isSubmittingPaymentMethod}
+        onClose={handleClosePaymentMethodModal}
+        onSubmit={handleSubmitPaymentMethod}
+      />
+
+      <ConfirmDangerModal
+        open={Boolean(deleteTargetPaymentMethod)}
+        title={deleteTargetPaymentMethod?.type === "CARD" ? "Delete saved card" : "Delete saved UPI ID"}
+        description={
+          deleteTargetPaymentMethod?.type === "CARD"
+            ? "This masked card summary will be removed from your saved payment methods."
+            : "This saved UPI ID will be removed from your payment methods."
+        }
+        confirmLabel={deleteTargetPaymentMethod?.type === "CARD" ? "Delete card" : "Delete UPI ID"}
+        isSubmitting={isDeletingPaymentMethod}
+        onClose={() => {
+          if (!isDeletingPaymentMethod) {
+            setDeleteTargetPaymentMethod(null);
+          }
+        }}
+        onConfirm={() => void handleDeletePaymentMethod()}
+      />
+    </>
   );
 };
 
@@ -1151,7 +1509,7 @@ export const ProfilePage = () => {
               </div>
               <div className="rounded-[1.5rem] bg-cream px-5 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Phone</p>
-                <p className="mt-2 text-sm text-ink-soft">{user?.phone ?? "+91 90000 00000"}</p>
+                <p className="mt-2 text-sm text-ink-soft">{formatIndianPhoneDisplay(user?.phone) || "+91 90000 00000"}</p>
               </div>
               <div className="rounded-[1.5rem] bg-cream px-5 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Role</p>
@@ -1222,6 +1580,12 @@ export const ProfilePage = () => {
             </SurfaceCard>
           </div>
         </div>
+
+        <SavedPaymentDetailsSection
+          title="Account payment details"
+          description="Manage the same saved cards and UPI IDs that appear during checkout, including your default payment choices."
+          defaultHolderName={user?.fullName}
+        />
       </PageShell>
 
       <ProfileFormModal
@@ -1531,7 +1895,7 @@ export const SavedAddressesPage = () => {
                   <div className="rounded-[1.5rem] bg-cream px-5 py-4 text-sm leading-7 text-ink-soft">
                     <p>{addressLines.line1}</p>
                     <p>{addressLines.line2}</p>
-                    {address.contactPhone ? <p>{address.contactPhone}</p> : null}
+                    {address.contactPhone ? <p>{formatIndianPhoneDisplay(address.contactPhone)}</p> : null}
                   </div>
 
                   <div className="space-y-3 rounded-[1.5rem] border border-accent/10 bg-white px-5 py-4">
@@ -1634,181 +1998,41 @@ export const SavedAddressesPage = () => {
 export const WalletPage = () => {
   const { user } = useAuth();
   const rows = walletTransactions.map(([date, note, amount]) => [date, note, amount]);
-  const [savedPaymentMethods, setSavedPaymentMethods] = useState<CustomerPaymentMethod[]>([]);
-  const [isLoadingPaymentMethods, setIsLoadingPaymentMethods] = useState(true);
-  const [isPaymentMethodModalOpen, setIsPaymentMethodModalOpen] = useState(false);
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<CustomerPaymentMethod | null>(null);
-  const [isSubmittingPaymentMethod, setIsSubmittingPaymentMethod] = useState(false);
-
-  const loadPaymentMethods = async ({ quietly = false }: { quietly?: boolean } = {}) => {
-    if (!quietly) {
-      setIsLoadingPaymentMethods(true);
-    }
-
-    try {
-      setSavedPaymentMethods(await getCustomerPaymentMethods());
-    } catch (error) {
-      setSavedPaymentMethods([]);
-      toast.error(getApiErrorMessage(error, "Unable to load your saved payment methods right now."));
-    } finally {
-      if (!quietly) {
-        setIsLoadingPaymentMethods(false);
-      }
-    }
-  };
-
-  useEffect(() => {
-    void loadPaymentMethods();
-  }, []);
-
-  const handleCreatePaymentMethod = () => {
-    setSelectedPaymentMethod(null);
-    setIsPaymentMethodModalOpen(true);
-  };
-
-  const handleEditPaymentMethod = (paymentMethod: CustomerPaymentMethod) => {
-    setSelectedPaymentMethod(paymentMethod);
-    setIsPaymentMethodModalOpen(true);
-  };
-
-  const handleClosePaymentMethodModal = () => {
-    if (isSubmittingPaymentMethod) {
-      return;
-    }
-
-    setIsPaymentMethodModalOpen(false);
-    setSelectedPaymentMethod(null);
-  };
-
-  const handleSubmitPaymentMethod = async (values: PaymentMethodFormValues) => {
-    setIsSubmittingPaymentMethod(true);
-
-    try {
-      const payload: CustomerPaymentMethodPayload =
-        values.type === "CARD"
-          ? {
-              type: "CARD",
-              label: values.label?.trim() ?? "",
-              holderName: values.holderName?.trim() ?? "",
-              maskedEnding: values.maskedEnding.trim(),
-              expiryMonth: values.expiryMonth.trim(),
-              expiryYear: values.expiryYear.trim(),
-              isPrimary: values.isPrimary,
-            }
-          : {
-              type: "UPI",
-              label: values.label?.trim() || undefined,
-              upiId: values.upiId.trim(),
-              isPrimary: values.isPrimary,
-            };
-
-      if (selectedPaymentMethod) {
-        await updateCustomerPaymentMethod(selectedPaymentMethod.id, payload);
-      } else {
-        await createCustomerPaymentMethod(payload);
-      }
-
-      await loadPaymentMethods({ quietly: true });
-      setIsPaymentMethodModalOpen(false);
-      setSelectedPaymentMethod(null);
-      toast.success(selectedPaymentMethod ? "Payment method updated successfully." : "Payment method added successfully.");
-    } catch (error) {
-      toast.error(
-        getApiErrorMessage(
-          error,
-          selectedPaymentMethod
-            ? "Unable to update this payment method right now."
-            : "Unable to add this payment method right now.",
-        ),
-      );
-    } finally {
-      setIsSubmittingPaymentMethod(false);
-    }
-  };
 
   return (
-    <>
-      <PageShell
-        eyebrow="Wallet and payments"
-        title="Credits, saved methods, and spend history."
-        description="The wallet route now keeps wallet balance read-only while safely connecting saved card and UPI methods to the live authenticated backend."
-      >
-        <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
-          <div className="space-y-6">
-            <SurfaceCard className="space-y-4">
-              <div className="flex items-start gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-                  <Wallet className="h-5 w-5" />
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Available balance</p>
-                  <h2 className="mt-2 font-display text-5xl font-semibold text-ink">
-                    Rs. {(user?.walletBalance ?? 1980).toLocaleString("en-IN")}
-                  </h2>
-                </div>
-              </div>
-            </SurfaceCard>
-
-            <SurfaceCard className="space-y-4">
-              <SectionHeading
-                title="Saved payment methods"
-                action={
-                  <Button type="button" onClick={handleCreatePaymentMethod}>
-                    Add payment method
-                  </Button>
-                }
-              />
-              {isLoadingPaymentMethods ? (
-                <div className="rounded-[1.5rem] bg-cream px-5 py-4 text-sm text-ink-soft">
-                  Loading your saved payment methods.
-                </div>
-              ) : savedPaymentMethods.length ? (
-                <div className="grid gap-4">
-                  {savedPaymentMethods.map((method) => (
-                    <div key={method.id} className="flex items-start justify-between gap-4 rounded-[1.5rem] bg-cream px-5 py-4">
-                      <div className="flex items-start gap-4">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-accent shadow-soft">
-                          <CreditCard className="h-4 w-4" />
-                        </div>
-                        <div>
-                          <div className="flex flex-wrap items-center gap-3">
-                            <p className="font-semibold text-ink">{getPaymentMethodTitle(method)}</p>
-                            {method.isPrimary ? <StatusPill label="Primary" tone="info" /> : null}
-                          </div>
-                          <p className="mt-1 text-sm text-ink-soft">{getPaymentMethodSubtitle(method)}</p>
-                        </div>
-                      </div>
-                      <Button type="button" variant="ghost" className="px-3 py-2 text-xs" onClick={() => handleEditPaymentMethod(method)}>
-                        <Edit3 className="mr-2 h-4 w-4" />
-                        Edit
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState
-                  title="No saved payment methods yet"
-                  description="Add a masked card summary or UPI ID here so checkout stays fast, polished, and safe."
-                />
-              )}
-            </SurfaceCard>
-          </div>
-
+    <PageShell
+      eyebrow="Wallet and payments"
+      title="Credits, saved methods, and spend history."
+      description="The wallet route keeps balance read-only while using the same saved card and UPI records that appear during checkout and in your profile."
+    >
+      <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+        <div className="space-y-6">
           <SurfaceCard className="space-y-4">
-            <SectionHeading title="Recent wallet activity" description="Shared demo ledger until wallet endpoints are surfaced page-by-page." />
-            <Table columns={["Date", "Activity", "Amount"]} rows={rows} className="border-none bg-transparent shadow-none" />
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+                <Wallet className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Available balance</p>
+                <h2 className="mt-2 font-display text-5xl font-semibold text-ink">
+                  Rs. {(user?.walletBalance ?? 1980).toLocaleString("en-IN")}
+                </h2>
+              </div>
+            </div>
           </SurfaceCard>
-        </div>
-      </PageShell>
 
-      <PaymentMethodFormModal
-        open={isPaymentMethodModalOpen}
-        paymentMethod={selectedPaymentMethod}
-        defaultHolderName={user?.fullName}
-        isSubmitting={isSubmittingPaymentMethod}
-        onClose={handleClosePaymentMethodModal}
-        onSubmit={handleSubmitPaymentMethod}
-      />
-    </>
+          <SavedPaymentDetailsSection
+            title="Saved payment methods"
+            description="Manage the same saved cards and UPI IDs that are reused across wallet surfaces and checkout."
+            defaultHolderName={user?.fullName}
+          />
+        </div>
+
+        <SurfaceCard className="space-y-4">
+          <SectionHeading title="Recent wallet activity" description="Shared demo ledger until wallet endpoints are surfaced page-by-page." />
+          <Table columns={["Date", "Activity", "Amount"]} rows={rows} className="border-none bg-transparent shadow-none" />
+        </SurfaceCard>
+      </div>
+    </PageShell>
   );
 };

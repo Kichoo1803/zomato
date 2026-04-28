@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -61,6 +61,7 @@ import {
   type CustomerAddress,
   type CustomerCart,
   type CustomerFavoriteRestaurant,
+  type CustomerMenuItem,
   type CustomerPaymentMethod,
   type CustomerOffer,
   type CustomerRestaurantDetail,
@@ -86,6 +87,12 @@ type RestaurantCardData = {
   costForTwo: string;
 };
 
+type DishSearchResult = {
+  categoryName: string;
+  menuItem: CustomerMenuItem;
+  restaurant: RestaurantCardData;
+};
+
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("en-IN", {
     style: "currency",
@@ -98,6 +105,18 @@ const formatLocationText = (...parts: Array<string | null | undefined>) =>
     .map((part) => part?.trim())
     .filter((part): part is string => Boolean(part))
     .join(", ");
+
+const normalizeSearchText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
+const isMatchingDishSearch = (menuItem: CustomerMenuItem, categoryName: string, normalizedSearch: string) => {
+  if (!normalizedSearch) {
+    return false;
+  }
+
+  return [menuItem.name, menuItem.description, categoryName].some((value) =>
+    normalizeSearchText(value).includes(normalizedSearch),
+  );
+};
 
 type SelectedDiscoveryLocation = CustomerActiveLocation;
 
@@ -1343,6 +1362,7 @@ const useRestaurantCatalogue = (
       ...(normalizedSearch ? { search: normalizedSearch } : {}),
       latitude: selectedLocation.latitude,
       longitude: selectedLocation.longitude,
+      limit: 24,
     })
       .then((rows) => {
         if (isMounted) {
@@ -1380,9 +1400,115 @@ const useRestaurantCatalogue = (
     : ["All"];
 
   return {
+    restaurants: liveRestaurants ?? [],
     restaurantCards,
     categories,
     isLoading: Boolean(selectedLocation) && !hasResolvedRestaurants,
+  };
+};
+
+const useRestaurantDishMatches = (
+  search: string,
+  restaurants: CustomerRestaurantSummary[],
+  selectedLocation?: SelectedDiscoveryLocation | null,
+) => {
+  const detailCacheRef = useRef(new Map<string, CustomerRestaurantDetail>());
+  const [dishResults, setDishResults] = useState<DishSearchResult[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const normalizedSearch = normalizeSearchText(search);
+
+  useEffect(() => {
+    if (!selectedLocation || !normalizedSearch || !restaurants.length) {
+      setDishResults([]);
+      setIsLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+
+    const buildDishResults = () =>
+      restaurants.flatMap((restaurant) => {
+        const restaurantDetail = detailCacheRef.current.get(restaurant.slug);
+        if (!restaurantDetail) {
+          return [];
+        }
+
+        const restaurantCard = mapLiveRestaurantCard(restaurant);
+
+        return restaurantDetail.menuCategories.flatMap((category) =>
+          category.menuItems.flatMap((menuItem) =>
+            isMatchingDishSearch(menuItem, category.name, normalizedSearch)
+              ? [
+                  {
+                    categoryName: category.name,
+                    menuItem,
+                    restaurant: restaurantCard,
+                  },
+                ]
+              : [],
+          ),
+        );
+      });
+
+    const missingRestaurants = restaurants.filter((restaurant) => !detailCacheRef.current.has(restaurant.slug));
+    setDishResults(buildDishResults());
+
+    if (!missingRestaurants.length) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+
+    void Promise.all(
+      missingRestaurants.map(async (restaurant) => {
+        try {
+          const restaurantDetail = await getPublicRestaurantBySlug(restaurant.slug, {
+            latitude: selectedLocation.latitude,
+            longitude: selectedLocation.longitude,
+          });
+          return {
+            slug: restaurant.slug,
+            restaurantDetail,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    )
+      .then((results) => {
+        if (!isMounted) {
+          return;
+        }
+
+        results.forEach((result) => {
+          if (result) {
+            detailCacheRef.current.set(result.slug, result.restaurantDetail);
+          }
+        });
+
+        setDishResults(buildDishResults());
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [
+    normalizedSearch,
+    restaurants,
+    selectedLocation?.latitude,
+    selectedLocation?.longitude,
+    selectedLocation?.updatedAt,
+  ]);
+
+  return {
+    dishResults,
+    isLoading,
   };
 };
 
@@ -1570,9 +1696,11 @@ export const RestaurantListingPage = () => {
 
 export const SearchResultsPage = () => {
   const [params, setParams] = useSearchParams();
-  const [query, setQuery] = useState(params.get("q") ?? "");
-  const activeQuery = params.get("q")?.trim() ?? "";
+  const requestedQuery = params.get("q") ?? "";
+  const [query, setQuery] = useState(requestedQuery);
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
+  const [selection, setSelection] = useState<CatalogItemSelection | null>(null);
+  const [isAddingToCart, setIsAddingToCart] = useState(false);
   const {
     canManageSavedLocation,
     errorMessage,
@@ -1589,31 +1717,84 @@ export const SearchResultsPage = () => {
     useSavedAddress,
     useCurrentLocation,
   } = useDiscoveryLocation();
-  const { restaurantCards, isLoading } = useRestaurantCatalogue(activeQuery, selectedLocation);
+  const { requireCustomerAccess } = useCustomerActionGuard();
+  const activeQuery = query.trim();
+  const { restaurants, restaurantCards, isLoading } = useRestaurantCatalogue(activeQuery, selectedLocation);
+  const { dishResults, isLoading: isLoadingDishResults } = useRestaurantDishMatches(
+    activeQuery,
+    restaurants,
+    selectedLocation,
+  );
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
-  const results = restaurantCards;
+
+  useEffect(() => {
+    setQuery(requestedQuery);
+  }, [requestedQuery]);
+
+  const handleSearchSubmit = (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+
+    const next = new URLSearchParams(params);
+    if (activeQuery) {
+      next.set("q", activeQuery);
+    } else {
+      next.delete("q");
+    }
+    setParams(next);
+  };
+
+  const handleAddToCart = async (payload: {
+    restaurantId: number;
+    menuItemId?: number;
+    comboId?: number;
+    quantity: number;
+    addonIds?: number[];
+    specialInstructions?: string;
+  }) => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to add items to cart.",
+        wrongRoleMessage: "Sign in with a customer account to add items to cart.",
+      })
+    ) {
+      return;
+    }
+
+    setIsAddingToCart(true);
+    try {
+      await addCustomerCartItem(payload);
+      toast.success("Added to cart successfully.");
+      setSelection(null);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to add this item to your cart."));
+    } finally {
+      setIsAddingToCart(false);
+    }
+  };
+
+  const handleStartCartSelection = (nextSelection: CatalogItemSelection) => {
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to add items to cart.",
+        wrongRoleMessage: "Sign in with a customer account to add items to cart.",
+      })
+    ) {
+      return;
+    }
+
+    setSelection(nextSelection);
+  };
+
+  const restaurantLabel = `${restaurantCards.length} restaurant match${restaurantCards.length === 1 ? "" : "es"}`;
+  const dishLabel = `${dishResults.length} dish match${dishResults.length === 1 ? "" : "es"}`;
+  const hasQuery = Boolean(activeQuery);
+  const hasAnyMatches = Boolean(restaurantCards.length || dishResults.length);
 
   return (
     <PageShell
       eyebrow="Search"
       title="Everything worth craving, all in one place."
       description="Search across restaurants, cuisines, signature dishes, and location names without leaving the current app shell."
-      actions={
-        <Button
-          type="button"
-          onClick={() => {
-            const next = new URLSearchParams(params);
-            if (query.trim()) {
-              next.set("q", query.trim());
-            } else {
-              next.delete("q");
-            }
-            setParams(next);
-          }}
-        >
-          Search now
-        </Button>
-      }
     >
       <DiscoveryLocationNotice
         canManageSavedLocation={canManageSavedLocation}
@@ -1627,17 +1808,23 @@ export const SearchResultsPage = () => {
 
       {!needsLocation ? (
         <SurfaceCard>
-          <SearchBar
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Try 'Chennai', 'biryani', 'Anna Nagar', or 'croissant'"
-          />
+          <form className="flex flex-col gap-3 sm:flex-row" onSubmit={handleSearchSubmit}>
+            <SearchBar
+              className="flex-1"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search restaurants, dishes, cuisines, or areas like Anna Nagar"
+            />
+            <Button type="submit" className="shrink-0" disabled={isLoading}>
+              Search
+            </Button>
+          </form>
         </SurfaceCard>
       ) : null}
 
       <SectionHeading
         eyebrow="Search results"
-        title={params.get("q") ? `Results for "${params.get("q")}"` : "Start with a dish, cuisine, restaurant, or location"}
+        title={hasQuery ? `Results for "${activeQuery}"` : "Start with a dish, cuisine, restaurant, or location"}
         description={
           needsLocation
             ? isBootstrappingLocation
@@ -1645,7 +1832,11 @@ export const SearchResultsPage = () => {
               : "Choose a delivery location first, then search only within the nearby restaurants for that address."
             : isLoading
               ? "Looking up the nearby catalogue for this location."
-              : `${results.length} nearby matches in the current catalogue.`
+              : hasQuery
+                ? isLoadingDishResults
+                  ? `Searching ${restaurantLabel} and nearby menu matches in the current delivery area.`
+                  : `${restaurantLabel} and ${dishLabel} in the current delivery area.`
+                : `${restaurantCards.length} nearby restaurants ready to browse. Start typing to narrow by dish, cuisine, or area.`
         }
       />
 
@@ -1662,27 +1853,158 @@ export const SearchResultsPage = () => {
         <SurfaceCard>
           <p className="text-sm leading-7 text-ink-soft">Fetching nearby restaurants for the selected delivery area.</p>
         </SurfaceCard>
-      ) : results.length ? (
-        <div className="grid gap-6 lg:grid-cols-2">
-          {results.map((restaurant) => (
-            <RestaurantCard
-              key={restaurant.slug}
-              {...restaurant}
-              isFavorite={restaurant.id != null ? favoriteIdSet.has(restaurant.id) : false}
-              isFavoritePending={isFavoritePending(restaurant.id)}
-              favoriteActionLabel={restaurant.id != null && favoriteIdSet.has(restaurant.id) ? "Saved" : "Save"}
-              onFavoriteToggle={restaurant.id != null ? () => void toggleFavorite(restaurant) : undefined}
+      ) : !hasQuery ? (
+        restaurantCards.length ? (
+          <div className="space-y-6">
+            <SectionHeading
+              eyebrow="Nearby restaurants"
+              title="Browse nearby restaurants before narrowing the search."
+              description="Every result here already respects the current delivery location."
             />
-          ))}
+            <div className="grid gap-6 lg:grid-cols-2">
+              {restaurantCards.map((restaurant) => (
+                <RestaurantCard
+                  key={restaurant.slug}
+                  {...restaurant}
+                  isFavorite={restaurant.id != null ? favoriteIdSet.has(restaurant.id) : false}
+                  isFavoritePending={isFavoritePending(restaurant.id)}
+                  favoriteActionLabel={restaurant.id != null && favoriteIdSet.has(restaurant.id) ? "Saved" : "Save"}
+                  onFavoriteToggle={restaurant.id != null ? () => void toggleFavorite(restaurant) : undefined}
+                />
+              ))}
+            </div>
+          </div>
+        ) : (
+          <EmptyState
+            title="No nearby restaurants found in your area"
+            description="Change the temporary delivery address or refresh your current location to search a different nearby area."
+          />
+        )
+      ) : hasAnyMatches || isLoadingDishResults ? (
+        <div className="space-y-10">
+          {restaurantCards.length ? (
+            <div className="space-y-6">
+              <SectionHeading
+                eyebrow="Restaurants"
+                title="Matching restaurants"
+                description="Restaurant matches include name, cuisine, address, city, and area search."
+              />
+              <div className="grid gap-6 lg:grid-cols-2">
+                {restaurantCards.map((restaurant) => (
+                  <RestaurantCard
+                    key={restaurant.slug}
+                    {...restaurant}
+                    isFavorite={restaurant.id != null ? favoriteIdSet.has(restaurant.id) : false}
+                    isFavoritePending={isFavoritePending(restaurant.id)}
+                    favoriteActionLabel={restaurant.id != null && favoriteIdSet.has(restaurant.id) ? "Saved" : "Save"}
+                    onFavoriteToggle={restaurant.id != null ? () => void toggleFavorite(restaurant) : undefined}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {isLoadingDishResults && !dishResults.length ? (
+            <SurfaceCard>
+              <p className="text-sm leading-7 text-ink-soft">
+                Checking matching dishes across the nearby restaurant menus for this search.
+              </p>
+            </SurfaceCard>
+          ) : null}
+
+          {dishResults.length ? (
+            <div className="space-y-6">
+              <SectionHeading
+                eyebrow="Dishes"
+                title="Matching dishes"
+                description="Each dish result links back to the nearby restaurant that currently serves it."
+              />
+              <div className="grid gap-5 lg:grid-cols-2">
+                {dishResults.map((result) => (
+                  <SurfaceCard key={`${result.restaurant.slug}-${result.menuItem.id}`} className="space-y-5">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <StatusPill
+                            label={result.menuItem.isRecommended ? "Recommended" : result.menuItem.foodType}
+                            tone="info"
+                          />
+                          <StatusPill label={result.categoryName} tone="neutral" />
+                        </div>
+                        <div>
+                          <h3 className="font-display text-3xl font-semibold text-ink">{result.menuItem.name}</h3>
+                          <p className="mt-2 text-sm leading-7 text-ink-soft">
+                            {result.menuItem.description ?? "Freshly prepared and available for delivery from this nearby restaurant."}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="overflow-hidden rounded-[1.5rem] sm:w-32">
+                        <img
+                          src={
+                            result.menuItem.image ??
+                            result.restaurant.image ??
+                            "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1200&q=80"
+                          }
+                          alt={result.menuItem.name}
+                          className="h-28 w-full object-cover"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                      <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Served by</p>
+                      <Link
+                        to={`/restaurants/${result.restaurant.slug}`}
+                        className="mt-2 block font-semibold text-accent transition hover:text-accent-soft"
+                      >
+                        {result.restaurant.name}
+                      </Link>
+                      <p className="mt-1 text-sm text-ink-soft">{result.restaurant.area}</p>
+                      <p className="mt-1 text-xs text-ink-muted">{result.restaurant.cuisineLabel}</p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-lg font-semibold text-ink">
+                        {formatCurrency(result.menuItem.discountPrice ?? result.menuItem.price)}
+                      </p>
+                      <div className="flex flex-wrap gap-3">
+                        <Link
+                          to={`/restaurants/${result.restaurant.slug}`}
+                          className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
+                        >
+                          View restaurant
+                        </Link>
+                        <Button
+                          type="button"
+                          className="gap-2"
+                          onClick={() =>
+                            handleStartCartSelection({
+                              type: "MENU_ITEM",
+                              restaurantId: result.menuItem.restaurantId,
+                              item: result.menuItem,
+                            })
+                          }
+                        >
+                          Add to cart
+                        </Button>
+                      </div>
+                    </div>
+                  </SurfaceCard>
+                ))}
+              </div>
+            </div>
+          ) : restaurantCards.length && !isLoadingDishResults ? (
+            <SurfaceCard>
+              <p className="text-sm leading-7 text-ink-soft">
+                We found nearby restaurants for this search, but no dish names matched exactly in their menus yet.
+              </p>
+            </SurfaceCard>
+          ) : null}
         </div>
       ) : (
         <EmptyState
-          title={activeQuery ? "No nearby restaurants matched that search" : "No nearby restaurants found in your area"}
-          description={
-            activeQuery
-              ? "Try a broader cuisine, restaurant name, or dish while staying inside the nearby delivery radius."
-              : "Change the temporary delivery address or refresh your current location to search a different nearby area."
-          }
+          title="No nearby restaurants or dishes matched that search"
+          description="Try a broader restaurant name, dish, cuisine, city, or area while staying inside the current nearby delivery radius."
         />
       )}
 
@@ -1710,6 +2032,14 @@ export const SearchResultsPage = () => {
         savedAddresses={savedAddresses}
         selectedLocationAddressId={selectedLocation?.addressId ?? null}
         selectedLocationSource={selectedLocation?.source}
+      />
+
+      <CatalogItemModal
+        open={Boolean(selection)}
+        selection={selection}
+        isSubmitting={isAddingToCart}
+        onClose={() => setSelection(null)}
+        onSubmit={handleAddToCart}
       />
     </PageShell>
   );

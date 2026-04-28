@@ -1,4 +1,5 @@
 import { DeliveryAvailabilityStatus } from "../../constants/enums.js";
+import { optionalIndianPhoneSchema } from "../../utils/phone.js";
 import { z } from "zod";
 
 export const listDeliveryPartnersQuerySchema = {
@@ -21,7 +22,7 @@ export const listDeliveryPartnersQuerySchema = {
 const adminDeliveryPartnerBodySchema = z.object({
   fullName: z.string().trim().min(2).max(120),
   email: z.string().trim().email(),
-  phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
+  phone: optionalIndianPhoneSchema(),
   password: z
     .string()
     .min(8, "Password must be at least 8 characters long")
@@ -98,7 +99,7 @@ export const updateLocationSchema = {
 export const updateMyDeliveryProfileSchema = {
   body: z.object({
     fullName: z.string().trim().min(2).max(120).optional(),
-    phone: z.string().trim().regex(/^\+?[1-9]\d{9,14}$/).optional(),
+    phone: optionalIndianPhoneSchema(),
     vehicleNumber: z.string().trim().max(50).optional(),
     licenseNumber: z.string().trim().max(120).optional(),
   }),
