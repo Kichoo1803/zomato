@@ -45,11 +45,13 @@ export const deleteDeliveryPartner = asyncHandler(async (req, res) => {
 });
 
 export const getDeliveryProfile = asyncHandler(async (req, res) => {
-  const profile = await deliveryPartnersService.getProfile(req.user!.id);
+  const { profile, wasAutoCreated } = await deliveryPartnersService.getProfile(req.user!.id);
 
   return sendSuccess(res, {
-    message: "Delivery profile fetched successfully",
-    data: { profile },
+    message: wasAutoCreated
+      ? "Delivery profile created successfully"
+      : "Delivery profile fetched successfully",
+    data: { profile, wasAutoCreated },
   });
 });
 

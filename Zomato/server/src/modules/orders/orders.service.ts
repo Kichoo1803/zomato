@@ -20,6 +20,7 @@ import { AppError } from "../../utils/app-error.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import { generateOrderNumber } from "../../utils/order-number.js";
 import { decimalToNumber, roundMoney } from "../../utils/pricing.js";
+import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
 import { orderDispatchService } from "./order-dispatch.service.js";
 
 const orderInclude = {
@@ -1069,29 +1070,7 @@ export const ordersService = {
       throw new AppError(StatusCodes.FORBIDDEN, "Only delivery partners can accept requests", "ACCESS_DENIED");
     }
 
-    const deliveryPartner = await prisma.deliveryPartner.findUnique({
-      where: { userId: user.id },
-      select: {
-        id: true,
-        userId: true,
-        isVerified: true,
-        availabilityStatus: true,
-        currentLatitude: true,
-        currentLongitude: true,
-        lastLocationUpdatedAt: true,
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            isActive: true,
-          },
-        },
-      },
-    });
-
-    if (!deliveryPartner) {
-      throw new AppError(StatusCodes.NOT_FOUND, "Delivery profile not found", "DELIVERY_PROFILE_NOT_FOUND");
-    }
+    const { profile: deliveryPartner } = await ensureDeliveryPartnerProfileByUserId(user.id);
 
     if (!deliveryPartner.user.isActive) {
       throw new AppError(

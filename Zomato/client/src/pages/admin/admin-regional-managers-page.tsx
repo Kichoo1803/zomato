@@ -15,18 +15,20 @@ import { SectionHeading, StatusPill } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  createRegionAdmin,
   createUser,
   disableUser,
   getRegionsAdmin,
   getUsers,
+  updateRegionAdmin,
   updateUser,
   type AdminRegion,
   type AdminUser,
 } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
+import { getDistrictOptions, getIndianStateOptions, mergeRegionOptions } from "@/lib/india-regions";
 import {
   AddButton,
-  ChipSelector,
   PAGE_SIZE,
   RefreshButton,
   RowActions,
@@ -48,6 +50,14 @@ type RegionalManagerFormState = {
   managedRegionIds: number[];
 };
 
+type RegionOption = {
+  id: number;
+  label: string;
+  managerLabel: string;
+  isAssignedToCurrentManager: boolean;
+  isSelectable: boolean;
+};
+
 const emptyForm: RegionalManagerFormState = {
   fullName: "",
   email: "",
@@ -60,11 +70,43 @@ const emptyForm: RegionalManagerFormState = {
 };
 
 const formatRegionLabel = (region: AdminRegion) => `${region.districtName}, ${region.stateName}`;
+const getRegionAssignmentKey = (stateName: string, districtName: string) =>
+  `${stateName.trim().toLowerCase()}::${districtName.trim().toLowerCase()}`;
+const getRegionManagerLabel = (region: AdminRegion, currentManagerId: number | null) =>
+  region.managerUserId == null
+    ? "Unassigned"
+    : region.managerUserId === currentManagerId
+      ? "Assigned to this manager"
+      : `Assigned to ${region.manager?.fullName ?? "another manager"}`;
+const getRegionConflictMessage = (region: AdminRegion, currentManagerId: number | null) =>
+  region.managerUserId != null && region.managerUserId !== currentManagerId
+    ? `${formatRegionLabel(region)} is already assigned to ${region.manager?.fullName ?? "another manager"}.`
+    : getRegionManagerLabel(region, currentManagerId);
+const isRegionSelectableByManager = (region: AdminRegion, currentManagerId: number | null) =>
+  region.managerUserId == null || region.managerUserId === currentManagerId;
+const sortRegionsByCoverage = (regions: AdminRegion[]) =>
+  [...regions].sort((left, right) => {
+    if (left.stateName !== right.stateName) {
+      return left.stateName.localeCompare(right.stateName, "en-IN");
+    }
+
+    if (left.districtName !== right.districtName) {
+      return left.districtName.localeCompare(right.districtName, "en-IN");
+    }
+
+    return left.name.localeCompare(right.name, "en-IN");
+  });
+
+const getCurrentAssignedRegion = (regions: AdminRegion[], preferredRegionId?: number | null) =>
+  (preferredRegionId ? regions.find((region) => region.id === preferredRegionId) : null) ?? regions[0] ?? null;
 
 export const AdminRegionalManagersPage = () => {
   const [regionalManagers, setRegionalManagers] = useState<AdminUser[]>([]);
   const [regions, setRegions] = useState<AdminRegion[]>([]);
+  const [assignableRegions, setAssignableRegions] = useState<AdminRegion[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingAssignableRegions, setIsLoadingAssignableRegions] = useState(false);
+  const [isAssigningRegion, setIsAssigningRegion] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [search, setSearch] = useState("");
@@ -74,6 +116,10 @@ export const AdminRegionalManagersPage = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingManager, setEditingManager] = useState<AdminUser | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AdminUser | null>(null);
+  const [regionSearch, setRegionSearch] = useState("");
+  const [assignmentState, setAssignmentState] = useState("");
+  const [assignmentDistrict, setAssignmentDistrict] = useState("");
+  const [assignmentMessage, setAssignmentMessage] = useState<string | null>(null);
   const [form, setForm] = useState<RegionalManagerFormState>(emptyForm);
 
   const loadRegionalManagers = async () => {
@@ -93,6 +139,18 @@ export const AdminRegionalManagersPage = () => {
       toast.error(getApiErrorMessage(error, "Unable to load regional managers."));
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadAssignableRegions = async () => {
+    setIsLoadingAssignableRegions(true);
+
+    try {
+      setAssignableRegions(await getRegionsAdmin({ isActive: true }));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to load active regions."));
+    } finally {
+      setIsLoadingAssignableRegions(false);
     }
   };
 
@@ -128,28 +186,171 @@ export const AdminRegionalManagersPage = () => {
     return nextMap;
   }, [regions]);
 
-  const selectableRegions = useMemo(
+  const regionLookup = useMemo(() => {
+    const nextLookup = new Map<number, AdminRegion>();
+
+    [...regions, ...assignableRegions].forEach((region) => {
+      nextLookup.set(region.id, region);
+    });
+
+    return nextLookup;
+  }, [assignableRegions, regions]);
+
+  const regionByArea = useMemo(() => {
+    const nextLookup = new Map<string, AdminRegion>();
+
+    [...regions, ...assignableRegions].forEach((region) => {
+      const key = getRegionAssignmentKey(region.stateName, region.districtName);
+      const existingRegion = nextLookup.get(key);
+
+      if (!existingRegion || (!existingRegion.isActive && region.isActive)) {
+        nextLookup.set(key, region);
+      }
+    });
+
+    return nextLookup;
+  }, [assignableRegions, regions]);
+
+  const baseStateOptions = useMemo(() => getIndianStateOptions(), []);
+
+  const assignmentRegionOptions = useMemo(
     () =>
-      [...regions]
-        .filter((region) => region.isActive)
-        .sort((left, right) => {
-          if (left.stateName !== right.stateName) {
-            return left.stateName.localeCompare(right.stateName, "en-IN");
-          }
-
-          if (left.districtName !== right.districtName) {
-            return left.districtName.localeCompare(right.districtName, "en-IN");
-          }
-
-          return left.name.localeCompare(right.name, "en-IN");
-        }),
-    [regions],
+      mergeRegionOptions({
+        states: assignableRegions.map((region) => region.stateName),
+        districtsByState: assignableRegions.reduce<Record<string, string[]>>((lookup, region) => {
+          const bucket = lookup[region.stateName] ?? [];
+          bucket.push(region.districtName);
+          lookup[region.stateName] = bucket;
+          return lookup;
+        }, {}),
+      }),
+    [assignableRegions],
   );
+
+  const assignmentStateOptions = useMemo(
+    () =>
+      [...new Set([...baseStateOptions, ...assignmentRegionOptions.states])].sort((left, right) =>
+        left.localeCompare(right, "en-IN"),
+      ),
+    [assignmentRegionOptions.states, baseStateOptions],
+  );
+  const assignmentDistrictOptions = useMemo(
+    () => getDistrictOptions(assignmentState, assignmentRegionOptions),
+    [assignmentRegionOptions, assignmentState],
+  );
+
+  const assignableRegionByArea = useMemo(() => {
+    const currentManagerId = editingManager?.id ?? null;
+    const nextLookup = new Map<string, AdminRegion>();
+
+    [...assignableRegions]
+      .sort((left, right) => {
+        const leftRank =
+          left.managerUserId === currentManagerId ? 0 : left.managerUserId == null ? 1 : 2;
+        const rightRank =
+          right.managerUserId === currentManagerId ? 0 : right.managerUserId == null ? 1 : 2;
+
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+
+        return left.name.localeCompare(right.name, "en-IN");
+      })
+      .forEach((region) => {
+        const key = getRegionAssignmentKey(region.stateName, region.districtName);
+
+        if (!nextLookup.has(key)) {
+          nextLookup.set(key, region);
+        }
+      });
+
+    return nextLookup;
+  }, [assignableRegions, editingManager?.id]);
+
+  const selectedRegion = useMemo(
+    () => {
+      const [selectedRegionId] = [...new Set(form.managedRegionIds)];
+
+      return selectedRegionId ? regionLookup.get(selectedRegionId) ?? null : null;
+    },
+    [form.managedRegionIds, regionLookup],
+  );
+
+  const filteredRegionOptions = useMemo(() => {
+    const normalizedRegionSearch = regionSearch.trim().toLowerCase();
+    const currentManagerId = editingManager?.id ?? null;
+    const normalizedAssignmentState = assignmentState.trim().toLowerCase();
+    const normalizedAssignmentDistrict = assignmentDistrict.trim().toLowerCase();
+
+    return assignableRegions
+      .filter((region) => {
+        if (
+          normalizedAssignmentState &&
+          region.stateName.trim().toLowerCase() !== normalizedAssignmentState
+        ) {
+          return false;
+        }
+
+        if (
+          normalizedAssignmentDistrict &&
+          region.districtName.trim().toLowerCase() !== normalizedAssignmentDistrict
+        ) {
+          return false;
+        }
+
+        if (!normalizedRegionSearch) {
+          return true;
+        }
+
+        return matchesSearch(
+          [region.name, region.districtName, region.stateName, region.code, region.primaryPincode ?? ""].join(" "),
+          normalizedRegionSearch,
+        );
+      })
+      .sort((left, right) => {
+        const leftRank = isRegionSelectableByManager(left, currentManagerId)
+          ? left.managerUserId === currentManagerId
+            ? 0
+            : 1
+          : 2;
+        const rightRank = isRegionSelectableByManager(right, currentManagerId)
+          ? right.managerUserId === currentManagerId
+            ? 0
+            : 1
+          : 2;
+
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+
+        if (left.stateName !== right.stateName) {
+          return left.stateName.localeCompare(right.stateName, "en-IN");
+        }
+
+        if (left.districtName !== right.districtName) {
+          return left.districtName.localeCompare(right.districtName, "en-IN");
+        }
+
+        return left.name.localeCompare(right.name, "en-IN");
+      })
+      .map(
+        (region): RegionOption => ({
+          id: region.id,
+          label: formatRegionLabel(region),
+          managerLabel: getRegionManagerLabel(region, currentManagerId),
+          isAssignedToCurrentManager: region.managerUserId === currentManagerId,
+          isSelectable: isRegionSelectableByManager(region, currentManagerId),
+        }),
+      );
+  }, [assignableRegions, assignmentDistrict, assignmentState, editingManager?.id, regionSearch]);
 
   const filteredManagers = useMemo(
     () =>
       regionalManagers.filter((manager) => {
-        const assignedRegions = assignedRegionsByManager.get(manager.id) ?? [];
+        const assignedRegion = getCurrentAssignedRegion(
+          assignedRegionsByManager.get(manager.id) ?? [],
+          manager.regionId,
+        );
         const haystack = [
           manager.fullName,
           manager.email,
@@ -157,7 +358,7 @@ export const AdminRegionalManagersPage = () => {
           manager.opsNotes ?? "",
           manager.opsDistrict ?? "",
           manager.opsState ?? "",
-          assignedRegions.map(formatRegionLabel).join(" "),
+          assignedRegion ? formatRegionLabel(assignedRegion) : "",
         ].join(" ");
 
         if (search.trim() && !matchesSearch(haystack, search)) {
@@ -172,11 +373,11 @@ export const AdminRegionalManagersPage = () => {
           return false;
         }
 
-        if (assignmentFilter === "ASSIGNED" && !assignedRegions.length) {
+        if (assignmentFilter === "ASSIGNED" && !assignedRegion) {
           return false;
         }
 
-        if (assignmentFilter === "UNASSIGNED" && assignedRegions.length) {
+        if (assignmentFilter === "UNASSIGNED" && assignedRegion) {
           return false;
         }
 
@@ -190,10 +391,20 @@ export const AdminRegionalManagersPage = () => {
   const openCreateModal = () => {
     setEditingManager(null);
     setForm(emptyForm);
+    setRegionSearch("");
+    setAssignmentState("");
+    setAssignmentDistrict("");
+    setAssignmentMessage(null);
     setIsModalOpen(true);
+    void loadAssignableRegions();
   };
 
   const openEditModal = (manager: AdminUser) => {
+    const assignedRegion = getCurrentAssignedRegion(
+      assignedRegionsByManager.get(manager.id) ?? [],
+      manager.regionId,
+    );
+
     setEditingManager(manager);
     setForm({
       fullName: manager.fullName,
@@ -203,18 +414,137 @@ export const AdminRegionalManagersPage = () => {
       profileImage: manager.profileImage ?? "",
       opsNotes: manager.opsNotes ?? "",
       isActive: manager.isActive,
-      managedRegionIds: (assignedRegionsByManager.get(manager.id) ?? []).map((region) => region.id),
+      managedRegionIds: assignedRegion ? [assignedRegion.id] : [],
     });
+    setRegionSearch("");
+    setAssignmentState("");
+    setAssignmentDistrict("");
+    setAssignmentMessage(null);
     setIsModalOpen(true);
+    void loadAssignableRegions();
   };
 
   const toggleRegionSelection = (regionId: number) => {
+    setAssignmentMessage(null);
     setForm((currentForm) => ({
       ...currentForm,
       managedRegionIds: currentForm.managedRegionIds.includes(regionId)
-        ? currentForm.managedRegionIds.filter((id) => id !== regionId)
-        : [...currentForm.managedRegionIds, regionId],
+        ? []
+        : [regionId],
     }));
+  };
+
+  const handleAssignmentStateChange = (nextState: string) => {
+    const nextDistrictOptions = getDistrictOptions(nextState, assignmentRegionOptions);
+
+    setAssignmentState(nextState);
+    setAssignmentDistrict((currentDistrict) =>
+      nextDistrictOptions.includes(currentDistrict) ? currentDistrict : "",
+    );
+    setAssignmentMessage(null);
+  };
+
+  const upsertRegionLocally = (region: AdminRegion) => {
+    setRegions((currentRegions) =>
+      sortRegionsByCoverage([
+        ...currentRegions.filter((currentRegion) => currentRegion.id !== region.id),
+        region,
+      ]),
+    );
+
+    setAssignableRegions((currentRegions) =>
+      region.isActive
+        ? sortRegionsByCoverage([
+            ...currentRegions.filter((currentRegion) => currentRegion.id !== region.id),
+            region,
+          ])
+        : currentRegions.filter((currentRegion) => currentRegion.id !== region.id),
+    );
+  };
+
+  const handleAssignRegion = async () => {
+    const currentManagerId = editingManager?.id ?? null;
+
+    if (!assignmentState) {
+      setAssignmentMessage("Select a state first.");
+      return;
+    }
+
+    if (!assignmentDistrict) {
+      setAssignmentMessage("Select a district to assign.");
+      return;
+    }
+
+    const regionKey = getRegionAssignmentKey(assignmentState, assignmentDistrict);
+    const existingActiveRegion = assignableRegionByArea.get(regionKey);
+
+    if (existingActiveRegion && !isRegionSelectableByManager(existingActiveRegion, currentManagerId)) {
+      setAssignmentMessage(getRegionConflictMessage(existingActiveRegion, currentManagerId));
+      return;
+    }
+
+    if (existingActiveRegion && form.managedRegionIds.includes(existingActiveRegion.id)) {
+      setAssignmentMessage(`${assignmentDistrict}, ${assignmentState} is already assigned here.`);
+      return;
+    }
+
+    setIsAssigningRegion(true);
+    setAssignmentMessage(null);
+
+    try {
+      let matchedRegion = existingActiveRegion ?? null;
+      let createdRegion = false;
+
+      if (!matchedRegion) {
+        const existingRegion = regionByArea.get(regionKey);
+
+        if (existingRegion) {
+          if (!isRegionSelectableByManager(existingRegion, currentManagerId)) {
+            setAssignmentMessage(getRegionConflictMessage(existingRegion, currentManagerId));
+            return;
+          }
+
+          matchedRegion = existingRegion.isActive
+            ? existingRegion
+            : await updateRegionAdmin(existingRegion.id, {
+                isActive: true,
+              });
+        } else {
+          matchedRegion = await createRegionAdmin({
+            stateName: assignmentState,
+            districtName: assignmentDistrict,
+            name: `${assignmentDistrict}, ${assignmentState}`,
+            isActive: true,
+          });
+          createdRegion = true;
+        }
+
+        upsertRegionLocally(matchedRegion);
+      }
+
+      if (form.managedRegionIds.includes(matchedRegion.id)) {
+        setAssignmentMessage(`${assignmentDistrict}, ${assignmentState} is already assigned here.`);
+        return;
+      }
+
+      const previousRegion = selectedRegion;
+      setForm((currentForm) => ({
+        ...currentForm,
+        managedRegionIds: [matchedRegion.id],
+      }));
+      setAssignmentDistrict("");
+      toast.success(
+        createdRegion
+          ? `${formatRegionLabel(matchedRegion)} was created and set as this manager's region.`
+          : previousRegion && previousRegion.id !== matchedRegion.id
+            ? `${formatRegionLabel(matchedRegion)} is now this manager's region.`
+            : `${formatRegionLabel(matchedRegion)} was assigned to this manager.`,
+      );
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to assign this region right now."));
+    } finally {
+      setIsAssigningRegion(false);
+    }
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -232,13 +562,14 @@ export const AdminRegionalManagersPage = () => {
 
     setIsSubmitting(true);
 
+    const assignedRegionIds = [...new Set(form.managedRegionIds)].slice(0, 1);
     const payload = {
       fullName: form.fullName.trim(),
       email: form.email.trim(),
       phone: form.phone.trim() || undefined,
       password: form.password.trim() || undefined,
       role: "REGIONAL_MANAGER" as const,
-      managedRegionIds: form.managedRegionIds,
+      assignedRegionIds,
       profileImage: form.profileImage.trim() || undefined,
       opsNotes: form.opsNotes.trim() || undefined,
       isActive: form.isActive,
@@ -328,7 +659,7 @@ export const AdminRegionalManagersPage = () => {
               className="min-w-[180px]"
             >
               <option value="ALL">All assignments</option>
-              <option value="ASSIGNED">Assigned regions</option>
+              <option value="ASSIGNED">Assigned region</option>
               <option value="UNASSIGNED">Unassigned</option>
             </Select>
           </>
@@ -372,33 +703,19 @@ export const AdminRegionalManagersPage = () => {
               },
               {
                 key: "regions",
-                label: "Assigned regions",
+                label: "Assigned region",
                 render: (manager) => {
-                  const assignedRegions = assignedRegionsByManager.get(manager.id) ?? [];
+                  const assignedRegion = getCurrentAssignedRegion(
+                    assignedRegionsByManager.get(manager.id) ?? [],
+                    manager.regionId,
+                  );
 
-                  return assignedRegions.length ? (
-                    <div className="space-y-2">
-                      <p className="font-semibold text-ink">
-                        {assignedRegions.length} region{assignedRegions.length === 1 ? "" : "s"}
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {assignedRegions.slice(0, 3).map((region) => (
-                          <span
-                            key={region.id}
-                            className="rounded-full bg-cream px-3 py-1 text-xs font-semibold text-ink"
-                          >
-                            {formatRegionLabel(region)}
-                          </span>
-                        ))}
-                        {assignedRegions.length > 3 ? (
-                          <span className="rounded-full border border-accent/10 px-3 py-1 text-xs font-semibold text-ink-soft">
-                            +{assignedRegions.length - 3} more
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
+                  return assignedRegion ? (
+                    <span className="inline-flex rounded-full bg-cream px-3 py-1 text-xs font-semibold text-ink">
+                      {formatRegionLabel(assignedRegion)}
+                    </span>
                   ) : (
-                    <span className="text-sm text-ink-muted">No regions assigned</span>
+                    <span className="text-sm text-ink-muted">No region assigned</span>
                   );
                 },
               },
@@ -406,7 +723,10 @@ export const AdminRegionalManagersPage = () => {
                 key: "status",
                 label: "Status",
                 render: (manager) => {
-                  const assignedRegions = assignedRegionsByManager.get(manager.id) ?? [];
+                  const assignedRegion = getCurrentAssignedRegion(
+                    assignedRegionsByManager.get(manager.id) ?? [],
+                    manager.regionId,
+                  );
 
                   return (
                     <div className="space-y-2">
@@ -415,8 +735,8 @@ export const AdminRegionalManagersPage = () => {
                         tone={getToneForStatus(manager.isActive)}
                       />
                       <StatusPill
-                        label={assignedRegions.length ? "Assigned" : "Unassigned"}
-                        tone={getToneForStatus(assignedRegions.length ? "APPROVED" : "PENDING")}
+                        label={assignedRegion ? "Assigned" : "Unassigned"}
+                        tone={getToneForStatus(assignedRegion ? "APPROVED" : "PENDING")}
                       />
                     </div>
                   );
@@ -498,21 +818,156 @@ export const AdminRegionalManagersPage = () => {
             placeholder="Capture regional onboarding context, escalations, or handoff notes."
           />
 
-          <ChipSelector
-            label="Assigned regions"
-            selectedIds={form.managedRegionIds}
-            options={selectableRegions.map((region) => ({
-              id: region.id,
-              name: formatRegionLabel(region),
-            }))}
-            onToggle={toggleRegionSelection}
-          />
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <p className="text-sm font-semibold text-ink">Assigned region / area</p>
+              {selectedRegion ? (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleRegionSelection(selectedRegion.id)}
+                    className="inline-flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] text-white shadow-soft"
+                  >
+                    <span>{formatRegionLabel(selectedRegion)}</span>
+                    <span className="rounded-full border border-white/30 px-2 py-0.5 text-[10px] tracking-[0.12em]">
+                      Remove
+                    </span>
+                  </button>
+                </div>
+              ) : (
+                <p className="text-sm text-ink-muted">
+                  No region assigned yet. Use State and District to add an active region below.
+                </p>
+              )}
+            </div>
 
-          {!selectableRegions.length ? (
-            <p className="text-sm text-ink-muted">
-              No active regions are available yet. Create regions first, then come back to map them here.
-            </p>
-          ) : null}
+            <div className="space-y-3">
+              <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+                <Select
+                  label="State / Union territory"
+                  value={assignmentState}
+                  onChange={(event) => handleAssignmentStateChange(event.target.value)}
+                >
+                  <option value="">Select a state or union territory</option>
+                  {assignmentStateOptions.map((state) => (
+                    <option key={state} value={state}>
+                      {state}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  label="District"
+                  value={assignmentDistrict}
+                  onChange={(event) => {
+                    setAssignmentDistrict(event.target.value);
+                    setAssignmentMessage(null);
+                  }}
+                  disabled={!assignmentState}
+                >
+                  <option value="">
+                    {assignmentState ? "Select a district" : "Choose a state first"}
+                  </option>
+                  {assignmentDistrictOptions.map((district) => (
+                    <option key={district} value={district}>
+                      {district}
+                    </option>
+                  ))}
+                </Select>
+                <Button
+                  type="button"
+                  onClick={handleAssignRegion}
+                  className="md:mb-0.5"
+                  disabled={!assignmentState || !assignmentDistrict || isAssigningRegion}
+                >
+                  {isAssigningRegion ? "Assigning..." : "Assign"}
+                </Button>
+              </div>
+
+              {isLoadingAssignableRegions ? (
+                <p className="text-sm text-ink-muted">Loading active regions...</p>
+              ) : !assignableRegions.length ? (
+                <p className="text-sm text-ink-muted">
+                  No active regions found yet. Select a state and district to create and assign one.
+                </p>
+              ) : null}
+
+              {assignmentMessage ? (
+                <p className="text-sm text-ink-muted">{assignmentMessage}</p>
+              ) : null}
+
+              <Input
+                label="Search regions / areas"
+                value={regionSearch}
+                onChange={(event) => setRegionSearch(event.target.value)}
+                placeholder="Search by district, state, region name, code, or PIN"
+              />
+
+              {filteredRegionOptions.length ? (
+                <div className="space-y-3 rounded-[1.5rem] border border-accent/10 bg-cream-soft/60 p-4">
+                  {filteredRegionOptions.map((region) => {
+                    const isSelected = selectedRegion?.id === region.id;
+                    const isDisabled = !region.isSelectable;
+
+                    return (
+                      <button
+                        key={region.id}
+                        type="button"
+                        onClick={() => {
+                          if (!isDisabled) {
+                            toggleRegionSelection(region.id);
+                          }
+                        }}
+                        disabled={isDisabled}
+                        className={
+                          isSelected
+                            ? "flex w-full items-start justify-between rounded-[1.5rem] border border-accent bg-accent px-4 py-4 text-left text-white shadow-soft"
+                            : isDisabled
+                              ? "flex w-full items-start justify-between rounded-[1.5rem] border border-accent/10 bg-cream px-4 py-4 text-left text-ink-soft shadow-soft opacity-70"
+                              : "flex w-full items-start justify-between rounded-[1.5rem] border border-accent/10 bg-white px-4 py-4 text-left text-ink shadow-soft"
+                        }
+                      >
+                        <div>
+                          <p className="font-semibold">{region.label}</p>
+                          <p
+                            className={
+                              isSelected
+                                ? "mt-1 text-xs text-white/80"
+                                : isDisabled
+                                  ? "mt-1 text-xs text-ink-soft"
+                                  : "mt-1 text-xs text-ink-muted"
+                            }
+                          >
+                            {region.managerLabel}
+                          </p>
+                        </div>
+                        <span
+                          className={
+                            isSelected
+                              ? "rounded-full border border-white/30 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em]"
+                              : isDisabled
+                                ? "rounded-full border border-accent/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-ink-soft"
+                                : "rounded-full border border-accent/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-ink-soft"
+                          }
+                        >
+                          {isSelected
+                            ? "Selected"
+                            : isDisabled
+                              ? "Unavailable"
+                              : region.isAssignedToCurrentManager
+                                ? "Assigned"
+                                : "Select"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : assignableRegions.length ? (
+                <p className="text-sm text-ink-muted">
+                  No active regions match this search or location filter. Try a different district, state, or PIN.
+                </p>
+              ) : null}
+            </div>
+          </div>
 
           <ToggleField
             label="Account is active"

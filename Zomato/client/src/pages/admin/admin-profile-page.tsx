@@ -11,6 +11,8 @@ import { getAdminProfile, toSessionUser, updateAdminProfile, type AdminUser } fr
 import { getApiErrorMessage } from "@/lib/auth";
 import { RefreshButton, getToneForStatus, toLabel } from "./admin-shared";
 
+const adminProfileUpdateToastId = "admin-profile-update";
+
 export const AdminProfilePage = () => {
   const { accessToken, setSession } = useAuth();
   const [profile, setProfile] = useState<AdminUser | null>(null);
@@ -53,9 +55,11 @@ export const AdminProfilePage = () => {
       if (accessToken) {
         setSession({ user: toSessionUser(user), accessToken });
       }
-      toast.success("Admin profile updated successfully.");
+      toast.success("Admin profile updated successfully.", { id: adminProfileUpdateToastId });
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to update your profile."));
+      toast.error(getApiErrorMessage(error, "Unable to update your profile."), {
+        id: adminProfileUpdateToastId,
+      });
     } finally {
       setIsSaving(false);
     }

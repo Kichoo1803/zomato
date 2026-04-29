@@ -15,24 +15,13 @@ import {
   getIndianPhoneSearchVariants,
   normalizeIndianPhoneNumber,
 } from "../../utils/phone.js";
+import {
+  normalizeLicenseNumber,
+  normalizeVehicleNumber,
+} from "../../utils/vehicle.js";
+import { ensureDeliveryPartnerProfileByUserId } from "./delivery-partner-profile.js";
 import { orderDispatchService } from "../orders/order-dispatch.service.js";
 import { resolveRegionIdForAssignment } from "../regions/regions.service.js";
-
-const getPartnerByUserId = async (userId: number) => {
-  const partner = await prisma.deliveryPartner.findUnique({
-    where: { userId },
-    include: {
-      user: true,
-      documents: true,
-    },
-  });
-
-  if (!partner) {
-    throw new AppError(StatusCodes.NOT_FOUND, "Delivery profile not found", "DELIVERY_PROFILE_NOT_FOUND");
-  }
-
-  return partner;
-};
 
 const ensureDeliveryPartnerUserUniqueness = async (input: {
   email?: string;
@@ -235,6 +224,8 @@ export const deliveryPartnersService = {
   }) {
     const email = input.email.trim().toLowerCase();
     const phone = normalizeIndianPhoneNumber(input.phone);
+    const vehicleNumber = normalizeVehicleNumber(input.vehicleNumber);
+    const licenseNumber = normalizeLicenseNumber(input.licenseNumber);
 
     await ensureDeliveryPartnerUserUniqueness({
       email,
@@ -265,8 +256,8 @@ export const deliveryPartnersService = {
         data: {
           userId: user.id,
           vehicleType: input.vehicleType,
-          vehicleNumber: input.vehicleNumber,
-          licenseNumber: input.licenseNumber,
+          vehicleNumber,
+          licenseNumber,
           availabilityStatus: input.availabilityStatus ?? DeliveryAvailabilityStatus.OFFLINE,
           isVerified: input.isVerified ?? false,
         },
@@ -304,6 +295,10 @@ export const deliveryPartnersService = {
     const email = input.email?.trim().toLowerCase();
     const phone =
       input.phone !== undefined ? normalizeIndianPhoneNumber(input.phone) : undefined;
+    const vehicleNumber =
+      input.vehicleNumber !== undefined ? normalizeVehicleNumber(input.vehicleNumber) : undefined;
+    const licenseNumber =
+      input.licenseNumber !== undefined ? normalizeLicenseNumber(input.licenseNumber) : undefined;
 
     await ensureDeliveryPartnerUserUniqueness({
       email,
@@ -327,8 +322,8 @@ export const deliveryPartnersService = {
         where: { id: partnerId },
         data: {
           ...(input.vehicleType !== undefined ? { vehicleType: input.vehicleType } : {}),
-          ...(input.vehicleNumber !== undefined ? { vehicleNumber: input.vehicleNumber } : {}),
-          ...(input.licenseNumber !== undefined ? { licenseNumber: input.licenseNumber } : {}),
+          ...(input.vehicleNumber !== undefined ? { vehicleNumber } : {}),
+          ...(input.licenseNumber !== undefined ? { licenseNumber } : {}),
           ...(input.availabilityStatus !== undefined
             ? { availabilityStatus: input.availabilityStatus }
             : {}),
@@ -376,7 +371,7 @@ export const deliveryPartnersService = {
   },
 
   async getProfile(userId: number) {
-    return getPartnerByUserId(userId);
+    return ensureDeliveryPartnerProfileByUserId(userId);
   },
 
   async updateProfile(
@@ -388,9 +383,13 @@ export const deliveryPartnersService = {
       licenseNumber?: string;
     },
   ) {
-    const partner = await getPartnerByUserId(userId);
+    const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
     const phone =
       input.phone !== undefined ? normalizeIndianPhoneNumber(input.phone) : undefined;
+    const vehicleNumber =
+      input.vehicleNumber !== undefined ? normalizeVehicleNumber(input.vehicleNumber) : undefined;
+    const licenseNumber =
+      input.licenseNumber !== undefined ? normalizeLicenseNumber(input.licenseNumber) : undefined;
 
     await ensureDeliveryPartnerUserUniqueness({
       phone,
@@ -409,17 +408,17 @@ export const deliveryPartnersService = {
       await tx.deliveryPartner.update({
         where: { id: partner.id },
         data: {
-          ...(input.vehicleNumber !== undefined ? { vehicleNumber: input.vehicleNumber } : {}),
-          ...(input.licenseNumber !== undefined ? { licenseNumber: input.licenseNumber } : {}),
+          ...(input.vehicleNumber !== undefined ? { vehicleNumber } : {}),
+          ...(input.licenseNumber !== undefined ? { licenseNumber } : {}),
         },
       });
     });
 
-    return getPartnerByUserId(userId);
+    return (await ensureDeliveryPartnerProfileByUserId(userId)).profile;
   },
 
   async updateAvailability(userId: number, availabilityStatus: string) {
-    const partner = await getPartnerByUserId(userId);
+    const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
     const updatedPartner = await prisma.deliveryPartner.update({
       where: { id: partner.id },
       data: {
@@ -464,7 +463,7 @@ export const deliveryPartnersService = {
   },
 
   async updateLocation(userId: number, latitude: number, longitude: number) {
-    const partner = await getPartnerByUserId(userId);
+    const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
 
     const updatedPartner = await prisma.deliveryPartner.update({
       where: { id: partner.id },
@@ -579,6 +578,8 @@ export const deliveryPartnersService = {
   },
 
   async listActiveDeliveries(userId: number) {
+    await ensureDeliveryPartnerProfileByUserId(userId);
+
     return prisma.order.findMany({
       where: {
         deliveryPartner: {
@@ -601,6 +602,8 @@ export const deliveryPartnersService = {
   },
 
   async listHistory(userId: number) {
+    await ensureDeliveryPartnerProfileByUserId(userId);
+
     return prisma.order.findMany({
       where: {
         deliveryPartner: {

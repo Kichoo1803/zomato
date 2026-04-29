@@ -1427,6 +1427,7 @@ export const ProfilePage = () => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const profileUpdateToastId = "customer-profile-update";
 
   const handleProfileSubmit = async (values: ProfileFormValues) => {
     setIsSavingProfile(true);
@@ -1444,9 +1445,11 @@ export const ProfilePage = () => {
       }
 
       setIsEditModalOpen(false);
-      toast.success("Profile updated successfully.");
+      toast.success("Profile updated successfully.", { id: profileUpdateToastId });
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to update your profile."));
+      toast.error(getApiErrorMessage(error, "Unable to update your profile."), {
+        id: profileUpdateToastId,
+      });
     } finally {
       setIsSavingProfile(false);
     }

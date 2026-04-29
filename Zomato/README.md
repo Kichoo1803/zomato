@@ -19,6 +19,59 @@ If you are using PowerShell on Windows, replace `cp` with `Copy-Item` and use `n
 
 When `DATABASE_URL` uses the checked-in repo-scoped MongoDB URI on `127.0.0.1:27018` with `replicaSet=rs0`, the backend scripts now auto-start that local MongoDB node and wait for it to become the replica-set PRIMARY before continuing.
 
+## Deployment Targets
+
+Use the current monorepo as:
+
+- Frontend: Netlify
+- Backend: Render
+- Database: MongoDB Atlas
+
+The older Vercel files in the repo can be left in place and ignored for this deployment path. They are not used by Netlify or Render.
+
+### Render backend settings
+
+- Root Directory: repo root (`.`)
+- Build Command: `npm run build -w server`
+- Start Command: `npm run start -w server`
+
+Required Render environment variables:
+
+```bash
+NODE_ENV=production
+DATABASE_URL=mongodb+srv://...
+JWT_ACCESS_SECRET=replace-with-a-long-random-secret
+JWT_REFRESH_SECRET=replace-with-a-long-random-secret
+CLIENT_URL=https://your-netlify-site.netlify.app
+CORS_ORIGINS=https://your-netlify-site.netlify.app
+```
+
+Notes:
+
+- The server already reads `PORT` from `process.env.PORT`, so Render can inject its own port.
+- Prisma Client generation now happens during `npm run build -w server` via the server package `prebuild` hook.
+- The backend `start` command does not auto-run `prisma db push`, seed data, or local Mongo bootstrap in production.
+- `DATABASE_URL` accepts MongoDB Atlas `mongodb+srv://...` values.
+- `COOKIE_DOMAIN` is optional. Leave it unset unless you intentionally need a custom cookie domain.
+
+### Netlify frontend settings
+
+- Base Directory: repo root (`.`)
+- Build Command: `npm run build -w client`
+- Publish Directory: `client/dist`
+
+Required Netlify environment variable:
+
+```bash
+VITE_API_BASE_URL=https://your-render-backend.onrender.com/api/v1
+```
+
+Notes:
+
+- In production, the frontend reads `VITE_API_BASE_URL` for API calls.
+- In local development, if `VITE_API_BASE_URL` is unset, the client still falls back to `http://localhost:4000/api`.
+- Netlify should serve the React SPA with a catch-all redirect to `index.html`.
+
 ## MongoDB Notes
 
 - Prisma still powers the backend; the datasource provider changed from SQLite to MongoDB.
@@ -107,6 +160,20 @@ npm run prisma:cleanup:generated -w server
 If `npm run prisma:generate -w server` still reports a locked `query_engine-windows.dll.node`, stop any running Zomato Luxe server, `tsx watch` process, Prisma Studio session, or other Node process using this workspace before retrying.
 
 `npm run prisma:migrate:deploy -w server` remains as a compatibility alias for `prisma db push` so older local scripts do not break after the MongoDB move.
+
+## Deployment Test Checklist
+
+```bash
+npm install
+npm run build -w client
+npm run build -w server
+```
+
+Then verify:
+
+- Render health check: `https://your-render-backend.onrender.com/api/v1/health`
+- Netlify frontend loads successfully on refresh for nested SPA routes
+- Login/register works from the Netlify frontend against the Render backend
 
 ## API Overview
 

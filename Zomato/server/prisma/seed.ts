@@ -3129,8 +3129,22 @@ async function main() {
   }
 
   for (const deliverySeed of deliveryPartnerSeeds) {
-    const deliveryPartner = await prisma.deliveryPartner.create({
-      data: {
+    const deliveryPartner = await prisma.deliveryPartner.upsert({
+      where: {
+        userId: userMap.get(deliverySeed.key)!.id,
+      },
+      update: {
+        vehicleType: deliverySeed.vehicleType,
+        vehicleNumber: deliverySeed.vehicleNumber,
+        licenseNumber: deliverySeed.licenseNumber,
+        availabilityStatus: deliverySeed.availabilityStatus,
+        currentLatitude: decimal(deliverySeed.currentLatitude),
+        currentLongitude: decimal(deliverySeed.currentLongitude),
+        avgRating: decimal(deliverySeed.avgRating),
+        totalDeliveries: 0,
+        isVerified: Boolean(deliverySeed.isVerified),
+      },
+      create: {
         userId: userMap.get(deliverySeed.key)!.id,
         vehicleType: deliverySeed.vehicleType,
         vehicleNumber: deliverySeed.vehicleNumber,

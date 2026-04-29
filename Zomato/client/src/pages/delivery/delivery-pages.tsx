@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import axios from "axios";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Bike, LocateFixed, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -9,7 +10,9 @@ import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
+import { LicenseNumberInput } from "@/components/ui/license-number-input";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
+import { VehicleNumberInput } from "@/components/ui/vehicle-number-input";
 import { useRealtimeSubscription } from "@/hooks/use-realtime-subscription";
 import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
@@ -46,6 +49,15 @@ const deliveryStatusTransitions: Record<string, string[]> = {
   DELAYED: ["PICKED_UP", "ON_THE_WAY", "OUT_FOR_DELIVERY", "DELIVERED"],
 };
 const requestAcceptableStatuses = new Set(["READY_FOR_PICKUP", "LOOKING_FOR_DELIVERY_PARTNER"]);
+const deliveryProfileCreatedNotice =
+  "We created your delivery profile from your account details. Review your phone, vehicle, and license details before going online.";
+const deliveryProfilePendingNotice =
+  "We're setting up your delivery profile. Refresh in a moment if the profile form has not appeared yet.";
+const deliveryProfileUpdateToastId = "delivery-profile-update";
+const deliveryWorkspaceNoticeToastId = "delivery-workspace-notice";
+const deliveryWorkspaceLoadToastId = "delivery-workspace-load";
+const deliveryLocationPermissionToastId = "delivery-location-permission";
+const deliveryLocationUpdateToastId = "delivery-location-update";
 
 const isLiveDeliverySession = (isAuthenticated: boolean, role?: string | null) =>
   isAuthenticated && role === "DELIVERY_PARTNER";
@@ -184,27 +196,53 @@ const DeliveryRequestCard = ({
   );
 };
 
-const getBrowserLocation = () =>
-  new Promise<{ latitude: number; longitude: number }>((resolve, reject) => {
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      reject(new Error("GEOLOCATION_UNAVAILABLE"));
-      return;
-    }
+const getBrowserLocation = async () => {
+  if (typeof navigator === "undefined" || !navigator.geolocation) {
+    throw new Error("GEOLOCATION_UNAVAILABLE");
+  }
 
+  try {
+    const permissionStatus = await navigator.permissions?.query?.({
+      name: "geolocation" as PermissionName,
+    });
+
+    if (permissionStatus?.state === "denied") {
+      throw new Error("GEOLOCATION_DENIED");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "GEOLOCATION_DENIED") {
+      throw error;
+    }
+  }
+
+  return new Promise<{ latitude: number; longitude: number }>((resolve, reject) => {
     navigator.geolocation.getCurrentPosition(
       (position) =>
         resolve({
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
         }),
-      () => reject(new Error("GEOLOCATION_DENIED")),
+      (error) => {
+        if (error.code === error.PERMISSION_DENIED) {
+          reject(new Error("GEOLOCATION_DENIED"));
+          return;
+        }
+
+        if (error.code === error.TIMEOUT) {
+          reject(new Error("GEOLOCATION_TIMEOUT"));
+          return;
+        }
+
+        reject(new Error("GEOLOCATION_UNAVAILABLE"));
+      },
       {
         enableHighAccuracy: true,
-        timeout: 12000,
-        maximumAge: 30000,
+        timeout: 15000,
+        maximumAge: 0,
       },
     );
   });
+};
 
 const buildDeliveryRouteMarkers = (order: DeliveryOrder, profile?: DeliveryProfile | null) => {
   const partnerLatitude = profile?.currentLatitude ?? order.deliveryPartner?.currentLatitude;
@@ -242,6 +280,25 @@ const buildDeliveryRouteMarkers = (order: DeliveryOrder, profile?: DeliveryProfi
   ];
 };
 
+const getApiErrorCode = (error: unknown) => {
+  if (!axios.isAxiosError(error)) {
+    return null;
+  }
+
+  const responseCode = error.response?.data?.code;
+  return typeof responseCode === "string" ? responseCode : null;
+};
+
+const DeliveryWorkspaceNotice = ({ message }: { message: string }) => (
+  <div className="rounded-[1.5rem] border border-accent/15 bg-accent/[0.04] px-4 py-4 text-sm leading-7 text-ink-soft">
+    {message}
+  </div>
+);
+
+const getLocationUpdatedAt = (profile?: DeliveryProfile | null) =>
+  profile?.lastLocationUpdatedAt ??
+  (profile?.currentLatitude != null && profile.currentLongitude != null ? profile.updatedAt : null);
+
 const useDeliveryWorkspace = () => {
   const { isAuthenticated, user } = useAuth();
   const useLiveFlow = isLiveDeliverySession(isAuthenticated, user?.role);
@@ -253,9 +310,109 @@ const useDeliveryWorkspace = () => {
   const [isUpdatingAvailability, setIsUpdatingAvailability] = useState(false);
   const [isUpdatingLocation, setIsUpdatingLocation] = useState(false);
   const [pendingOrderId, setPendingOrderId] = useState<number | null>(null);
+  const [workspaceNotice, setWorkspaceNotice] = useState<string | null>(null);
   const loadDataRef = useRef<
     ((options?: { quietly?: boolean }) => Promise<void>) | null
   >(null);
+  const lastWorkspaceNoticeRef = useRef<string | null>(null);
+
+  const showWorkspaceNotice = (message: string) => {
+    setWorkspaceNotice(message);
+
+    if (lastWorkspaceNoticeRef.current === message) {
+      return;
+    }
+
+    toast(message, { id: deliveryWorkspaceNoticeToastId });
+    lastWorkspaceNoticeRef.current = message;
+  };
+
+  const clearWorkspaceNotice = () => {
+    setWorkspaceNotice(null);
+    lastWorkspaceNoticeRef.current = null;
+  };
+
+  const loadProfile = async ({ quietly = false }: { quietly?: boolean } = {}) => {
+    if (!useLiveFlow) {
+      return null;
+    }
+
+    try {
+      const profileResult = await getDeliveryProfile();
+      setProfile(profileResult.profile);
+
+      if (profileResult.wasAutoCreated) {
+        showWorkspaceNotice(deliveryProfileCreatedNotice);
+      } else {
+        clearWorkspaceNotice();
+      }
+
+      return profileResult.profile;
+    } catch (error) {
+      if (getApiErrorCode(error) === "DELIVERY_PROFILE_NOT_FOUND") {
+        setProfile(null);
+        setRequests([]);
+        setActiveOrders([]);
+        setHistory([]);
+        showWorkspaceNotice(deliveryProfilePendingNotice);
+        return null;
+      }
+
+      if (!quietly) {
+        toast.error(getApiErrorMessage(error, "Unable to load delivery profile data."), {
+          id: deliveryWorkspaceLoadToastId,
+        });
+      }
+      return null;
+    }
+  };
+
+  const loadCollections = async ({ quietly = false }: { quietly?: boolean } = {}) => {
+    if (!useLiveFlow) {
+      return;
+    }
+
+    const [requestRows, activeRows, historyRows] = await Promise.allSettled([
+      getDeliveryRequests(),
+      getDeliveryActiveOrders(),
+      getDeliveryHistory(),
+    ]);
+
+    if (requestRows.status === "fulfilled") {
+      setRequests(requestRows.value);
+    } else if (getApiErrorCode(requestRows.reason) === "DELIVERY_PROFILE_NOT_FOUND") {
+      setRequests([]);
+    }
+
+    if (activeRows.status === "fulfilled") {
+      setActiveOrders(activeRows.value);
+    } else if (getApiErrorCode(activeRows.reason) === "DELIVERY_PROFILE_NOT_FOUND") {
+      setActiveOrders([]);
+    }
+
+    if (historyRows.status === "fulfilled") {
+      setHistory(historyRows.value);
+    } else if (getApiErrorCode(historyRows.reason) === "DELIVERY_PROFILE_NOT_FOUND") {
+      setHistory([]);
+    }
+
+    if (
+      !quietly &&
+      requestRows.status === "rejected" &&
+      activeRows.status === "rejected" &&
+      historyRows.status === "rejected"
+    ) {
+      const firstError = requestRows.reason;
+
+      if (getApiErrorCode(firstError) === "DELIVERY_PROFILE_NOT_FOUND") {
+        showWorkspaceNotice(deliveryProfilePendingNotice);
+      } else {
+        toast.error(getApiErrorMessage(firstError, "Unable to load delivery workspace data."), {
+          id: deliveryWorkspaceLoadToastId,
+        });
+      }
+    }
+  };
 
   const loadData = async ({ quietly = false }: { quietly?: boolean } = {}) => {
     if (!useLiveFlow) {
@@ -267,18 +424,31 @@ const useDeliveryWorkspace = () => {
     }
 
     try {
-      const [profileRow, requestRows, activeRows, historyRows] = await Promise.all([
-        getDeliveryProfile(),
-        getDeliveryRequests(),
-        getDeliveryActiveOrders(),
-        getDeliveryHistory(),
-      ]);
-      setProfile(profileRow);
-      setRequests(requestRows);
-      setActiveOrders(activeRows);
-      setHistory(historyRows);
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load delivery workspace data."));
+      const nextProfile = await loadProfile({ quietly });
+
+      if (!nextProfile) {
+        return;
+      }
+
+      await loadCollections({ quietly });
+    } finally {
+      if (!quietly) {
+        setIsLoading(false);
+      }
+    }
+  };
+
+  const refreshProfile = async ({ quietly = false }: { quietly?: boolean } = {}) => {
+    if (!useLiveFlow) {
+      return;
+    }
+
+    if (!quietly) {
+      setIsLoading(true);
+    }
+
+    try {
+      await loadProfile({ quietly });
     } finally {
       if (!quietly) {
         setIsLoading(false);
@@ -356,13 +526,21 @@ const useDeliveryWorkspace = () => {
       const location = await getBrowserLocation();
       const nextProfile = await updateDeliveryLocation(location);
       setProfile(nextProfile);
-      toast.success("Live location refreshed successfully.");
-      await loadData();
+      toast.success("Live location refreshed successfully.", { id: deliveryLocationUpdateToastId });
+      await loadData({ quietly: true });
     } catch (error) {
       if (error instanceof Error && error.message === "GEOLOCATION_DENIED") {
-        toast.error("Allow location access to refresh your live rider position.");
+        toast("Location access is off. Allow it in your browser settings, then try refreshing again.", {
+          id: deliveryLocationPermissionToastId,
+        });
+      } else if (error instanceof Error && error.message === "GEOLOCATION_TIMEOUT") {
+        toast.error("We could not get your live location just now. Try again in a clearer signal area.", {
+          id: deliveryLocationUpdateToastId,
+        });
       } else {
-        toast.error(getApiErrorMessage(error, "Unable to refresh live location."));
+        toast.error(getApiErrorMessage(error, "Unable to refresh live location."), {
+          id: deliveryLocationUpdateToastId,
+        });
       }
     } finally {
       setIsUpdatingLocation(false);
@@ -432,6 +610,7 @@ const useDeliveryWorkspace = () => {
     isUpdatingLocation,
     pendingOrderId,
     loadData,
+    refreshProfile,
     refreshLocation,
     toggleAvailability,
     acceptOrder,
@@ -439,6 +618,7 @@ const useDeliveryWorkspace = () => {
     releaseOrder,
     updateOrderStatus,
     user,
+    workspaceNotice,
   };
 };
 
@@ -482,6 +662,7 @@ export const DeliveryDashboardPage = () => {
     refreshLocation,
     loadData,
     isUpdatingLocation,
+    workspaceNotice,
   } = useDeliveryWorkspace();
 
   const deliveredOrders = history.filter((order) => order.status === "DELIVERED");
@@ -528,6 +709,8 @@ export const DeliveryDashboardPage = () => {
         }
       />
 
+      {workspaceNotice ? <DeliveryWorkspaceNotice message={workspaceNotice} /> : null}
+
       <div className="grid gap-4 xl:grid-cols-4">
         <DashboardStatCard label="New requests" value={requests.length.toString()} hint="Dispatch-managed queue" />
         <DashboardStatCard label="Active deliveries" value={activeOrders.length.toString()} hint="Orders currently in motion" />
@@ -572,7 +755,7 @@ export const DeliveryDashboardPage = () => {
             <div className="rounded-[1.5rem] bg-cream px-5 py-4">
               <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Last location update</p>
               <p className="mt-2 text-sm font-semibold text-ink">
-                {profile?.lastLocationUpdatedAt ? formatDateTime(profile.lastLocationUpdatedAt) : "Not updated yet"}
+                {getLocationUpdatedAt(profile) ? formatDateTime(getLocationUpdatedAt(profile)) : "Not updated yet"}
               </p>
             </div>
           </div>
@@ -616,6 +799,7 @@ export const DeliveryActivePage = () => {
     refreshLocation,
     loadData,
     isUpdatingLocation,
+    workspaceNotice,
   } = useDeliveryWorkspace();
   const highlightedOrderId = Number(searchParams.get("orderId") ?? "0");
 
@@ -671,6 +855,8 @@ export const DeliveryActivePage = () => {
           </div>
         }
       />
+
+      {workspaceNotice ? <DeliveryWorkspaceNotice message={workspaceNotice} /> : null}
 
       {requests.length ? (
         <SurfaceCard className="space-y-4">
@@ -791,7 +977,7 @@ export const DeliveryActivePage = () => {
 };
 
 export const DeliveryHistoryPage = () => {
-  const { useLiveFlow, history, isLoading, loadData } = useDeliveryWorkspace();
+  const { useLiveFlow, history, isLoading, loadData, workspaceNotice } = useDeliveryWorkspace();
   const deliveredCount = history.filter((order) => order.status === "DELIVERED").length;
   const cancelledCount = history.filter((order) => order.status === "CANCELLED").length;
   const deliveredTips = history
@@ -827,6 +1013,8 @@ export const DeliveryHistoryPage = () => {
         description="Past delivery outcomes, route summaries, and visible customer tips stay easy to scan."
         action={<RefreshButton onClick={() => void loadData()} />}
       />
+
+      {workspaceNotice ? <DeliveryWorkspaceNotice message={workspaceNotice} /> : null}
 
       <div className="grid gap-4 md:grid-cols-3">
         <DashboardStatCard label="Completed deliveries" value={deliveredCount.toString()} hint="Successful handoffs" />
@@ -867,7 +1055,7 @@ export const DeliveryHistoryPage = () => {
 };
 
 export const DeliveryEarningsPage = () => {
-  const { useLiveFlow, activeOrders, history, isLoading, loadData } = useDeliveryWorkspace();
+  const { useLiveFlow, activeOrders, history, isLoading, loadData, workspaceNotice } = useDeliveryWorkspace();
 
   if (!useLiveFlow) {
     return (
@@ -917,6 +1105,8 @@ export const DeliveryEarningsPage = () => {
         action={<RefreshButton onClick={() => void loadData()} />}
       />
 
+      {workspaceNotice ? <DeliveryWorkspaceNotice message={workspaceNotice} /> : null}
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <DashboardStatCard label="Today completed" value={deliveredToday.length.toString()} hint="Deliveries closed today" />
         <DashboardStatCard label="This week" value={deliveredThisWeek.length.toString()} hint="Delivered in the last 7 days" />
@@ -956,9 +1146,11 @@ export const DeliveryProfilePage = () => {
     toggleAvailability,
     refreshLocation,
     loadData,
+    refreshProfile,
     isUpdatingAvailability,
     isUpdatingLocation,
     user,
+    workspaceNotice,
   } = useDeliveryWorkspace();
   const [isAvailable, setIsAvailable] = useState(true);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -971,27 +1163,24 @@ export const DeliveryProfilePage = () => {
   });
 
   useEffect(() => {
-    if (!profile || isEditingProfile) {
+    if (isEditingProfile) {
       return;
     }
 
     setForm({
-      fullName: profile.user.fullName,
-      phone: profile.user.phone ?? "",
-      vehicleNumber: profile.vehicleNumber ?? "",
-      licenseNumber: profile.licenseNumber ?? "",
+      fullName: profile?.user.fullName ?? user?.fullName ?? "",
+      phone: profile?.user.phone ?? user?.phone ?? "",
+      vehicleNumber: profile?.vehicleNumber ?? "",
+      licenseNumber: profile?.licenseNumber ?? "",
     });
-  }, [isEditingProfile, profile]);
+  }, [isEditingProfile, profile, user]);
 
-  const handleProfileSubmit = async () => {
-    if (!profile) {
-      return;
-    }
-
+  const handleProfileSubmit = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
     setIsSavingProfile(true);
     try {
       const nextProfile = await updateDeliveryProfile({
-        fullName: form.fullName,
+        fullName: form.fullName.trim(),
         phone: form.phone.trim() || undefined,
         vehicleNumber: form.vehicleNumber.trim() || undefined,
         licenseNumber: form.licenseNumber.trim() || undefined,
@@ -1000,10 +1189,12 @@ export const DeliveryProfilePage = () => {
         setSession({ user: toDeliverySessionUser(nextProfile), accessToken });
       }
       setIsEditingProfile(false);
-      toast.success("Delivery profile updated successfully.");
+      toast.success("Delivery profile updated successfully.", { id: deliveryProfileUpdateToastId });
       await loadData({ quietly: true });
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to update your profile."));
+      toast.error(getApiErrorMessage(error, "Unable to update your profile."), {
+        id: deliveryProfileUpdateToastId,
+      });
     } finally {
       setIsSavingProfile(false);
     }
@@ -1023,7 +1214,7 @@ export const DeliveryProfilePage = () => {
             <Input label="Full name" defaultValue={user?.fullName ?? "Ravi Kumar"} />
             <Input label="Email" defaultValue={user?.email ?? "ravi.kumar@zomatoluxe.dev"} />
             <IndianPhoneInput label="Phone" defaultValue={user?.phone ?? "+91 98200 00201"} />
-            <Input label="Vehicle number" defaultValue="KA03EX1045" />
+            <VehicleNumberInput label="Vehicle number" defaultValue="KA03EX1045" />
           </SurfaceCard>
 
           <SurfaceCard className="space-y-4">
@@ -1078,7 +1269,7 @@ export const DeliveryProfilePage = () => {
             <Button type="button" variant="secondary" onClick={() => void refreshLocation()} disabled={isUpdatingLocation}>
               {isUpdatingLocation ? "Refreshing..." : "Refresh location"}
             </Button>
-            <RefreshButton onClick={() => void loadData()} />
+            <RefreshButton onClick={() => void refreshProfile()} />
             <Button
               type="button"
               variant="secondary"
@@ -1086,8 +1277,8 @@ export const DeliveryProfilePage = () => {
                 if (isEditingProfile) {
                   setIsEditingProfile(false);
                   setForm({
-                    fullName: profile?.user.fullName ?? "",
-                    phone: profile?.user.phone ?? "",
+                    fullName: profile?.user.fullName ?? user?.fullName ?? "",
+                    phone: profile?.user.phone ?? user?.phone ?? "",
                     vehicleNumber: profile?.vehicleNumber ?? "",
                     licenseNumber: profile?.licenseNumber ?? "",
                   });
@@ -1103,81 +1294,85 @@ export const DeliveryProfilePage = () => {
         }
       />
 
+      {workspaceNotice ? <DeliveryWorkspaceNotice message={workspaceNotice} /> : null}
+
       <div className="grid gap-6 xl:grid-cols-[1fr_360px]">
-        <SurfaceCard className="space-y-5">
-          <Input
-            label="Full name"
-            value={isEditingProfile ? form.fullName : profile?.user.fullName ?? ""}
-            onChange={(event) => setForm({ ...form, fullName: event.target.value })}
-            readOnly={!isEditingProfile}
-          />
-          <Input label="Email" value={profile?.user.email ?? ""} readOnly />
-          <IndianPhoneInput
-            label="Phone"
-            value={isEditingProfile ? form.phone : profile?.user.phone ?? ""}
-            onChange={(event) => setForm({ ...form, phone: event.target.value })}
-            readOnly={!isEditingProfile}
-          />
-          <Input
-            label="Vehicle number"
-            value={isEditingProfile ? form.vehicleNumber : profile?.vehicleNumber ?? ""}
-            onChange={(event) => setForm({ ...form, vehicleNumber: event.target.value })}
-            readOnly={!isEditingProfile}
-          />
-          <Input
-            label="License number"
-            value={isEditingProfile ? form.licenseNumber : profile?.licenseNumber ?? ""}
-            onChange={(event) => setForm({ ...form, licenseNumber: event.target.value })}
-            readOnly={!isEditingProfile}
-          />
-          {isEditingProfile ? (
-            <div className="flex flex-wrap justify-end gap-3">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => {
-                  setIsEditingProfile(false);
-                  setForm({
-                    fullName: profile?.user.fullName ?? "",
-                    phone: profile?.user.phone ?? "",
-                    vehicleNumber: profile?.vehicleNumber ?? "",
-                    licenseNumber: profile?.licenseNumber ?? "",
-                  });
-                }}
-                disabled={isSavingProfile}
-              >
-                Cancel
-              </Button>
-              <Button type="button" onClick={() => void handleProfileSubmit()} disabled={isSavingProfile}>
-                {isSavingProfile ? "Saving..." : "Save profile"}
-              </Button>
+        <SurfaceCard>
+          <form className="space-y-5" onSubmit={(event) => void handleProfileSubmit(event)}>
+            <Input
+              label="Full name"
+              value={isEditingProfile ? form.fullName : profile?.user.fullName ?? user?.fullName ?? ""}
+              onChange={(event) => setForm({ ...form, fullName: event.target.value })}
+              readOnly={!isEditingProfile}
+            />
+            <Input label="Email" value={profile?.user.email ?? user?.email ?? ""} readOnly />
+            <IndianPhoneInput
+              label="Phone"
+              value={isEditingProfile ? form.phone : profile?.user.phone ?? user?.phone ?? ""}
+              onChange={(event) => setForm({ ...form, phone: event.target.value })}
+              readOnly={!isEditingProfile}
+            />
+            <VehicleNumberInput
+              label="Vehicle number"
+              value={isEditingProfile ? form.vehicleNumber : profile?.vehicleNumber ?? ""}
+              onChange={(event) => setForm({ ...form, vehicleNumber: event.target.value })}
+              readOnly={!isEditingProfile}
+            />
+            <LicenseNumberInput
+              label="License number"
+              value={isEditingProfile ? form.licenseNumber : profile?.licenseNumber ?? ""}
+              onChange={(event) => setForm({ ...form, licenseNumber: event.target.value })}
+              readOnly={!isEditingProfile}
+            />
+            {isEditingProfile ? (
+              <div className="flex flex-wrap justify-end gap-3">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    setIsEditingProfile(false);
+                    setForm({
+                      fullName: profile?.user.fullName ?? user?.fullName ?? "",
+                      phone: profile?.user.phone ?? user?.phone ?? "",
+                      vehicleNumber: profile?.vehicleNumber ?? "",
+                      licenseNumber: profile?.licenseNumber ?? "",
+                    });
+                  }}
+                  disabled={isSavingProfile}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={isSavingProfile}>
+                  {isSavingProfile ? "Saving..." : "Save profile"}
+                </Button>
+              </div>
+            ) : null}
+            <div className="rounded-[1.5rem] bg-cream px-5 py-4 text-sm text-ink-soft">
+              Current location:{" "}
+              <span className="font-semibold text-ink">
+                {profile?.currentLatitude != null && profile.currentLongitude != null
+                  ? `${profile.currentLatitude.toFixed(4)}, ${profile.currentLongitude.toFixed(4)}`
+                  : "Not shared yet"}
+              </span>
             </div>
-          ) : null}
-          <div className="rounded-[1.5rem] bg-cream px-5 py-4 text-sm text-ink-soft">
-            Current location:{" "}
-            <span className="font-semibold text-ink">
-              {profile?.currentLatitude != null && profile.currentLongitude != null
-                ? `${profile.currentLatitude.toFixed(4)}, ${profile.currentLongitude.toFixed(4)}`
-                : "Not shared yet"}
-            </span>
-          </div>
-          <RouteMap
-            markers={
-              profile?.currentLatitude != null && profile.currentLongitude != null
-                ? [
-                    {
-                      id: "rider-location",
-                      label: profile.user.fullName,
-                      description: "Current rider location",
-                      latitude: profile.currentLatitude,
-                      longitude: profile.currentLongitude,
-                      color: "#8b1e24",
-                    },
-                  ]
-                : []
-            }
-            emptyMessage="Refresh location to pin your live rider position on the map."
-          />
+            <RouteMap
+              markers={
+                profile?.currentLatitude != null && profile.currentLongitude != null
+                  ? [
+                      {
+                        id: "rider-location",
+                        label: profile.user.fullName,
+                        description: "Current rider location",
+                        latitude: profile.currentLatitude,
+                        longitude: profile.currentLongitude,
+                        color: "#8b1e24",
+                      },
+                    ]
+                  : []
+              }
+              emptyMessage="Refresh location to pin your live rider position on the map."
+            />
+          </form>
         </SurfaceCard>
 
         <SurfaceCard className="space-y-4">
@@ -1217,7 +1412,7 @@ export const DeliveryProfilePage = () => {
           <div className="flex items-center gap-3 rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4">
             <LocateFixed className="h-5 w-5 text-accent" />
             <p className="text-sm leading-7 text-ink-soft">
-              Last location update: {profile?.lastLocationUpdatedAt ? formatDateTime(profile.lastLocationUpdatedAt) : "Not updated yet"}.
+              Last location update: {getLocationUpdatedAt(profile) ? formatDateTime(getLocationUpdatedAt(profile)) : "Not updated yet"}.
             </p>
           </div>
           <div className="flex items-center gap-3 rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4">

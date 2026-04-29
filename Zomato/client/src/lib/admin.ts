@@ -626,6 +626,7 @@ export const createUser = async (payload: {
   password: string;
   role: UserRole;
   managedRegionIds?: number[];
+  assignedRegionIds?: number[];
   profileImage?: string;
   walletBalance?: number;
   isActive?: boolean;
@@ -642,6 +643,7 @@ export const updateUser = async (
     password: string;
     role: UserRole;
     managedRegionIds: number[];
+    assignedRegionIds: number[];
     profileImage?: string;
     walletBalance?: number;
     isActive: boolean;

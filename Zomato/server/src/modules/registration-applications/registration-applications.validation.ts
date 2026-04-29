@@ -10,6 +10,7 @@ import {
   RegistrationApplicationStatus,
 } from "./registration-applications.constants.js";
 import { optionalIndianPhoneSchema, requiredIndianPhoneSchema } from "../../utils/phone.js";
+import { requiredLicenseNumberSchema, requiredVehicleNumberSchema } from "../../utils/vehicle.js";
 
 const phoneSchema = requiredIndianPhoneSchema();
 const optionalPhoneSchema = optionalIndianPhoneSchema();
@@ -149,8 +150,8 @@ export const submitDeliveryPartnerApplicationSchema = {
     applicationBodyBaseSchema.extend({
       addressLine: z.string().trim().min(8).max(300),
       vehicleType: z.enum(["BIKE", "CYCLE", "SCOOTER", "CAR"]),
-      vehicleNumber: z.string().trim().min(4).max(40),
-      drivingLicenseNumber: z.string().trim().min(6).max(80),
+      vehicleNumber: requiredVehicleNumberSchema(),
+      drivingLicenseNumber: requiredLicenseNumberSchema(),
     }),
   ),
 };

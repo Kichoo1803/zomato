@@ -66,6 +66,7 @@ const adminUserBodyBaseSchema = z.object({
   password: passwordSchema.optional(),
   role: z.nativeEnum(Role),
   managedRegionIds: z.array(z.coerce.number().int().positive()).optional(),
+  assignedRegionIds: z.array(z.coerce.number().int().positive()).optional(),
   opsState: optionalRegionString,
   opsDistrict: optionalRegionString,
   opsNotes: z.string().trim().max(1000).optional(),
@@ -78,6 +79,8 @@ const adminUserBodyBaseSchema = z.object({
 
 const withAdminUserBodyValidation = <T extends z.ZodTypeAny>(schema: T) =>
   schema.superRefine((values, context) => {
+    const requestedRegionIds = values.assignedRegionIds ?? values.managedRegionIds;
+
     if (values.opsDistrict && !values.opsState) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -86,14 +89,38 @@ const withAdminUserBodyValidation = <T extends z.ZodTypeAny>(schema: T) =>
       });
     }
 
-    if (values.managedRegionIds) {
-      const uniqueIds = new Set(values.managedRegionIds);
+    if (values.assignedRegionIds && values.managedRegionIds) {
+      const normalizedAssignedIds = [...new Set(values.assignedRegionIds)];
+      const normalizedManagedIds = [...new Set(values.managedRegionIds)];
+      const areAssignmentsEquivalent =
+        normalizedAssignedIds.length === normalizedManagedIds.length &&
+        normalizedAssignedIds.every((value) => normalizedManagedIds.includes(value));
 
-      if (uniqueIds.size !== values.managedRegionIds.length) {
+      if (!areAssignmentsEquivalent) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ["managedRegionIds"],
+          path: ["assignedRegionIds"],
+          message: "Use matching region assignments when both assignment fields are provided.",
+        });
+      }
+    }
+
+    if (requestedRegionIds) {
+      const uniqueIds = new Set(requestedRegionIds);
+
+      if (uniqueIds.size !== requestedRegionIds.length) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: values.assignedRegionIds ? ["assignedRegionIds"] : ["managedRegionIds"],
           message: "Assigned regions must be unique.",
+        });
+      }
+
+      if (uniqueIds.size > 1) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: values.assignedRegionIds ? ["assignedRegionIds"] : ["managedRegionIds"],
+          message: "Regional managers can only be assigned to one region at a time.",
         });
       }
     }

@@ -48,6 +48,7 @@ type AdminUserInput = {
   password?: string;
   role: Role;
   managedRegionIds?: number[];
+  assignedRegionIds?: number[];
   opsState?: string;
   opsDistrict?: string;
   opsNotes?: string;
@@ -57,6 +58,14 @@ type AdminUserInput = {
   emailVerified?: boolean;
   phoneVerified?: boolean;
 };
+
+const getRegionAssignmentIds = (input: {
+  managedRegionIds?: number[];
+  assignedRegionIds?: number[];
+}) => input.assignedRegionIds ?? input.managedRegionIds;
+
+const getUniqueManagedRegionIds = (managedRegionIds?: number[]) =>
+  managedRegionIds !== undefined ? [...new Set(managedRegionIds)] : undefined;
 
 const paidMembershipTiers = new Set(["GOLD", "PLATINUM"]);
 const membershipTierRanks = {
@@ -156,6 +165,14 @@ const assertRegionalManagerAssignmentInput = (input: {
     );
   }
 
+  if (input.managedRegionIds.length > 1) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Regional managers can only be assigned to one region at a time",
+      "REGIONAL_MANAGER_SINGLE_REGION_ONLY",
+    );
+  }
+
   if (!input.isActive && input.managedRegionIds.length) {
     throw new AppError(
       StatusCodes.BAD_REQUEST,
@@ -203,6 +220,7 @@ export const usersService = {
 
   async create(input: AdminUserInput & { password: string }) {
     const normalizedPhone = normalizeIndianPhoneNumber(input.phone);
+    const managedRegionIds = getUniqueManagedRegionIds(getRegionAssignmentIds(input));
 
     await ensureAdminUserUniqueness({
       email: input.email,
@@ -212,7 +230,7 @@ export const usersService = {
     assertRegionalManagerAssignmentInput({
       role: input.role,
       isActive: input.isActive ?? true,
-      managedRegionIds: input.managedRegionIds,
+      managedRegionIds,
     });
 
     const passwordHash = await bcrypt.hash(input.password, 12);
@@ -244,8 +262,8 @@ export const usersService = {
         },
       });
 
-      if (input.role === Role.REGIONAL_MANAGER && input.managedRegionIds !== undefined) {
-        await replaceRegionalManagerAssignments(tx, user.id, input.managedRegionIds);
+      if (input.role === Role.REGIONAL_MANAGER && managedRegionIds !== undefined) {
+        await replaceRegionalManagerAssignments(tx, user.id, managedRegionIds);
       }
 
       return tx.user.findUniqueOrThrow({
@@ -269,6 +287,7 @@ export const usersService = {
 
     const normalizedPhone =
       input.phone !== undefined ? normalizeIndianPhoneNumber(input.phone) : undefined;
+    const managedRegionIds = getUniqueManagedRegionIds(getRegionAssignmentIds(input));
 
     await ensureAdminUserUniqueness({
       email: input.email,
@@ -282,7 +301,7 @@ export const usersService = {
     assertRegionalManagerAssignmentInput({
       role: nextRole,
       isActive: nextIsActive,
-      managedRegionIds: input.managedRegionIds,
+      managedRegionIds,
     });
 
     const nextState = input.opsState !== undefined ? input.opsState : undefined;
@@ -300,7 +319,7 @@ export const usersService = {
     const shouldInitializeRegionalManagerScope =
       nextRole === Role.REGIONAL_MANAGER &&
       existingUser.role !== Role.REGIONAL_MANAGER &&
-      input.managedRegionIds === undefined;
+      managedRegionIds === undefined;
 
     return prisma.$transaction(async (tx) => {
       if (shouldClearManagedRegions) {
@@ -339,8 +358,8 @@ export const usersService = {
       }
 
       if (nextRole === Role.REGIONAL_MANAGER) {
-        if (input.managedRegionIds !== undefined) {
-          await replaceRegionalManagerAssignments(tx, userId, input.managedRegionIds);
+        if (managedRegionIds !== undefined) {
+          await replaceRegionalManagerAssignments(tx, userId, managedRegionIds);
         } else if (shouldInitializeRegionalManagerScope) {
           await clearRegionalManagerAssignments(tx, userId);
         }

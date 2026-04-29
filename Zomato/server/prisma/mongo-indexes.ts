@@ -75,6 +75,18 @@ const managedIndexes: IndexSpec[] = [
     key: { manager_user_id: 1 },
     dropNames: ["regions_manager_user_id_key", "regions_manager_user_id_idx"],
   },
+  {
+    collection: "delivery_partners",
+    name: "delivery_partners_user_id_key",
+    key: { user_id: 1 },
+    unique: true,
+    dropNames: [
+      "delivery_partners_user_id_key",
+      "delivery_partners_user_id_idx",
+      "delivery_partners_user_id_unique",
+      "delivery_partners_user_id_1",
+    ],
+  },
 ];
 
 const isIgnorableDropError = (error: unknown) =>

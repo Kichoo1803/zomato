@@ -49,6 +49,11 @@ export type DeliveryProfile = {
   }>;
 };
 
+export type DeliveryProfileLoadResult = {
+  profile: DeliveryProfile;
+  wasAutoCreated: boolean;
+};
+
 export type DeliveryOrder = {
   id: number;
   userId: number;
@@ -163,7 +168,9 @@ export const toDeliverySessionUser = (profile: DeliveryProfile): AuthUser =>
   });
 
 export const getDeliveryProfile = async () =>
-  unwrapData(await apiClient.get<ApiEnvelope<{ profile: DeliveryProfile }>>("/delivery-partners/me")).profile;
+  unwrapData(
+    await apiClient.get<ApiEnvelope<DeliveryProfileLoadResult>>("/delivery-partners/me"),
+  );
 
 export const updateDeliveryProfile = async (payload: {
   fullName?: string;

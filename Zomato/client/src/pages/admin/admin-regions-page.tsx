@@ -11,8 +11,10 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   createRegionAdmin,
   getRegionsAdmin,
+  getUsers,
   updateRegionAdmin,
   type AdminRegion,
+  type AdminUser,
 } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
 import {
@@ -42,6 +44,7 @@ type RegionFormState = {
   primaryPincode: string;
   additionalPincodes: string;
   isActive: boolean;
+  managerUserId: string;
 };
 
 type RegionFormErrors = Partial<Record<keyof RegionFormState, string>>;
@@ -56,6 +59,7 @@ const emptyForm: RegionFormState = {
   primaryPincode: "",
   additionalPincodes: "",
   isActive: true,
+  managerUserId: "",
 };
 
 const parsePincodeList = (value: string) =>
@@ -64,9 +68,19 @@ const parsePincodeList = (value: string) =>
 const formatAdditionalPincodes = (values: string[]) => values.join(", ");
 
 const normalizePincodeInput = (value: string) => value.replace(/\D/g, "").slice(0, 6);
+const getRegionalManagerOptionLabel = (manager: AdminUser) => {
+  const assignedRegionLabel = [manager.opsDistrict, manager.opsState].filter(Boolean).join(", ");
+
+  if (!assignedRegionLabel) {
+    return manager.fullName;
+  }
+
+  return `${manager.fullName} (${assignedRegionLabel})`;
+};
 
 export const AdminRegionsPage = () => {
   const [regions, setRegions] = useState<AdminRegion[]>([]);
+  const [regionalManagers, setRegionalManagers] = useState<AdminUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [search, setSearch] = useState("");
@@ -101,6 +115,11 @@ export const AdminRegionsPage = () => {
     [displayRegionOptions, form.stateName],
   );
   const validDistrictOptions = useMemo(() => getDistrictOptions(form.stateName), [form.stateName]);
+  const regionalManagerOptions = useMemo(
+    () =>
+      [...regionalManagers].sort((left, right) => left.fullName.localeCompare(right.fullName, "en-IN")),
+    [regionalManagers],
+  );
 
   const loadRegions = async () => {
     setIsLoading(true);
@@ -123,9 +142,21 @@ export const AdminRegionsPage = () => {
     }
   };
 
+  const loadRegionalManagers = async () => {
+    try {
+      setRegionalManagers(await getUsers({ role: "REGIONAL_MANAGER" }));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to load regional managers."));
+    }
+  };
+
   useEffect(() => {
     void loadRegions();
   }, [search, statusFilter, assignmentFilter]);
+
+  useEffect(() => {
+    void loadRegionalManagers();
+  }, []);
 
   const openCreateModal = () => {
     setEditingRegion(null);
@@ -146,6 +177,7 @@ export const AdminRegionsPage = () => {
       primaryPincode: region.primaryPincode ?? "",
       additionalPincodes: formatAdditionalPincodes(region.additionalPincodes),
       isActive: region.isActive,
+      managerUserId: region.managerUserId ? String(region.managerUserId) : "",
     });
     setFormErrors({});
     setIsModalOpen(true);
@@ -256,6 +288,7 @@ export const AdminRegionsPage = () => {
       primaryPincode: form.primaryPincode.trim() || undefined,
       additionalPincodes: additionalPincodeList,
       isActive: form.isActive,
+      managerUserId: form.managerUserId ? Number(form.managerUserId) : null,
     };
 
     try {
@@ -268,7 +301,7 @@ export const AdminRegionsPage = () => {
       }
 
       setIsModalOpen(false);
-      await loadRegions();
+      await Promise.all([loadRegions(), loadRegionalManagers()]);
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to save this region."));
     } finally {
@@ -281,10 +314,10 @@ export const AdminRegionsPage = () => {
       <SectionHeading
         eyebrow="Regions"
         title="District-level region ownership for the operations network."
-        description="Create and maintain district regions, review coverage, and keep assignment edits centralized in the dedicated Regional Managers admin workflow."
+        description="Create and maintain district regions, review coverage, and directly assign regional managers when an admin needs to adjust ownership quickly."
         action={
           <div className="flex gap-3">
-            <RefreshButton onClick={() => void loadRegions()} />
+            <RefreshButton onClick={() => void Promise.all([loadRegions(), loadRegionalManagers()])} />
             <AddButton label="Add region" onClick={openCreateModal} />
           </div>
         }
@@ -389,7 +422,7 @@ export const AdminRegionsPage = () => {
                     <div>
                       <p className="font-semibold text-ink">{region.manager.fullName}</p>
                       <p className="text-xs text-ink-muted">{region.manager.email}</p>
-                      <p className="text-xs text-ink-muted">Managed from Regional Managers</p>
+                      <p className="text-xs text-ink-muted">Assigned to this district</p>
                     </div>
                   ) : (
                     <span className="text-sm text-ink-muted">No manager assigned yet</span>
@@ -500,6 +533,23 @@ export const AdminRegionsPage = () => {
               error={formErrors.slug}
               placeholder="optional-custom-slug"
             />
+            <Select
+              label="Regional manager"
+              value={form.managerUserId}
+              onChange={(event) => handleFieldChange("managerUserId", event.target.value)}
+            >
+              <option value="">No manager assigned</option>
+              {regionalManagerOptions.map((manager) => (
+                <option
+                  key={manager.id}
+                  value={String(manager.id)}
+                  disabled={!manager.isActive && form.managerUserId !== String(manager.id)}
+                >
+                  {getRegionalManagerOptionLabel(manager)}
+                  {!manager.isActive ? " (Inactive)" : ""}
+                </option>
+              ))}
+            </Select>
           </div>
           <Textarea
             label="Additional PIN codes"

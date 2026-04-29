@@ -5,17 +5,27 @@ import { Link } from "react-router-dom";
 import { ShieldCheck, Store, Truck } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
+import { Input } from "@/components/ui/input";
+import { LicenseNumberInput } from "@/components/ui/license-number-input";
 import { PageShell, SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { VehicleNumberInput } from "@/components/ui/vehicle-number-input";
 import { getApiErrorMessage } from "@/lib/auth";
 import { getDistrictOptions, getIndianStateOptions } from "@/lib/india-regions";
 import {
   areIndianPhoneInputsEqual,
   isValidIndianPhoneInput,
 } from "@/lib/phone";
+import {
+  INDIAN_LICENSE_NUMBER_ERROR_MESSAGE,
+  INDIAN_VEHICLE_NUMBER_ERROR_MESSAGE,
+  getLicenseNumberInputValue,
+  getVehicleNumberInputValue,
+  isValidIndianLicenseNumber,
+  isValidIndianVehicleNumber,
+} from "@/lib/vehicle";
 import {
   type RegistrationApplicationAsset,
   submitDeliveryPartnerApplication,
@@ -95,8 +105,6 @@ const appendFiles = (formData: FormData, key: string, files?: FileList | null) =
     formData.append(key, file);
   });
 };
-
-const normalizeAlphaNumericInput = (value: string) => value.replace(/[^a-zA-Z0-9]/g, "");
 
 const normalizePincodeInput = (value: string) => value.replace(/\D/g, "").slice(0, 6);
 
@@ -1005,8 +1013,8 @@ const DeliveryOnboardingForm = () => {
     formData.append("district", values.district);
     formData.append("pincode", values.pincode.trim());
     formData.append("vehicleType", values.vehicleType);
-    formData.append("vehicleNumber", values.vehicleNumber.trim());
-    formData.append("drivingLicenseNumber", values.drivingLicenseNumber.trim());
+    formData.append("vehicleNumber", getVehicleNumberInputValue(values.vehicleNumber));
+    formData.append("drivingLicenseNumber", getLicenseNumberInputValue(values.drivingLicenseNumber));
     formData.append("idProofType", values.idProofType);
     formData.append("idProofNumber", values.idProofNumber.trim());
     formData.append("termsAccepted", "true");
@@ -1220,22 +1228,24 @@ const DeliveryOnboardingForm = () => {
                     </option>
                   ))}
                 </Select>
-                <Input
+                <VehicleNumberInput
                   label="Vehicle number"
                   placeholder="KA01AB1234"
                   error={form.formState.errors.vehicleNumber?.message}
                   {...form.register("vehicleNumber", {
                     required: "Enter the vehicle number.",
-                    minLength: { value: 4, message: "Vehicle number looks too short." },
+                    validate: (value) =>
+                      isValidIndianVehicleNumber(value) || INDIAN_VEHICLE_NUMBER_ERROR_MESSAGE,
                   })}
                 />
-                <Input
+                <LicenseNumberInput
                   label="Driving license number"
-                  placeholder="DL-0420110149646"
+                  placeholder="TN0120110012345"
                   error={form.formState.errors.drivingLicenseNumber?.message}
                   {...form.register("drivingLicenseNumber", {
                     required: "Enter the driving license number.",
-                    minLength: { value: 6, message: "Driving license number looks too short." },
+                    validate: (value) =>
+                      isValidIndianLicenseNumber(value) || INDIAN_LICENSE_NUMBER_ERROR_MESSAGE,
                   })}
                 />
                 <Select

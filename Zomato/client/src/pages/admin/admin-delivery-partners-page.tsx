@@ -10,11 +10,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
+import { LicenseNumberInput } from "@/components/ui/license-number-input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
+import { VehicleNumberInput } from "@/components/ui/vehicle-number-input";
 import {
   createDeliveryPartner,
   disableDeliveryPartner,
@@ -248,8 +250,8 @@ export const AdminDeliveryPartnersPage = () => {
             <Select label="Vehicle type" value={form.vehicleType} onChange={(event) => setForm({ ...form, vehicleType: event.target.value })}>
               {VEHICLE_OPTIONS.map((vehicle) => <option key={vehicle} value={vehicle}>{toLabel(vehicle)}</option>)}
             </Select>
-            <Input label="Vehicle number" value={form.vehicleNumber} onChange={(event) => setForm({ ...form, vehicleNumber: event.target.value })} />
-            <Input label="License number" value={form.licenseNumber} onChange={(event) => setForm({ ...form, licenseNumber: event.target.value })} />
+            <VehicleNumberInput label="Vehicle number" value={form.vehicleNumber} onChange={(event) => setForm({ ...form, vehicleNumber: event.target.value })} />
+            <LicenseNumberInput label="License number" value={form.licenseNumber} onChange={(event) => setForm({ ...form, licenseNumber: event.target.value })} />
             <Select label="Availability" value={form.availabilityStatus} onChange={(event) => setForm({ ...form, availabilityStatus: event.target.value })}>
               <option value="ONLINE">Online</option>
               <option value="OFFLINE">Offline</option>

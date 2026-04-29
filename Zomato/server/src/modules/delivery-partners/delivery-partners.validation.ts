@@ -1,5 +1,6 @@
 import { DeliveryAvailabilityStatus } from "../../constants/enums.js";
 import { optionalIndianPhoneSchema } from "../../utils/phone.js";
+import { optionalLicenseNumberSchema, optionalVehicleNumberSchema } from "../../utils/vehicle.js";
 import { z } from "zod";
 
 export const listDeliveryPartnersQuerySchema = {
@@ -33,8 +34,8 @@ const adminDeliveryPartnerBodySchema = z.object({
     .optional(),
   profileImage: z.string().trim().url().optional(),
   vehicleType: z.enum(["BIKE", "CYCLE", "SCOOTER", "CAR"]),
-  vehicleNumber: z.string().trim().max(50).optional(),
-  licenseNumber: z.string().trim().max(120).optional(),
+  vehicleNumber: optionalVehicleNumberSchema(),
+  licenseNumber: optionalLicenseNumberSchema(),
   availabilityStatus: z
     .enum([
       DeliveryAvailabilityStatus.ONLINE,
@@ -100,7 +101,7 @@ export const updateMyDeliveryProfileSchema = {
   body: z.object({
     fullName: z.string().trim().min(2).max(120).optional(),
     phone: optionalIndianPhoneSchema(),
-    vehicleNumber: z.string().trim().max(50).optional(),
-    licenseNumber: z.string().trim().max(120).optional(),
+    vehicleNumber: optionalVehicleNumberSchema(),
+    licenseNumber: optionalLicenseNumberSchema(),
   }),
 };

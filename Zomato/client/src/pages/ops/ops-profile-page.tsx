@@ -16,6 +16,8 @@ import {
 import { getApiErrorMessage } from "@/lib/auth";
 import { RefreshButton, getToneForStatus, toLabel } from "@/pages/admin/admin-shared";
 
+const operationsProfileUpdateToastId = "operations-profile-update";
+
 export const OpsProfilePage = () => {
   const { accessToken, setSession } = useAuth();
   const [profile, setProfile] = useState<OperationsProfile | null>(null);
@@ -63,9 +65,11 @@ export const OpsProfilePage = () => {
       if (accessToken) {
         setSession({ user: toOperationsSessionUser(user), accessToken });
       }
-      toast.success("Operations profile updated successfully.");
+      toast.success("Operations profile updated successfully.", { id: operationsProfileUpdateToastId });
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to update your profile."));
+      toast.error(getApiErrorMessage(error, "Unable to update your profile."), {
+        id: operationsProfileUpdateToastId,
+      });
     } finally {
       setIsSaving(false);
     }

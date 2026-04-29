@@ -12,6 +12,8 @@ import { getApiErrorMessage, logoutFromServer } from "@/lib/auth";
 import { getOwnerProfile, toSessionUser, updateOwnerProfile, type OwnerProfile } from "@/lib/owner";
 import { RefreshButton, getToneForStatus, toLabel } from "@/pages/admin/admin-shared";
 
+const ownerProfileUpdateToastId = "owner-profile-update";
+
 export const OwnerProfilePage = () => {
   const navigate = useNavigate();
   const { accessToken, clearSession, setSession } = useAuth();
@@ -56,9 +58,11 @@ export const OwnerProfilePage = () => {
       if (accessToken) {
         setSession({ user: toSessionUser(user), accessToken });
       }
-      toast.success("Owner profile updated successfully.");
+      toast.success("Owner profile updated successfully.", { id: ownerProfileUpdateToastId });
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to update your profile."));
+      toast.error(getApiErrorMessage(error, "Unable to update your profile."), {
+        id: ownerProfileUpdateToastId,
+      });
     } finally {
       setIsSaving(false);
     }

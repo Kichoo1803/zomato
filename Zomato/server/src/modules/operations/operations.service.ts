@@ -73,6 +73,13 @@ const getOperationsScope = async (actor: OperationsActor): Promise<OperationsSco
       regionId: true,
       opsState: true,
       opsDistrict: true,
+      region: {
+        select: {
+          id: true,
+          stateName: true,
+          districtName: true,
+        },
+      },
     },
   });
 
@@ -80,52 +87,17 @@ const getOperationsScope = async (actor: OperationsActor): Promise<OperationsSco
     throw new AppError(StatusCodes.FORBIDDEN, "Access denied", "ACCESS_DENIED");
   }
 
-  const managedRegions = await prisma.region.findMany({
-    where: {
-      managerUserId: actor.id,
-    },
-    select: {
-      id: true,
-      stateName: true,
-      districtName: true,
-    },
-    orderBy: [{ stateName: "asc" }, { districtName: "asc" }, { id: "asc" }],
-  });
-
-  const fallbackState = normalizeRegionValue(user.opsState);
-  const fallbackDistrict = normalizeRegionValue(user.opsDistrict);
-  const scopedRegions: ScopedRegion[] = [
-    ...managedRegions
-      .map((region): ScopedRegion | null => {
-        const state = normalizeRegionValue(region.stateName);
-        const district = normalizeRegionValue(region.districtName);
-
-        if (!state || !district) {
-          return null;
-        }
-
-        return {
-          regionId: region.id,
-          state,
-          district,
-          regionName: `${district}, ${state}`,
-        };
-      })
-      .filter((region): region is ScopedRegion => region !== null),
-    ...(managedRegions.length || !fallbackState || !fallbackDistrict
-      ? []
-      : [
-          {
-            regionId: user.regionId ?? null,
-            state: fallbackState,
-            district: fallbackDistrict,
-            regionName: `${fallbackDistrict}, ${fallbackState}`,
-          },
-        ]),
-  ].filter((region): region is ScopedRegion => Boolean(region));
-
-  const dedupedRegions = [...new Map(scopedRegions.map((region) => [`${region.state}::${region.district}`, region])).values()];
-  const [primaryRegion] = dedupedRegions;
+  const assignedState = normalizeRegionValue(user.region?.stateName ?? user.opsState);
+  const assignedDistrict = normalizeRegionValue(user.region?.districtName ?? user.opsDistrict);
+  const primaryRegion =
+    assignedState && assignedDistrict
+      ? ({
+          regionId: user.region?.id ?? user.regionId ?? null,
+          state: assignedState,
+          district: assignedDistrict,
+          regionName: `${assignedDistrict}, ${assignedState}`,
+        } satisfies ScopedRegion)
+      : null;
 
   if (!primaryRegion) {
     throw new AppError(
@@ -137,7 +109,7 @@ const getOperationsScope = async (actor: OperationsActor): Promise<OperationsSco
 
   return {
     isRestricted: true,
-    regions: dedupedRegions,
+    regions: [primaryRegion],
     state: primaryRegion.state,
     district: primaryRegion.district,
     regionId: primaryRegion.regionId ?? null,

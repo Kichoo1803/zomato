@@ -8,6 +8,7 @@ import { env } from "../../config/env.js";
 import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
 import { sendMail } from "../../lib/mailer.js";
+import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
 import { AppError } from "../../utils/app-error.js";
 import { durationToMs } from "../../utils/cookies.js";
 import { hashValue } from "../../utils/hash.js";
@@ -341,6 +342,10 @@ export const authService = {
         }),
       );
 
+      if (normalizedUser.role === Role.DELIVERY_PARTNER) {
+        await ensureDeliveryPartnerProfileByUserId(normalizedUser.id);
+      }
+
       const session = await createSession(normalizedUser, meta, debugContext);
       logger.info("Login session created", getAuthDebugLogContext(debugContext, { userId: normalizedUser.id }));
 
@@ -412,6 +417,10 @@ export const authService = {
     ensureLoginEligibleUser(storedToken.user);
 
     const normalizedUser = normalizePublicUser(storedToken.user);
+
+    if (normalizedUser.role === Role.DELIVERY_PARTNER) {
+      await ensureDeliveryPartnerProfileByUserId(normalizedUser.id);
+    }
 
     await prisma.refreshToken.update({
       where: { id: storedToken.id },

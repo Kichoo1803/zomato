@@ -233,6 +233,18 @@ const assertAssignableRegionIds = async (client: RegionWriteClient, regionIds: n
   return uniqueRegionIds;
 };
 
+const assertSingleRegionalManagerAssignment = (regionIds: number[]) => {
+  if (regionIds.length > 1) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Regional managers can only be assigned to one region at a time",
+      "REGIONAL_MANAGER_SINGLE_REGION_ONLY",
+    );
+  }
+
+  return regionIds;
+};
+
 export const clearRegionalManagerAssignments = async (
   client: RegionWriteClient,
   managerUserId: number,
@@ -255,35 +267,34 @@ export const replaceRegionalManagerAssignments = async (
   regionIds: number[],
 ) => {
   await validateManagerCandidate(client, managerUserId);
-  const nextRegionIds = await assertAssignableRegionIds(client, regionIds);
-  const targetRegions = nextRegionIds.length
-    ? await client.region.findMany({
+  const nextRegionIds = assertSingleRegionalManagerAssignment(
+    await assertAssignableRegionIds(client, regionIds),
+  );
+  const [nextRegionId] = nextRegionIds;
+  const targetRegion = nextRegionId
+    ? await client.region.findUnique({
         where: {
-          id: {
-            in: nextRegionIds,
-          },
+          id: nextRegionId,
         },
         select: {
           id: true,
           managerUserId: true,
         },
       })
-    : [];
+    : null;
 
   const affectedManagerIds = new Set<number>([managerUserId]);
-  targetRegions.forEach((region) => {
-    if (region.managerUserId && region.managerUserId !== managerUserId) {
-      affectedManagerIds.add(region.managerUserId);
-    }
-  });
+  if (targetRegion?.managerUserId && targetRegion.managerUserId !== managerUserId) {
+    affectedManagerIds.add(targetRegion.managerUserId);
+  }
 
   await client.region.updateMany({
     where: {
       managerUserId,
-      ...(nextRegionIds.length
+      ...(nextRegionId
         ? {
             id: {
-              notIn: nextRegionIds,
+              not: nextRegionId,
             },
           }
         : {}),
@@ -293,12 +304,10 @@ export const replaceRegionalManagerAssignments = async (
     },
   });
 
-  if (nextRegionIds.length) {
-    await client.region.updateMany({
+  if (nextRegionId) {
+    await client.region.update({
       where: {
-        id: {
-          in: nextRegionIds,
-        },
+        id: nextRegionId,
       },
       data: {
         managerUserId,
@@ -312,12 +321,25 @@ export const replaceRegionalManagerAssignments = async (
 const syncRegionManagerAssignment = async (
   client: RegionWriteClient,
   input: {
+    regionId: number;
     nextManagerUserId: number | null;
     previousManagerUserId: number | null;
   },
 ) => {
   if (input.nextManagerUserId) {
     await validateManagerCandidate(client, input.nextManagerUserId);
+
+    await client.region.updateMany({
+      where: {
+        managerUserId: input.nextManagerUserId,
+        id: {
+          not: input.regionId,
+        },
+      },
+      data: {
+        managerUserId: null,
+      },
+    });
   }
 
   const affectedManagerIds = new Set<number>();
@@ -624,6 +646,7 @@ export const regionsAdminService = {
       });
 
       await syncRegionManagerAssignment(tx, {
+        regionId: createdRegion.id,
         nextManagerUserId,
         previousManagerUserId: null,
       });
@@ -762,6 +785,7 @@ export const regionsAdminService = {
 
       if (managerChanged || stateChanged || districtChanged) {
         await syncRegionManagerAssignment(tx, {
+          regionId,
           nextManagerUserId: nextManagerUserId ?? null,
           previousManagerUserId: existingRegion.managerUserId ?? null,
         });

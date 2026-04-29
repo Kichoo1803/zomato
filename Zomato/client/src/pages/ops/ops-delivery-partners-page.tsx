@@ -9,11 +9,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
+import { LicenseNumberInput } from "@/components/ui/license-number-input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { SectionHeading, StatusPill } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { VehicleNumberInput } from "@/components/ui/vehicle-number-input";
 import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
 import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
@@ -410,12 +412,12 @@ export const OpsDeliveryPartnersPage = () => {
                 </option>
               ))}
             </Select>
-            <Input
+            <VehicleNumberInput
               label="Vehicle number"
               value={createForm.vehicleNumber}
               onChange={(event) => setCreateForm({ ...createForm, vehicleNumber: event.target.value })}
             />
-            <Input
+            <LicenseNumberInput
               label="License number"
               value={createForm.licenseNumber}
               onChange={(event) => setCreateForm({ ...createForm, licenseNumber: event.target.value })}

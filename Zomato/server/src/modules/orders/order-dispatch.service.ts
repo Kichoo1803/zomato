@@ -15,6 +15,7 @@ import {
 } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
 import { hasCoordinates, haversineDistanceKm } from "../../utils/geo.js";
+import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
 
 const deliveryOfferOrderInclude = {
   user: {
@@ -793,17 +794,7 @@ const mapOfferRowsToOrders = (
   }));
 
 const declineOffer = async (userId: number, orderId: number) => {
-  const partner = await prisma.deliveryPartner.findUnique({
-    where: { userId },
-    select: {
-      id: true,
-      userId: true,
-    },
-  });
-
-  if (!partner) {
-    throw new AppError(404, "Delivery profile not found", "DELIVERY_PROFILE_NOT_FOUND");
-  }
+  const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
 
   const offer = await prisma.deliveryAssignmentOffer.findFirst({
     where: {
@@ -850,17 +841,7 @@ const declineOffer = async (userId: number, orderId: number) => {
 };
 
 const releaseAssignedOrder = async (userId: number, orderId: number, note?: string) => {
-  const partner = await prisma.deliveryPartner.findUnique({
-    where: { userId },
-    select: {
-      id: true,
-      userId: true,
-    },
-  });
-
-  if (!partner) {
-    throw new AppError(404, "Delivery profile not found", "DELIVERY_PROFILE_NOT_FOUND");
-  }
+  const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
 
   const order = await prisma.order.findFirst({
     where: {
@@ -1182,17 +1163,7 @@ export const orderDispatchService = {
       });
     }
 
-    const partner = await prisma.deliveryPartner.findUnique({
-      where: { userId: user.id },
-      select: {
-        id: true,
-        availabilityStatus: true,
-      },
-    });
-
-    if (!partner) {
-      throw new AppError(404, "Delivery profile not found", "DELIVERY_PROFILE_NOT_FOUND");
-    }
+    const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(user.id);
 
     if (partner.availabilityStatus !== DeliveryAvailabilityStatus.ONLINE) {
       return [];

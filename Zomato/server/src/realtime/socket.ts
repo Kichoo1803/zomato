@@ -4,6 +4,7 @@ import { Server, type Socket } from "socket.io";
 import { validateCorsOrigin } from "../config/cors.js";
 import { prisma } from "../lib/prisma.js";
 import { logger } from "../lib/logger.js";
+import { ensureDeliveryPartnerProfileByUserId } from "../modules/delivery-partners/delivery-partner-profile.js";
 import { verifyAccessToken } from "../utils/jwt.js";
 import { normalizeRoleValue } from "../utils/roles.js";
 
@@ -179,11 +180,6 @@ const loadSocketAuthContext = async (userId: number) => {
           id: true,
         },
       },
-      managedRegions: {
-        select: {
-          id: true,
-        },
-      },
     },
   });
 
@@ -196,12 +192,17 @@ const loadSocketAuthContext = async (userId: number) => {
     return null;
   }
 
+  const deliveryPartnerId =
+    role === Role.DELIVERY_PARTNER && !user.deliveryProfile
+      ? (await ensureDeliveryPartnerProfileByUserId(user.id)).profile.id
+      : user.deliveryProfile?.id ?? null;
+
   return {
     userId: user.id,
     role,
-    regionIds: normalizeNumericIds([user.regionId, ...user.managedRegions.map((region) => region.id)]),
+    regionIds: normalizeNumericIds([user.regionId]),
     restaurantIds: normalizeNumericIds(user.ownedRestaurants.map((restaurant) => restaurant.id)),
-    deliveryPartnerId: user.deliveryProfile?.id ?? null,
+    deliveryPartnerId,
   } satisfies SocketAuthContext;
 };
 

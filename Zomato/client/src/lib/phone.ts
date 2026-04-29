@@ -9,17 +9,22 @@ const INDIAN_MOBILE_LOCAL_REGEX = /^[6-9]\d{9}$/;
 
 const toDigits = (value: string) => value.replace(/\D/g, "");
 
+const stripIndianPhonePrefixes = (digits: string) => {
+  let normalizedDigits = digits;
+
+  while (normalizedDigits.length > INDIAN_PHONE_LOCAL_LENGTH && normalizedDigits.startsWith("91")) {
+    normalizedDigits = normalizedDigits.slice(2);
+  }
+
+  while (normalizedDigits.length > INDIAN_PHONE_LOCAL_LENGTH && normalizedDigits.startsWith("0")) {
+    normalizedDigits = normalizedDigits.slice(1);
+  }
+
+  return normalizedDigits;
+};
+
 export const sanitizeIndianPhoneInput = (value: string) => {
-  const digits = toDigits(value);
-
-  if (digits.length > INDIAN_PHONE_LOCAL_LENGTH && digits.startsWith("91")) {
-    return digits.slice(2, 2 + INDIAN_PHONE_LOCAL_LENGTH);
-  }
-
-  if (digits.length > INDIAN_PHONE_LOCAL_LENGTH && digits.startsWith("0")) {
-    return digits.slice(1, 1 + INDIAN_PHONE_LOCAL_LENGTH);
-  }
-
+  const digits = stripIndianPhonePrefixes(toDigits(value));
   return digits.slice(0, INDIAN_PHONE_LOCAL_LENGTH);
 };
 
@@ -62,7 +67,13 @@ export const areIndianPhoneInputsEqual = (left?: string | null, right?: string |
   return Boolean(leftDigits && rightDigits && leftDigits === rightDigits);
 };
 
-export const getIndianPhoneInputValue = (value?: string | null) => parseIndianPhoneInput(value) ?? "";
+export const getIndianPhoneInputValue = (value?: string | null) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return sanitizeIndianPhoneInput(value);
+};
 
 export const formatIndianPhoneDisplay = (value?: string | null) => {
   const localDigits = parseIndianPhoneInput(value);

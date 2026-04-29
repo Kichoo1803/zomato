@@ -14,6 +14,10 @@ import {
   normalizeIndianPhoneNumber,
 } from "../../utils/phone.js";
 import {
+  normalizeLicenseNumber,
+  normalizeVehicleNumber,
+} from "../../utils/vehicle.js";
+import {
   RegistrationApplicationPayoutMethod,
   RegistrationApplicationRoleType,
   RegistrationApplicationStatus,
@@ -443,6 +447,17 @@ const notifyAssignedRegionalManager = async (application: RegistrationApplicatio
   });
 };
 
+const getAssignedRegionalManagerRegionId = async (actorId: number) => {
+  const user = await prisma.user.findUnique({
+    where: { id: actorId },
+    select: {
+      regionId: true,
+    },
+  });
+
+  return user?.regionId ?? null;
+};
+
 const buildScopedWhere = async (
   actor: ApplicationActor,
   filters?: {
@@ -508,6 +523,17 @@ const buildScopedWhere = async (
   }
 
   if (actor.role === Role.REGIONAL_MANAGER) {
+    const assignedRegionId = await getAssignedRegionalManagerRegionId(actor.id);
+
+    clauses.push(
+      assignedRegionId
+        ? {
+            regionId: assignedRegionId,
+          }
+        : {
+            regionId: -1,
+          },
+    );
     clauses.push({
       region: {
         is: {
@@ -543,8 +569,16 @@ const ensureApplicationVisibleToActor = async (
     );
   }
 
-  if (actor.role === Role.REGIONAL_MANAGER && application.region?.managerUserId !== actor.id) {
-    throw new AppError(StatusCodes.FORBIDDEN, "Access denied", "ACCESS_DENIED");
+  if (actor.role === Role.REGIONAL_MANAGER) {
+    const assignedRegionId = await getAssignedRegionalManagerRegionId(actor.id);
+
+    if (
+      !assignedRegionId ||
+      application.regionId !== assignedRegionId ||
+      application.region?.managerUserId !== actor.id
+    ) {
+      throw new AppError(StatusCodes.FORBIDDEN, "Access denied", "ACCESS_DENIED");
+    }
   }
 
   return application;
@@ -654,6 +688,8 @@ const approveDeliveryPartnerApplication = async (
   const documents = parseSnapshot<ApplicationDocumentsSnapshot>(application.documents);
   const profileImage = documents?.profilePhoto?.fileUrl ?? null;
   const phone = normalizeIndianPhoneNumber(application.phone) ?? application.phone;
+  const vehicleNumber = normalizeVehicleNumber(application.vehicleNumber);
+  const licenseNumber = normalizeLicenseNumber(application.drivingLicenseNumber);
   const user = await client.user.create({
     data: {
       fullName: application.fullName,
@@ -682,8 +718,8 @@ const approveDeliveryPartnerApplication = async (
     data: {
       userId: user.id,
       vehicleType: application.vehicleType?.trim() || "BIKE",
-      vehicleNumber: application.vehicleNumber?.trim() || null,
-      licenseNumber: application.drivingLicenseNumber?.trim() || null,
+      vehicleNumber: vehicleNumber ?? null,
+      licenseNumber: licenseNumber ?? null,
       availabilityStatus: DeliveryAvailabilityStatus.OFFLINE,
       isVerified: true,
     },
@@ -854,6 +890,9 @@ export const registrationApplicationsService = {
     const phone = normalizeIndianPhoneNumber(input.phone) ?? input.phone.trim();
     const alternatePhone =
       normalizeIndianPhoneNumber(input.alternatePhone) ?? (input.alternatePhone?.trim() || null);
+    const vehicleNumber = normalizeVehicleNumber(input.vehicleNumber) ?? input.vehicleNumber.trim();
+    const drivingLicenseNumber =
+      normalizeLicenseNumber(input.drivingLicenseNumber) ?? input.drivingLicenseNumber.trim();
     const documents = buildDocumentsSnapshot(
       RegistrationApplicationRoleType.DELIVERY_PARTNER,
       files,
@@ -895,8 +934,8 @@ export const registrationApplicationsService = {
         idProofType: input.idProofType.trim(),
         idProofNumber: input.idProofNumber.trim(),
         vehicleType: input.vehicleType.trim(),
-        vehicleNumber: input.vehicleNumber.trim(),
-        drivingLicenseNumber: input.drivingLicenseNumber.trim(),
+        vehicleNumber,
+        drivingLicenseNumber,
         payoutDetails: serializeSnapshot(payoutDetails),
         documents: JSON.stringify(documents),
         assignedRegionalManagerId: regionAssignment?.managerUserId ?? null,

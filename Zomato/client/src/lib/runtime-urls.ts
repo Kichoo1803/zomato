@@ -52,8 +52,8 @@ const resolveConfiguredUrl = (configuredUrl: string | undefined, fallbackUrl: st
 
 export const resolveApiBaseUrl = () => {
   const configuredApiUrl =
-    (import.meta.env.VITE_API_URL as string | undefined) ??
-    (import.meta.env.VITE_API_BASE_URL as string | undefined);
+    (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+    (import.meta.env.VITE_API_URL as string | undefined);
 
   return resolveConfiguredUrl(configuredApiUrl, getDefaultApiBaseUrl());
 };
