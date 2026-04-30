@@ -1,23 +1,29 @@
 const localhostHostnames = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"]);
+const privateIpv4Pattern = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/;
 const devClientPorts = new Set(["5173", "5174", "4173"]);
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 
+const isLocalHostname = (hostname: string) => {
+  const normalizedHostname = hostname.trim().toLowerCase();
+  return localhostHostnames.has(normalizedHostname) || privateIpv4Pattern.test(normalizedHostname);
+};
+
 const shouldMirrorCurrentHostname = (targetUrl: URL, currentHostname: string) =>
   Boolean(currentHostname) &&
-  !localhostHostnames.has(currentHostname) &&
+  isLocalHostname(currentHostname) &&
   localhostHostnames.has(targetUrl.hostname);
 
 const getDefaultApiBaseUrl = () => {
   if (typeof window === "undefined") {
-    return "/api";
+    return "/api/v1";
   }
 
-  if (devClientPorts.has(window.location.port)) {
-    return `${window.location.protocol}//${window.location.hostname}:4000/api`;
+  if (import.meta.env.DEV || devClientPorts.has(window.location.port)) {
+    return `${window.location.protocol}//${window.location.hostname}:4000/api/v1`;
   }
 
-  return `${window.location.origin}/api`;
+  return `${window.location.origin}/api/v1`;
 };
 
 const getDefaultRealtimeServerUrl = () => {

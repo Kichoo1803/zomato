@@ -58,6 +58,33 @@ const listSelect = {
   },
 } satisfies Prisma.RestaurantSelect;
 
+const searchMatchMenuItemSelect = {
+  id: true,
+  restaurantId: true,
+  categoryId: true,
+  name: true,
+  description: true,
+  image: true,
+  price: true,
+  discountPrice: true,
+  foodType: true,
+  isAvailable: true,
+  isRecommended: true,
+  preparationTime: true,
+  calories: true,
+  spiceLevel: true,
+  addons: {
+    where: { isActive: true },
+    orderBy: { createdAt: "asc" },
+  },
+  category: {
+    select: {
+      id: true,
+      name: true,
+    },
+  },
+} satisfies Prisma.MenuItemSelect;
+
 const publicDetailSelect = {
   ...listSelect,
   isActive: true,
@@ -260,6 +287,7 @@ const MAX_DISCOVERY_RADIUS_KM = Math.max(
   env.RESTAURANT_DISCOVERY_MAX_RADIUS_KM,
 );
 const KILOMETERS_PER_LATITUDE_DEGREE = 111.32;
+const MENU_MATCH_LIMIT_PER_RESTAURANT = 4;
 
 const isValidLatitude = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= -90 && value <= 90;
@@ -286,6 +314,9 @@ const getDiscoveryRadiusKm = (radiusKm: unknown) => {
 
   return Math.min(requestedRadiusKm, MAX_DISCOVERY_RADIUS_KM);
 };
+
+const shouldIncludeMenuMatches = (query: Record<string, unknown>, search: string) =>
+  Boolean(search) && query.includeMenuMatches === true;
 
 const getNearbyRestaurantWhere = (
   where: Prisma.RestaurantWhereInput,
@@ -444,9 +475,11 @@ export const restaurantsService = {
       limit: query.limit,
       maxLimit: 24,
     });
+    const search = typeof query.search === "string" ? query.search.trim() : "";
     const where = buildListWhere(query);
     const orderBy = getRestaurantOrderBy(typeof query.sort === "string" ? query.sort : undefined);
     const origin = getDiscoveryOrigin(query);
+    const includeMenuMatches = shouldIncludeMenuMatches(query, search);
 
     if (!origin) {
       return {
@@ -465,32 +498,82 @@ export const restaurantsService = {
     }
 
     const radiusKm = getDiscoveryRadiusKm(query.radiusKm);
-    const nearbyRestaurants = await prisma.restaurant.findMany({
-      where: getNearbyRestaurantWhere(where, origin, radiusKm),
-      select: listSelect,
-      orderBy,
-    });
+    const nearbyRestaurantWhere = getNearbyRestaurantWhere(where, origin, radiusKm);
 
-    // Use a coarse coordinate box in Prisma first, then apply exact Haversine filtering in memory.
-    const filteredRestaurants = nearbyRestaurants.flatMap((restaurant) => {
-      if (!hasCoordinates(restaurant)) {
-        return [];
-      }
+    const buildDistanceFilteredRows = <TRestaurant extends { latitude: number | null; longitude: number | null }>(
+      restaurants: TRestaurant[],
+    ) =>
+      restaurants.flatMap((restaurant) => {
+        if (!hasCoordinates(restaurant)) {
+          return [];
+        }
 
-      const distanceKm = haversineDistanceKm(origin, restaurant);
-      if (distanceKm > radiusKm) {
-        return [];
-      }
+        const distanceKm = haversineDistanceKm(origin, restaurant);
+        if (distanceKm > radiusKm) {
+          return [];
+        }
 
-      return [
-        {
-          ...restaurant,
-          distanceKm: Number(distanceKm.toFixed(2)),
+        return [
+          {
+            ...restaurant,
+            distanceKm: Number(distanceKm.toFixed(2)),
+          },
+        ];
+      });
+
+    let restaurants:
+      | Awaited<ReturnType<typeof prisma.restaurant.findMany>>
+      | Array<Record<string, unknown>> = [];
+    let total = 0;
+
+    if (includeMenuMatches) {
+      const nearbyRestaurantsWithMatches = await prisma.restaurant.findMany({
+        where: nearbyRestaurantWhere,
+        select: {
+          ...listSelect,
+          menuItems: {
+            where: {
+              isAvailable: true,
+              OR: [
+                {
+                  name: {
+                    contains: search,
+                  },
+                },
+                {
+                  description: {
+                    contains: search,
+                  },
+                },
+              ],
+            },
+            orderBy: [{ isRecommended: "desc" }, { createdAt: "desc" }],
+            take: MENU_MATCH_LIMIT_PER_RESTAURANT,
+            select: searchMatchMenuItemSelect,
+          },
         },
-      ];
-    });
-    const restaurants = filteredRestaurants.slice(pagination.skip, pagination.skip + pagination.limit);
-    const total = filteredRestaurants.length;
+        orderBy,
+      });
+
+      const filteredRestaurants = buildDistanceFilteredRows(nearbyRestaurantsWithMatches);
+      restaurants = filteredRestaurants
+        .slice(pagination.skip, pagination.skip + pagination.limit)
+        .map(({ menuItems, ...restaurant }) => ({
+          ...restaurant,
+          matchingMenuItems: menuItems,
+        }));
+      total = filteredRestaurants.length;
+    } else {
+      const nearbyRestaurants = await prisma.restaurant.findMany({
+        where: nearbyRestaurantWhere,
+        select: listSelect,
+        orderBy,
+      });
+
+      const filteredRestaurants = buildDistanceFilteredRows(nearbyRestaurants);
+      restaurants = filteredRestaurants.slice(pagination.skip, pagination.skip + pagination.limit);
+      total = filteredRestaurants.length;
+    }
 
     return {
       restaurants,

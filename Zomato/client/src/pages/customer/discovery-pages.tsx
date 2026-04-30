@@ -65,6 +65,7 @@ import {
   type CustomerPaymentMethod,
   type CustomerOffer,
   type CustomerRestaurantDetail,
+  type CustomerRestaurantSearchMatch,
   type CustomerRestaurantSummary,
 } from "@/lib/customer";
 import type { MembershipStatus, MembershipTier } from "@/types/auth";
@@ -160,6 +161,19 @@ const mapFavoriteRestaurantCard = (favorite: CustomerFavoriteRestaurant): Restau
   deliveryTime: favorite.restaurant.avgDeliveryTime,
   costForTwo: formatCurrency(favorite.restaurant.costForTwo),
 });
+
+const mapSearchMatchToDishResult = (
+  restaurant: CustomerRestaurantSummary,
+  menuItemMatch: CustomerRestaurantSearchMatch,
+): DishSearchResult => {
+  const { category, ...menuItem } = menuItemMatch;
+
+  return {
+    categoryName: category.name,
+    menuItem,
+    restaurant: mapLiveRestaurantCard(restaurant),
+  };
+};
 
 const useCustomerFavorites = () => {
   const { user } = useAuth();
@@ -1339,9 +1353,16 @@ const useDiscoveryLocation = () => {
 const useRestaurantCatalogue = (
   search?: string,
   selectedLocation?: SelectedDiscoveryLocation | null,
+  {
+    includeMenuMatches = false,
+  }: {
+    includeMenuMatches?: boolean;
+  } = {},
 ) => {
   const [liveRestaurants, setLiveRestaurants] = useState<CustomerRestaurantSummary[] | null>(null);
   const [hasResolvedRestaurants, setHasResolvedRestaurants] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
   const normalizedSearch = search?.trim() ?? "";
 
   useEffect(() => {
@@ -1350,6 +1371,7 @@ const useRestaurantCatalogue = (
     if (!selectedLocation) {
       setLiveRestaurants([]);
       setHasResolvedRestaurants(true);
+      setErrorMessage(null);
       return () => {
         isMounted = false;
       };
@@ -1357,9 +1379,11 @@ const useRestaurantCatalogue = (
 
     setLiveRestaurants([]);
     setHasResolvedRestaurants(false);
+    setErrorMessage(null);
 
     void getPublicRestaurants({
       ...(normalizedSearch ? { search: normalizedSearch } : {}),
+      ...(includeMenuMatches && normalizedSearch ? { includeMenuMatches: true } : {}),
       latitude: selectedLocation.latitude,
       longitude: selectedLocation.longitude,
       limit: 24,
@@ -1369,9 +1393,15 @@ const useRestaurantCatalogue = (
           setLiveRestaurants(rows);
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (isMounted) {
           setLiveRestaurants([]);
+          setErrorMessage(
+            getApiErrorMessage(
+              error,
+              "We couldn't load nearby restaurants right now. Please try again.",
+            ),
+          );
         }
       })
       .finally(() => {
@@ -1383,7 +1413,14 @@ const useRestaurantCatalogue = (
     return () => {
       isMounted = false;
     };
-  }, [normalizedSearch, selectedLocation?.latitude, selectedLocation?.longitude, selectedLocation?.updatedAt]);
+  }, [
+    includeMenuMatches,
+    normalizedSearch,
+    reloadToken,
+    selectedLocation?.latitude,
+    selectedLocation?.longitude,
+    selectedLocation?.updatedAt,
+  ]);
 
   const restaurantCards = (liveRestaurants ?? []).map(mapLiveRestaurantCard);
   const categories = restaurantCards.length
@@ -1403,112 +1440,9 @@ const useRestaurantCatalogue = (
     restaurants: liveRestaurants ?? [],
     restaurantCards,
     categories,
+    errorMessage,
     isLoading: Boolean(selectedLocation) && !hasResolvedRestaurants,
-  };
-};
-
-const useRestaurantDishMatches = (
-  search: string,
-  restaurants: CustomerRestaurantSummary[],
-  selectedLocation?: SelectedDiscoveryLocation | null,
-) => {
-  const detailCacheRef = useRef(new Map<string, CustomerRestaurantDetail>());
-  const [dishResults, setDishResults] = useState<DishSearchResult[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const normalizedSearch = normalizeSearchText(search);
-
-  useEffect(() => {
-    if (!selectedLocation || !normalizedSearch || !restaurants.length) {
-      setDishResults([]);
-      setIsLoading(false);
-      return;
-    }
-
-    let isMounted = true;
-
-    const buildDishResults = () =>
-      restaurants.flatMap((restaurant) => {
-        const restaurantDetail = detailCacheRef.current.get(restaurant.slug);
-        if (!restaurantDetail) {
-          return [];
-        }
-
-        const restaurantCard = mapLiveRestaurantCard(restaurant);
-
-        return restaurantDetail.menuCategories.flatMap((category) =>
-          category.menuItems.flatMap((menuItem) =>
-            isMatchingDishSearch(menuItem, category.name, normalizedSearch)
-              ? [
-                  {
-                    categoryName: category.name,
-                    menuItem,
-                    restaurant: restaurantCard,
-                  },
-                ]
-              : [],
-          ),
-        );
-      });
-
-    const missingRestaurants = restaurants.filter((restaurant) => !detailCacheRef.current.has(restaurant.slug));
-    setDishResults(buildDishResults());
-
-    if (!missingRestaurants.length) {
-      setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-
-    void Promise.all(
-      missingRestaurants.map(async (restaurant) => {
-        try {
-          const restaurantDetail = await getPublicRestaurantBySlug(restaurant.slug, {
-            latitude: selectedLocation.latitude,
-            longitude: selectedLocation.longitude,
-          });
-          return {
-            slug: restaurant.slug,
-            restaurantDetail,
-          };
-        } catch {
-          return null;
-        }
-      }),
-    )
-      .then((results) => {
-        if (!isMounted) {
-          return;
-        }
-
-        results.forEach((result) => {
-          if (result) {
-            detailCacheRef.current.set(result.slug, result.restaurantDetail);
-          }
-        });
-
-        setDishResults(buildDishResults());
-      })
-      .finally(() => {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [
-    normalizedSearch,
-    restaurants,
-    selectedLocation?.latitude,
-    selectedLocation?.longitude,
-    selectedLocation?.updatedAt,
-  ]);
-
-  return {
-    dishResults,
-    isLoading,
+    retry: () => setReloadToken((currentValue) => currentValue + 1),
   };
 };
 
@@ -1532,7 +1466,13 @@ export const RestaurantListingPage = () => {
     useSavedAddress,
     useCurrentLocation,
   } = useDiscoveryLocation();
-  const { restaurantCards, categories, isLoading } = useRestaurantCatalogue(appliedSearch, selectedLocation);
+  const {
+    restaurantCards,
+    categories,
+    errorMessage: catalogueErrorMessage,
+    isLoading,
+    retry,
+  } = useRestaurantCatalogue(appliedSearch, selectedLocation);
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
   const [activeCategory, setActiveCategory] = useState("All");
   const [page, setPage] = useState(1);
@@ -1633,6 +1573,15 @@ export const RestaurantListingPage = () => {
           title="Select a location to browse nearby restaurants"
           description="Use a saved address, your current location, or enter a delivery address manually. Nearby restaurants will appear only after the address is resolved."
         />
+      ) : catalogueErrorMessage && !filteredRestaurants.length ? (
+        <SurfaceCard className="space-y-4">
+          <p className="text-sm leading-7 text-ink-soft">{catalogueErrorMessage}</p>
+          <div>
+            <Button type="button" variant="secondary" onClick={retry} disabled={isLoading}>
+              {isLoading ? "Retrying..." : "Retry restaurants"}
+            </Button>
+          </div>
+        </SurfaceCard>
       ) : isLoading && !filteredRestaurants.length ? (
         <SurfaceCard>
           <p className="text-sm leading-7 text-ink-soft">Finding the restaurants that can serve your nearby area.</p>
@@ -1718,12 +1667,19 @@ export const SearchResultsPage = () => {
     useCurrentLocation,
   } = useDiscoveryLocation();
   const { requireCustomerAccess } = useCustomerActionGuard();
-  const activeQuery = query.trim();
-  const { restaurants, restaurantCards, isLoading } = useRestaurantCatalogue(activeQuery, selectedLocation);
-  const { dishResults, isLoading: isLoadingDishResults } = useRestaurantDishMatches(
-    activeQuery,
+  const appliedQuery = requestedQuery.trim();
+  const {
     restaurants,
+    restaurantCards,
+    errorMessage: catalogueErrorMessage,
+    isLoading,
+    retry,
+  } = useRestaurantCatalogue(
+    appliedQuery,
     selectedLocation,
+    {
+      includeMenuMatches: Boolean(appliedQuery),
+    },
   );
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
 
@@ -1735,8 +1691,10 @@ export const SearchResultsPage = () => {
     event?.preventDefault();
 
     const next = new URLSearchParams(params);
-    if (activeQuery) {
-      next.set("q", activeQuery);
+    const submittedQuery = query.trim();
+
+    if (submittedQuery) {
+      next.set("q", submittedQuery);
     } else {
       next.delete("q");
     }
@@ -1785,9 +1743,27 @@ export const SearchResultsPage = () => {
     setSelection(nextSelection);
   };
 
+  const dishResults = useMemo(
+    () =>
+      appliedQuery
+        ? restaurants.flatMap((restaurant) =>
+            (restaurant.matchingMenuItems ?? []).flatMap((menuItemMatch) =>
+              isMatchingDishSearch(
+                menuItemMatch,
+                menuItemMatch.category.name,
+                normalizeSearchText(appliedQuery),
+              )
+                ? [mapSearchMatchToDishResult(restaurant, menuItemMatch)]
+                : [],
+            ),
+          )
+        : [],
+    [appliedQuery, restaurants],
+  );
+
   const restaurantLabel = `${restaurantCards.length} restaurant match${restaurantCards.length === 1 ? "" : "es"}`;
   const dishLabel = `${dishResults.length} dish match${dishResults.length === 1 ? "" : "es"}`;
-  const hasQuery = Boolean(activeQuery);
+  const hasQuery = Boolean(appliedQuery);
   const hasAnyMatches = Boolean(restaurantCards.length || dishResults.length);
 
   return (
@@ -1824,18 +1800,18 @@ export const SearchResultsPage = () => {
 
       <SectionHeading
         eyebrow="Search results"
-        title={hasQuery ? `Results for "${activeQuery}"` : "Start with a dish, cuisine, restaurant, or location"}
+        title={hasQuery ? `Results for "${appliedQuery}"` : "Start with a dish, cuisine, restaurant, or location"}
         description={
           needsLocation
             ? isBootstrappingLocation
               ? "Checking your saved delivery addresses before loading the nearby catalogue."
               : "Choose a delivery location first, then search only within the nearby restaurants for that address."
             : isLoading
-              ? "Looking up the nearby catalogue for this location."
+              ? hasQuery
+                ? "Looking up restaurant and dish matches for this location."
+                : "Looking up the nearby catalogue for this location."
               : hasQuery
-                ? isLoadingDishResults
-                  ? `Searching ${restaurantLabel} and nearby menu matches in the current delivery area.`
-                  : `${restaurantLabel} and ${dishLabel} in the current delivery area.`
+                ? `${restaurantLabel} and ${dishLabel} in the current delivery area.`
                 : `${restaurantCards.length} nearby restaurants ready to browse. Start typing to narrow by dish, cuisine, or area.`
         }
       />
@@ -1849,6 +1825,15 @@ export const SearchResultsPage = () => {
           title="Set a location before searching restaurants"
           description="Search results stay empty until a saved or temporary delivery address is selected."
         />
+      ) : catalogueErrorMessage && !hasAnyMatches ? (
+        <SurfaceCard className="space-y-4">
+          <p className="text-sm leading-7 text-ink-soft">{catalogueErrorMessage}</p>
+          <div>
+            <Button type="button" variant="secondary" onClick={retry} disabled={isLoading}>
+              {isLoading ? "Retrying..." : "Retry search"}
+            </Button>
+          </div>
+        </SurfaceCard>
       ) : isLoading ? (
         <SurfaceCard>
           <p className="text-sm leading-7 text-ink-soft">Fetching nearby restaurants for the selected delivery area.</p>
@@ -1880,7 +1865,7 @@ export const SearchResultsPage = () => {
             description="Change the temporary delivery address or refresh your current location to search a different nearby area."
           />
         )
-      ) : hasAnyMatches || isLoadingDishResults ? (
+      ) : hasAnyMatches ? (
         <div className="space-y-10">
           {restaurantCards.length ? (
             <div className="space-y-6">
@@ -1902,14 +1887,6 @@ export const SearchResultsPage = () => {
                 ))}
               </div>
             </div>
-          ) : null}
-
-          {isLoadingDishResults && !dishResults.length ? (
-            <SurfaceCard>
-              <p className="text-sm leading-7 text-ink-soft">
-                Checking matching dishes across the nearby restaurant menus for this search.
-              </p>
-            </SurfaceCard>
           ) : null}
 
           {dishResults.length ? (
@@ -1993,7 +1970,7 @@ export const SearchResultsPage = () => {
                 ))}
               </div>
             </div>
-          ) : restaurantCards.length && !isLoadingDishResults ? (
+          ) : restaurantCards.length ? (
             <SurfaceCard>
               <p className="text-sm leading-7 text-ink-soft">
                 We found nearby restaurants for this search, but no dish names matched exactly in their menus yet.

@@ -75,7 +75,7 @@ export const getPrismaRuntimeErrorResponse = (
   error: unknown,
   {
     isDevelopment,
-    fallbackMessage = "A database request failed",
+    fallbackMessage = "The database could not complete this request right now.",
   }: {
     isDevelopment: boolean;
     fallbackMessage?: string;
@@ -92,11 +92,11 @@ export const getPrismaRuntimeErrorResponse = (
       includesAnyFragment(errorMessage, mongoConnectionFragments))
   ) {
     return {
-      statusCode: 500,
+      statusCode: 503,
       code: "DATABASE_CONNECTION_FAILED",
       message: isDevelopment
         ? "The server could not connect to MongoDB. Check DATABASE_URL and confirm the configured MongoDB host and port are reachable."
-        : fallbackMessage,
+        : "The API could not reach the database right now. Please try again shortly.",
       details: isDevelopment ? getErrorMessage(error) : undefined,
     };
   }
@@ -109,11 +109,11 @@ export const getPrismaRuntimeErrorResponse = (
       includesAnyFragment(errorMessage, mongoReplicaSetFragments))
   ) {
     return {
-      statusCode: 500,
+      statusCode: 503,
       code: "MONGODB_REPLICA_SET_REQUIRED",
       message: isDevelopment
         ? "MongoDB transactions require a replica set. Start MongoDB as a replica set and use a matching DATABASE_URL."
-        : fallbackMessage,
+        : "The database deployment is not ready for transaction-based requests.",
       details: isDevelopment ? getErrorMessage(error) : undefined,
     };
   }
@@ -124,17 +124,17 @@ export const getPrismaRuntimeErrorResponse = (
       code: "PRISMA_CLIENT_OUT_OF_SYNC",
       message: isDevelopment
         ? "The Prisma client is out of sync with the schema. Run `npm run prisma:generate` and restart the server."
-        : fallbackMessage,
+        : "The API database client is temporarily out of sync.",
     };
   }
 
   if (isPrismaKnownRequestError(error) && ["P2021", "P2022"].includes(error.code)) {
     return {
-      statusCode: 500,
+      statusCode: 503,
       code: "DATABASE_SCHEMA_NOT_READY",
       message: isDevelopment
         ? "The MongoDB schema or indexes are out of date. Run `npm run prisma:push` and restart the server."
-        : fallbackMessage,
+        : "The database is not ready to serve this request yet.",
       details: isDevelopment ? error.meta : undefined,
     };
   }

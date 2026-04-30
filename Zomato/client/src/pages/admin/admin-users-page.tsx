@@ -14,7 +14,9 @@ import { Pagination } from "@/components/ui/pagination";
 import { SectionHeading, StatusPill } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { createUser, disableUser, getUsers, updateUser, type AdminUser } from "@/lib/admin";
+import { buildAdminUserPayload } from "@/lib/admin-user-payload";
 import { getApiErrorMessage } from "@/lib/auth";
+import { getIndianPhoneInputValue } from "@/lib/phone";
 import type { UserRole } from "@/types/auth";
 import {
   AddButton,
@@ -89,7 +91,7 @@ export const AdminUsersPage = () => {
     setForm({
       fullName: user.fullName,
       email: user.email,
-      phone: user.phone ?? "",
+      phone: getIndianPhoneInputValue(user.phone),
       password: "",
       role: user.role,
       profileImage: user.profileImage ?? "",
@@ -127,22 +129,13 @@ export const AdminUsersPage = () => {
 
     setIsSubmitting(true);
     try {
-      const payload = {
-        fullName: form.fullName,
-        email: form.email,
-        phone: form.phone.trim() || undefined,
-        password: form.password.trim() || undefined,
-        role: form.role,
-        profileImage: form.profileImage.trim() || undefined,
-        walletBalance: Number(form.walletBalance || "0"),
-        isActive: form.isActive,
-      };
+      const payload = buildAdminUserPayload(form);
 
       if (editingUser) {
         await updateUser(editingUser.id, payload);
         toast.success("User updated successfully.");
       } else {
-        await createUser({ ...payload, password: form.password });
+        await createUser({ ...payload, password: payload.password! });
         toast.success("User created successfully.");
       }
 

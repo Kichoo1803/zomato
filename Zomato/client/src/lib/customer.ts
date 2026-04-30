@@ -26,6 +26,28 @@ export type CustomerAddon = {
   updatedAt: string;
 };
 
+export type CustomerRestaurantSearchMatch = {
+  id: number;
+  restaurantId: number;
+  categoryId: number;
+  name: string;
+  description?: string | null;
+  image?: string | null;
+  price: number;
+  discountPrice?: number | null;
+  foodType: string;
+  isAvailable: boolean;
+  isRecommended: boolean;
+  preparationTime: number;
+  calories?: number | null;
+  spiceLevel?: number | null;
+  addons: CustomerAddon[];
+  category: {
+    id: number;
+    name: string;
+  };
+};
+
 export type CustomerRestaurantSummary = {
   id: number;
   name: string;
@@ -62,6 +84,7 @@ export type CustomerRestaurantSummary = {
       discountValue: number;
     };
   }>;
+  matchingMenuItems?: CustomerRestaurantSearchMatch[];
 };
 
 export type CustomerFavoriteRestaurant = {
@@ -390,6 +413,7 @@ export type PendingCustomerCouponSelection = {
 
 export type PublicRestaurantQuery = {
   search?: string;
+  includeMenuMatches?: boolean;
   latitude?: number;
   longitude?: number;
   radiusKm?: number;

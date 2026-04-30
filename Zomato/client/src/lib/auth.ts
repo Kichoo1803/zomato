@@ -70,6 +70,48 @@ const getApiErrorCode = (error: unknown) => {
 
 const getApiErrorStatus = (error: unknown) => (axios.isAxiosError(error) ? error.response?.status ?? null : null);
 
+const getValidationDetailMessage = (error: unknown) => {
+  if (!axios.isAxiosError(error)) {
+    return null;
+  }
+
+  const details = error.response?.data?.details;
+
+  if (!details || typeof details !== "object") {
+    return null;
+  }
+
+  const formErrors = Array.isArray((details as { formErrors?: unknown }).formErrors)
+    ? (details as { formErrors: unknown[] }).formErrors
+    : [];
+
+  for (const formError of formErrors) {
+    if (typeof formError === "string" && formError.trim()) {
+      return formError.trim();
+    }
+  }
+
+  const fieldErrors = (details as { fieldErrors?: unknown }).fieldErrors;
+
+  if (!fieldErrors || typeof fieldErrors !== "object") {
+    return null;
+  }
+
+  for (const messages of Object.values(fieldErrors as Record<string, unknown>)) {
+    if (!Array.isArray(messages)) {
+      continue;
+    }
+
+    for (const message of messages) {
+      if (typeof message === "string" && message.trim()) {
+        return message.trim();
+      }
+    }
+  }
+
+  return null;
+};
+
 export const loginWithPassword = async (payload: { email: string; password: string }) => {
   const response = await publicApi.post<AuthResponse>("/auth/login", payload);
   return parseAuthResponse(response.data);
@@ -143,8 +185,23 @@ export const getApiErrorMessage = (error: unknown, fallback: string) => {
   }
 
   const responseMessage = error.response?.data?.message;
+  const validationDetailMessage = getValidationDetailMessage(error);
+
+  if (
+    validationDetailMessage &&
+    (!responseMessage ||
+      typeof responseMessage !== "string" ||
+      responseMessage.trim().toLowerCase() === "request validation failed")
+  ) {
+    return validationDetailMessage;
+  }
+
   if (typeof responseMessage === "string" && responseMessage.trim()) {
     return responseMessage;
+  }
+
+  if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
+    return "The request took too long. Please try again.";
   }
 
   if (error.code === "ERR_NETWORK") {
@@ -172,6 +229,10 @@ export const getLoginErrorMessage = (error: unknown) => {
 
   if (error.code === "ERR_NETWORK") {
     return "Server unavailable. Please check that the backend is running and reachable from this device.";
+  }
+
+  if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
+    return "Sign-in timed out. Please try again.";
   }
 
   if (errorCode === "MISSING_CREDENTIALS" || statusCode === 400) {

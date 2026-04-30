@@ -38,6 +38,26 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   }
 
   const errorMessage = error instanceof Error ? error.message : "Unknown error";
+  const requestId =
+    typeof req.headers["x-request-id"] === "string" ? req.headers["x-request-id"] : undefined;
+  const sendError = ({
+    statusCode,
+    code,
+    message,
+    details,
+  }: {
+    statusCode: number;
+    code: string;
+    message: string;
+    details?: unknown;
+  }) =>
+    res.status(statusCode).json({
+      success: false,
+      code,
+      message,
+      details,
+      requestId,
+    });
 
   const logLevel =
     error instanceof AppError
@@ -61,12 +81,13 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   logger[logLevel](errorMessage, {
     path: req.originalUrl,
     method: req.method,
+    requestId,
     stack: env.isProduction ? undefined : error instanceof Error ? error.stack : undefined,
   });
 
   if (error instanceof AppError) {
-    res.status(error.statusCode).json({
-      success: false,
+    sendError({
+      statusCode: error.statusCode,
       code: error.code,
       message: error.message,
       details: error.details,
@@ -75,8 +96,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   }
 
   if (error instanceof Error && error.message === "Origin is not allowed by CORS") {
-    res.status(StatusCodes.FORBIDDEN).json({
-      success: false,
+    sendError({
+      statusCode: StatusCodes.FORBIDDEN,
       code: "CORS_NOT_ALLOWED",
       message: "This frontend origin is not allowed to access the API",
     });
@@ -84,8 +105,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   }
 
   if (isJsonBodySyntaxError(error)) {
-    res.status(StatusCodes.BAD_REQUEST).json({
-      success: false,
+    sendError({
+      statusCode: StatusCodes.BAD_REQUEST,
       code: "BAD_REQUEST",
       message: "Request body must be valid JSON",
     });
@@ -106,8 +127,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
           message.toLowerCase().includes("required"),
         );
 
-        res.status(StatusCodes.BAD_REQUEST).json({
-          success: false,
+        sendError({
+          statusCode: StatusCodes.BAD_REQUEST,
           code: hasMissingCredentials ? "MISSING_CREDENTIALS" : "BAD_REQUEST",
           message: hasMissingCredentials ? "Email and password are required" : "Request validation failed",
           details: flattenedError,
@@ -115,8 +136,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
         return;
       }
 
-      res.status(StatusCodes.BAD_REQUEST).json({
-        success: false,
+      sendError({
+        statusCode: StatusCodes.BAD_REQUEST,
         code: "BAD_REQUEST",
         message: "Request validation failed",
         details: flattenedError,
@@ -124,8 +145,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       return;
     }
 
-    res.status(StatusCodes.UNPROCESSABLE_ENTITY).json({
-      success: false,
+    sendError({
+      statusCode: StatusCodes.UNPROCESSABLE_ENTITY,
       code: "VALIDATION_ERROR",
       message: "Request validation failed",
       details: flattenedError,
@@ -134,8 +155,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   }
 
   if (error instanceof TokenExpiredError) {
-    res.status(StatusCodes.UNAUTHORIZED).json({
-      success: false,
+    sendError({
+      statusCode: StatusCodes.UNAUTHORIZED,
       code: "TOKEN_EXPIRED",
       message: "Authentication token has expired",
     });
@@ -143,8 +164,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   }
 
   if (error instanceof JsonWebTokenError) {
-    res.status(StatusCodes.UNAUTHORIZED).json({
-      success: false,
+    sendError({
+      statusCode: StatusCodes.UNAUTHORIZED,
       code: "INVALID_TOKEN",
       message: "Authentication token is invalid",
     });
@@ -156,8 +177,8 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
   });
 
   if (prismaRuntimeError) {
-    res.status(prismaRuntimeError.statusCode).json({
-      success: false,
+    sendError({
+      statusCode: prismaRuntimeError.statusCode,
       code: prismaRuntimeError.code,
       message: prismaRuntimeError.message,
       details: prismaRuntimeError.details,
@@ -167,38 +188,40 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
 
   if (isPrismaKnownRequestError(error)) {
     if (error.code === "P2002") {
-      res.status(StatusCodes.CONFLICT).json({
-        success: false,
+      sendError({
+        statusCode: StatusCodes.CONFLICT,
         code: error.code,
         message: "A unique field conflict occurred",
-        details: error.meta,
-      });
-      return;
-    }
-
-    if (["P2021", "P2022"].includes(error.code)) {
-      res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-        success: false,
-        code: error.code,
-        message: env.isDevelopment
-          ? "The database schema is out of date. Run `npm run prisma:push` and `npm run prisma:generate`, then restart the server."
-          : "A database request failed",
         details: env.isDevelopment ? error.meta : undefined,
       });
       return;
     }
 
-    res.status(StatusCodes.BAD_REQUEST).json({
-      success: false,
-      code: error.code,
-      message: "A database request failed",
-      details: error.meta,
+    if (["P2021", "P2022"].includes(error.code)) {
+      sendError({
+        statusCode: StatusCodes.SERVICE_UNAVAILABLE,
+        code: error.code,
+        message: env.isDevelopment
+          ? "The database schema is out of date. Run `npm run prisma:push` and `npm run prisma:generate`, then restart the server."
+          : "The database is not ready to serve this request yet.",
+        details: env.isDevelopment ? error.meta : undefined,
+      });
+      return;
+    }
+
+    sendError({
+      statusCode: StatusCodes.INTERNAL_SERVER_ERROR,
+      code: "DATABASE_REQUEST_FAILED",
+      message: env.isDevelopment
+        ? `A database request failed with Prisma error ${error.code}.`
+        : "The database could not complete this request right now.",
+      details: env.isDevelopment ? error.meta : undefined,
     });
     return;
   }
 
-  res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-    success: false,
+  sendError({
+    statusCode: StatusCodes.INTERNAL_SERVER_ERROR,
     code: "INTERNAL_SERVER_ERROR",
     message: "Something went wrong on the server",
   });

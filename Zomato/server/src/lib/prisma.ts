@@ -9,9 +9,20 @@ const globalForPrisma = globalThis as unknown as {
 const sleep = (durationMs: number) => new Promise((resolve) => setTimeout(resolve, durationMs));
 const DEFAULT_MONGO_SERVER_SELECTION_TIMEOUT_MS = 5000;
 const DEFAULT_MONGO_CONNECT_TIMEOUT_MS = 5000;
+const MONGODB_PROTOCOLS = ["mongodb://", "mongodb+srv://"] as const;
+
+type PrismaConnectionStatus = "idle" | "connecting" | "connected" | "error";
+
+type PrismaConnectionState = {
+  status: PrismaConnectionStatus;
+  lastCheckedAt: string | null;
+  lastConnectedAt: string | null;
+  lastErrorAt: string | null;
+  errorMessage: string | null;
+};
 
 const applyMongoConnectionTimeouts = (databaseUrl: string) => {
-  if (!databaseUrl.startsWith("mongodb://") && !databaseUrl.startsWith("mongodb+srv://")) {
+  if (!MONGODB_PROTOCOLS.some((protocol) => databaseUrl.startsWith(protocol))) {
     return databaseUrl;
   }
 
@@ -34,11 +45,16 @@ const applyMongoConnectionTimeouts = (databaseUrl: string) => {
 
 const runtimeDatabaseUrl = applyMongoConnectionTimeouts(env.DATABASE_URL);
 
+const redactDatabaseSecrets = (value: string) =>
+  value
+    .replace(/(mongodb(?:\+srv)?:\/\/)([^@\s]+)@/gi, "$1***@")
+    .replace(/([?&](?:password|passwd|pwd)=)([^&\s]+)/gi, "$1***");
+
 const summarizeDatabaseTarget = (databaseUrl: string) => {
   if (databaseUrl.startsWith("file:")) {
     return {
       provider: "sqlite",
-      target: databaseUrl,
+      target: redactDatabaseSecrets(databaseUrl),
     };
   }
 
@@ -79,6 +95,23 @@ export const prismaConnectionInfo = {
   ...getMongoConnectionTimeouts(runtimeDatabaseUrl),
 };
 
+const prismaConnectionState: PrismaConnectionState = {
+  status: "idle",
+  lastCheckedAt: null,
+  lastConnectedAt: null,
+  lastErrorAt: null,
+  errorMessage: null,
+};
+
+const updatePrismaConnectionState = (nextState: Partial<PrismaConnectionState>) => {
+  Object.assign(prismaConnectionState, nextState);
+};
+
+const sanitizePrismaErrorMessage = (error: unknown) => {
+  const rawMessage = error instanceof Error ? error.message : "Unknown Prisma connection error";
+  return redactDatabaseSecrets(rawMessage);
+};
+
 const createPrisma = () =>
   createPrismaClient({
     datasources: {
@@ -97,6 +130,55 @@ if (!env.isProduction) {
 
 let connectPromise: Promise<void> | null = null;
 
+const runPrismaHealthCheck = async () => {
+  await prisma.$connect();
+
+  if (MONGODB_PROTOCOLS.some((protocol) => runtimeDatabaseUrl.startsWith(protocol))) {
+    await prisma.$runCommandRaw({
+      ping: 1,
+    });
+  }
+};
+
+export const getPrismaConnectionState = () => ({
+  ...prismaConnectionState,
+});
+
+export const checkPrismaHealth = async () => {
+  const checkedAt = new Date().toISOString();
+
+  try {
+    await runPrismaHealthCheck();
+
+    updatePrismaConnectionState({
+      status: "connected",
+      lastCheckedAt: checkedAt,
+      lastConnectedAt: checkedAt,
+      errorMessage: null,
+    });
+
+    return {
+      status: "connected" as const,
+      checkedAt,
+    };
+  } catch (error) {
+    const errorMessage = sanitizePrismaErrorMessage(error);
+
+    updatePrismaConnectionState({
+      status: "error",
+      lastCheckedAt: checkedAt,
+      lastErrorAt: checkedAt,
+      errorMessage,
+    });
+
+    return {
+      status: "error" as const,
+      checkedAt,
+      errorMessage,
+    };
+  }
+};
+
 export const connectPrisma = async ({
   maxAttempts = env.isProduction ? 5 : 3,
   retryDelayMs = 1500,
@@ -109,17 +191,41 @@ export const connectPrisma = async ({
   }
 
   connectPromise = (async () => {
+    updatePrismaConnectionState({
+      status: "connecting",
+      lastCheckedAt: new Date().toISOString(),
+      errorMessage: null,
+    });
+
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        await prisma.$connect();
+        await runPrismaHealthCheck();
+
+        const connectedAt = new Date().toISOString();
+
+        updatePrismaConnectionState({
+          status: "connected",
+          lastCheckedAt: connectedAt,
+          lastConnectedAt: connectedAt,
+          errorMessage: null,
+        });
+
         logger.info("Prisma connection established", {
           ...prismaConnectionInfo,
           attempt,
         });
         return;
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown Prisma connection error";
+        const checkedAt = new Date().toISOString();
+        const message = sanitizePrismaErrorMessage(error);
         const shouldRetry = attempt < maxAttempts;
+
+        updatePrismaConnectionState({
+          status: shouldRetry ? "connecting" : "error",
+          lastCheckedAt: checkedAt,
+          lastErrorAt: checkedAt,
+          errorMessage: message,
+        });
 
         logger[shouldRetry ? "warn" : "error"]("Prisma connection attempt failed", {
           ...prismaConnectionInfo,
@@ -145,4 +251,7 @@ export const connectPrisma = async ({
 
 export const disconnectPrisma = async () => {
   await prisma.$disconnect();
+  updatePrismaConnectionState({
+    status: "idle",
+  });
 };
