@@ -4,18 +4,27 @@ import {
   isValidDistrictForState,
   isValidIndianState,
 } from "../../lib/india-region-data.js";
+import { normalizeRegionCode } from "../../utils/regions.js";
 
 const optionalRegionString = z.string().trim().min(2).max(120).optional();
-const optionalRegionCode = z
-  .string()
-  .trim()
-  .min(2)
-  .max(120)
-  .regex(
-    /^[A-Za-z0-9:_-]+$/,
-    "Region code can only include letters, numbers, colons, hyphens, and underscores.",
-  )
-  .optional();
+const optionalRegionCode = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+
+    return normalizeRegionCode(value) ?? undefined;
+  },
+  z
+    .string()
+    .min(2)
+    .max(120)
+    .regex(
+      /^[A-Za-z0-9:_-]+$/,
+      "Region code can only include letters, numbers, colons, hyphens, and underscores.",
+    )
+    .optional(),
+);
 const optionalRegionSlug = z
   .string()
   .trim()

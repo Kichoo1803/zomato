@@ -6,6 +6,60 @@ export const normalizeRegionValue = (value?: string | null) => {
   return trimmed ? trimmed : null;
 };
 
+const stripDiacritics = (value: string) =>
+  value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+
+const normalizeRegionCodeSegment = (value?: string | null) => {
+  const normalizedValue = normalizeRegionValue(value);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const sanitizedValue = stripDiacritics(normalizedValue)
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/-+/g, "-")
+    .replace(/^[_-]+|[_-]+$/g, "");
+
+  return sanitizedValue || null;
+};
+
+export const buildRegionCode = (state?: string | null, district?: string | null) => {
+  const stateCode = normalizeRegionCodeSegment(state);
+  const districtCode = normalizeRegionCodeSegment(district);
+
+  if (!stateCode || !districtCode) {
+    return null;
+  }
+
+  return `${stateCode}::${districtCode}`;
+};
+
+export const normalizeRegionCode = (value?: string | null) => {
+  const normalizedValue = normalizeRegionValue(value);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const separators = normalizedValue.match(/:+/g) ?? [];
+  const segments = normalizedValue
+    .split(/:+/)
+    .map((segment) => normalizeRegionCodeSegment(segment))
+    .filter((segment): segment is string => Boolean(segment));
+
+  if (!segments.length) {
+    return null;
+  }
+
+  return segments.slice(1).reduce((result, segment, index) => {
+    const separator = separators[index]?.length === 1 ? ":" : "::";
+    return `${result}${separator}${segment}`;
+  }, segments[0]);
+};
+
 const toSlugPart = (value: string) =>
   value
     .toLowerCase()
@@ -28,7 +82,7 @@ export const buildRegionIdentity = (state?: string | null, district?: string | n
     state: normalizedState,
     district: normalizedDistrict,
     name: `${normalizedDistrict}, ${normalizedState}`,
-    code: `${normalizedState.toUpperCase()}::${normalizedDistrict.toUpperCase()}`,
+    code: buildRegionCode(normalizedState, normalizedDistrict) ?? `${stateSlug}::${districtSlug}`.toUpperCase(),
     slug: `${stateSlug}-${districtSlug}`,
   };
 };

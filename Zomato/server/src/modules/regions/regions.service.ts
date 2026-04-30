@@ -8,7 +8,12 @@ import {
 } from "../../lib/india-region-data.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
-import { buildRegionIdentity, isRegionalOperationsRole, normalizeRegionValue } from "../../utils/regions.js";
+import {
+  buildRegionIdentity,
+  isRegionalOperationsRole,
+  normalizeRegionCode,
+  normalizeRegionValue,
+} from "../../utils/regions.js";
 
 type RegionWriteClient = Prisma.TransactionClient | typeof prisma;
 
@@ -62,11 +67,6 @@ const managedRegionScopeSelect = {
   stateName: true,
   districtName: true,
 } satisfies Prisma.RegionSelect;
-
-const normalizeRegionCode = (value?: string | null) => {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed.toUpperCase() : null;
-};
 
 const normalizeRegionSlug = (value?: string | null) => {
   const trimmed = value?.trim().toLowerCase();
@@ -690,6 +690,7 @@ export const regionsAdminService = {
     );
     const nextStateName = identity.state;
     const nextDistrictName = identity.district;
+    const normalizedExistingCode = normalizeRegionCode(existingRegion.code) ?? identity.code;
     const nextName =
       input.name !== undefined
         ? normalizeRegionValue(input.name) ?? identity.name
@@ -697,7 +698,7 @@ export const regionsAdminService = {
     const nextCode =
       input.code !== undefined
         ? normalizeRegionCode(input.code) ?? identity.code
-        : existingRegion.code;
+        : normalizedExistingCode;
     const nextSlug =
       input.slug !== undefined
         ? normalizeRegionSlug(input.slug) ?? identity.slug

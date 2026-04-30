@@ -23,6 +23,7 @@ import {
   isValidIndianPincode,
   mergeRegionOptions,
 } from "@/lib/india-regions";
+import { buildRegionCode, normalizeRegionCode } from "@/lib/regions";
 import {
   AddButton,
   PAGE_SIZE,
@@ -68,6 +69,7 @@ const parsePincodeList = (value: string) =>
 const formatAdditionalPincodes = (values: string[]) => values.join(", ");
 
 const normalizePincodeInput = (value: string) => value.replace(/\D/g, "").slice(0, 6);
+
 const getRegionalManagerOptionLabel = (manager: AdminUser) => {
   const assignedRegionLabel = [manager.opsDistrict, manager.opsState].filter(Boolean).join(", ");
 
@@ -91,6 +93,7 @@ export const AdminRegionsPage = () => {
   const [editingRegion, setEditingRegion] = useState<AdminRegion | null>(null);
   const [form, setForm] = useState<RegionFormState>(emptyForm);
   const [formErrors, setFormErrors] = useState<RegionFormErrors>({});
+  const [hasCustomCode, setHasCustomCode] = useState(false);
 
   const baseStateOptions = useMemo(() => getIndianStateOptions(), []);
   const displayRegionOptions = useMemo(
@@ -158,20 +161,41 @@ export const AdminRegionsPage = () => {
     void loadRegionalManagers();
   }, []);
 
+  useEffect(() => {
+    if (hasCustomCode) {
+      return;
+    }
+
+    const generatedCode = buildRegionCode(form.stateName, form.districtName);
+
+    setForm((currentForm) =>
+      currentForm.code === generatedCode
+        ? currentForm
+        : {
+            ...currentForm,
+            code: generatedCode,
+          },
+    );
+  }, [form.stateName, form.districtName, hasCustomCode]);
+
   const openCreateModal = () => {
     setEditingRegion(null);
     setForm(emptyForm);
     setFormErrors({});
+    setHasCustomCode(false);
     setIsModalOpen(true);
   };
 
   const openEditModal = (region: AdminRegion) => {
+    const normalizedCode = normalizeRegionCode(region.code);
+    const generatedCode = buildRegionCode(region.stateName, region.districtName);
+
     setEditingRegion(region);
     setForm({
       name: region.name,
       districtName: region.districtName,
       stateName: region.stateName,
-      code: region.code,
+      code: normalizedCode || generatedCode,
       slug: region.slug,
       notes: region.notes ?? "",
       primaryPincode: region.primaryPincode ?? "",
@@ -180,6 +204,7 @@ export const AdminRegionsPage = () => {
       managerUserId: region.managerUserId ? String(region.managerUserId) : "",
     });
     setFormErrors({});
+    setHasCustomCode(Boolean((normalizedCode || generatedCode) && (normalizedCode || generatedCode) !== generatedCode));
     setIsModalOpen(true);
   };
 
@@ -234,6 +259,14 @@ export const AdminRegionsPage = () => {
     }));
   };
 
+  const handleCodeChange = (value: string) => {
+    const normalizedCode = normalizeRegionCode(value);
+    const generatedCode = buildRegionCode(form.stateName, form.districtName);
+
+    handleFieldChange("code", normalizedCode);
+    setHasCustomCode(Boolean(normalizedCode && normalizedCode !== generatedCode));
+  };
+
   const validateForm = () => {
     const nextErrors: RegionFormErrors = {};
     const additionalPincodeList = parsePincodeList(form.additionalPincodes);
@@ -278,11 +311,14 @@ export const AdminRegionsPage = () => {
 
     setIsSubmitting(true);
 
+    const normalizedCode = normalizeRegionCode(form.code);
+    const generatedCode = buildRegionCode(form.stateName, form.districtName);
+
     const payload = {
       name: form.name.trim() || undefined,
       districtName: form.districtName.trim(),
       stateName: form.stateName.trim(),
-      code: form.code.trim() || undefined,
+      code: normalizedCode || generatedCode || undefined,
       slug: form.slug.trim() || undefined,
       notes: form.notes.trim() || undefined,
       primaryPincode: form.primaryPincode.trim() || undefined,
@@ -522,7 +558,7 @@ export const AdminRegionsPage = () => {
             <Input
               label="Code"
               value={form.code}
-              onChange={(event) => handleFieldChange("code", event.target.value)}
+              onChange={(event) => handleCodeChange(event.target.value)}
               error={formErrors.code}
               placeholder="Optional custom code"
             />
