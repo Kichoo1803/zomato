@@ -5,6 +5,7 @@ import { AnalyticsChart } from "@/components/ui/analytics-chart";
 import { Button } from "@/components/ui/button";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { getApiErrorMessage } from "@/lib/auth";
@@ -20,6 +21,7 @@ import {
 export const OpsDashboardPage = () => {
   const [dashboard, setDashboard] = useState<OperationsDashboard | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState("");
   const [districtFilter, setDistrictFilter] = useState("");
 
@@ -32,8 +34,11 @@ export const OpsDashboardPage = () => {
           district: districtFilter || undefined,
         }),
       );
+      setErrorMessage(null);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load the operations dashboard."));
+      const message = getApiErrorMessage(error, "Unable to load the operations dashboard.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -58,7 +63,15 @@ export const OpsDashboardPage = () => {
           description="Loading regional assignments, owner coverage, partner coverage, and recent coordination updates."
           action={<RefreshButton onClick={() => void loadDashboard()} />}
         />
-        <AdminLoadingState rows={6} />
+        {isLoading ? (
+          <AdminLoadingState rows={6} />
+        ) : (
+          <PageLoadErrorState
+            title="Unable to load the operations dashboard"
+            description={errorMessage ?? "Regional operations data could not be loaded right now."}
+            onRetry={() => void loadDashboard()}
+          />
+        )}
       </div>
     );
   }

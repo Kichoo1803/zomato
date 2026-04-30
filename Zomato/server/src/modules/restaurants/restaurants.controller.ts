@@ -48,7 +48,10 @@ export const getRestaurantById = asyncHandler(async (req, res) => {
 });
 
 export const getMyRestaurants = asyncHandler(async (req, res) => {
-  const restaurants = await restaurantsService.listForOwner(req.user!.id);
+  const restaurants = await restaurantsService.listForOwner(
+    req.user!.id,
+    req.query.view === "summary" ? "summary" : "detail",
+  );
 
   return sendSuccess(res, {
     message: "Owned restaurants fetched successfully",

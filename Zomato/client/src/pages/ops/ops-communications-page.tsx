@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -25,6 +26,7 @@ export const OpsCommunicationsPage = () => {
   const [regionOptions, setRegionOptions] = useState<{ states: string[]; districtsByState: Record<string, string[]> } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState("");
   const [districtFilter, setDistrictFilter] = useState("");
@@ -52,8 +54,11 @@ export const OpsCommunicationsPage = () => {
       ]);
       setCommunications(communicationsData);
       setRegionOptions(regions.regionOptions);
+      setErrorMessage(null);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load operations communications."));
+      const message = getApiErrorMessage(error, "Unable to load operations communications.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -119,7 +124,28 @@ export const OpsCommunicationsPage = () => {
   };
 
   if (isLoading || !communications) {
-    return <AdminLoadingState rows={6} />;
+    return isLoading ? (
+      <AdminLoadingState rows={6} />
+    ) : (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Communications"
+          title="Region notes and assignment context in one place."
+          description="Keep India region coordination practical with scoped region notes, owner notes, partner notes, and assignment remarks."
+          action={
+            <div className="flex gap-3">
+              <RefreshButton onClick={() => void loadCommunications()} />
+              <AddButton label="Add region note" onClick={openCreateModal} />
+            </div>
+          }
+        />
+        <PageLoadErrorState
+          title="Unable to load operations communications"
+          description={errorMessage ?? "Regional notes and communications could not be loaded right now."}
+          onRetry={() => void loadCommunications()}
+        />
+      </div>
+    );
   }
 
   return (

@@ -5,6 +5,7 @@ import { AdminLoadingState } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { useAuth } from "@/hooks/use-auth";
 import { getAdminProfile, toSessionUser, updateAdminProfile, type AdminUser } from "@/lib/admin";
@@ -18,6 +19,7 @@ export const AdminProfilePage = () => {
   const [profile, setProfile] = useState<AdminUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form, setForm] = useState({ fullName: "", email: "", phone: "", profileImage: "" });
 
   const loadProfile = async () => {
@@ -25,6 +27,7 @@ export const AdminProfilePage = () => {
     try {
       const user = await getAdminProfile();
       setProfile(user);
+      setErrorMessage(null);
       setForm({
         fullName: user.fullName,
         email: user.email,
@@ -32,7 +35,9 @@ export const AdminProfilePage = () => {
         profileImage: user.profileImage ?? "",
       });
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load the admin profile."));
+      const message = getApiErrorMessage(error, "Unable to load the admin profile.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -66,7 +71,23 @@ export const AdminProfilePage = () => {
   };
 
   if (isLoading || !profile) {
-    return <AdminLoadingState rows={5} />;
+    return isLoading ? (
+      <AdminLoadingState rows={5} />
+    ) : (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Admin profile"
+          title="Your account details and identity."
+          description="Update your profile while keeping email and password flows aligned with the existing backend."
+          action={<RefreshButton onClick={() => void loadProfile()} />}
+        />
+        <PageLoadErrorState
+          title="Unable to load the admin profile"
+          description={errorMessage ?? "Your admin account details could not be loaded right now."}
+          onRetry={() => void loadProfile()}
+        />
+      </div>
+    );
   }
 
   return (

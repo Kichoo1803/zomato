@@ -180,6 +180,18 @@ const detailSelect = {
   longitude: true,
 } satisfies Prisma.RestaurantSelect;
 
+const ownerSummarySelect = {
+  id: true,
+  name: true,
+  slug: true,
+  area: true,
+  city: true,
+  state: true,
+  isActive: true,
+  isFeatured: true,
+  isVegOnly: true,
+} satisfies Prisma.RestaurantSelect;
+
 const adminListSelect = {
   id: true,
   ownerId: true,
@@ -658,10 +670,10 @@ export const restaurantsService = {
     };
   },
 
-  async listForOwner(userId: number) {
+  async listForOwner(userId: number, view: "summary" | "detail" = "detail") {
     return prisma.restaurant.findMany({
       where: { ownerId: userId },
-      select: detailSelect,
+      select: view === "summary" ? ownerSummarySelect : detailSelect,
       orderBy: { createdAt: "desc" },
     });
   },

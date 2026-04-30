@@ -21,7 +21,7 @@ import {
   getOwnerRestaurants,
   updateOwnerOffer,
   type OwnerOffer,
-  type OwnerRestaurant,
+  type OwnerRestaurantSummary,
 } from "@/lib/owner";
 import {
   AddButton,
@@ -55,7 +55,7 @@ const emptyForm = (restaurantId = "") => ({
 
 export const OwnerOffersPage = () => {
   const [offers, setOffers] = useState<OwnerOffer[]>([]);
-  const [restaurants, setRestaurants] = useState<OwnerRestaurant[]>([]);
+  const [restaurants, setRestaurants] = useState<OwnerRestaurantSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [restaurantFilter, setRestaurantFilter] = useState("ALL");
@@ -71,7 +71,10 @@ export const OwnerOffersPage = () => {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [offerRows, restaurantRows] = await Promise.all([getOwnerOffers(), getOwnerRestaurants()]);
+      const [offerRows, restaurantRows] = await Promise.all([
+        getOwnerOffers(),
+        getOwnerRestaurants({ view: "summary" }),
+      ]);
       setOffers(offerRows);
       setRestaurants(restaurantRows);
     } catch (error) {

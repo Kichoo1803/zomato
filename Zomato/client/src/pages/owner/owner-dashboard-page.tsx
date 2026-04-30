@@ -4,6 +4,7 @@ import { AdminDataTable, AdminLoadingState } from "@/components/admin/admin-ui";
 import { EmptyState } from "@/components/ui/empty-state";
 import { AnalyticsChart } from "@/components/ui/analytics-chart";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { useRealtimeSubscription } from "@/hooks/use-realtime-subscription";
 import { useAuth } from "@/hooks/use-auth";
@@ -28,6 +29,7 @@ export const OwnerDashboardPage = () => {
   const [dashboard, setDashboard] = useState<OwnerDashboard | null>(null);
   const [notifications, setNotifications] = useState<OwnerNotification[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadDashboard = async ({ quietly = false }: { quietly?: boolean } = {}) => {
     if (!quietly) {
@@ -41,8 +43,11 @@ export const OwnerDashboardPage = () => {
       ]);
       setDashboard(dashboardData);
       setNotifications(notificationRows);
+      setErrorMessage(null);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load the owner dashboard."));
+      const message = getApiErrorMessage(error, "Unable to load the owner dashboard.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       if (!quietly) {
         setIsLoading(false);
@@ -76,7 +81,15 @@ export const OwnerDashboardPage = () => {
           description="Loading your restaurant-scoped order activity, reviews, offers, and revenue signals."
           action={<RefreshButton onClick={() => void loadDashboard()} />}
         />
-        <AdminLoadingState rows={6} />
+        {isLoading ? (
+          <AdminLoadingState rows={6} />
+        ) : (
+          <PageLoadErrorState
+            title="Unable to load the owner dashboard"
+            description={errorMessage ?? "Your restaurant dashboard could not be loaded right now."}
+            onRetry={() => void loadDashboard()}
+          />
+        )}
       </div>
     );
   }

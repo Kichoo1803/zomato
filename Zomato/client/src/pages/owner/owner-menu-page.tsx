@@ -23,7 +23,7 @@ import {
   updateOwnerMenuItem,
   type OwnerMenuCategory,
   type OwnerMenuItem,
-  type OwnerRestaurant,
+  type OwnerRestaurantSummary,
 } from "@/lib/owner";
 import {
   AddButton,
@@ -57,7 +57,7 @@ const emptyForm = (restaurantId = "") => ({
 
 export const OwnerMenuPage = () => {
   const [items, setItems] = useState<OwnerMenuItem[]>([]);
-  const [restaurants, setRestaurants] = useState<OwnerRestaurant[]>([]);
+  const [restaurants, setRestaurants] = useState<OwnerRestaurantSummary[]>([]);
   const [menuCategories, setMenuCategories] = useState<OwnerMenuCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -74,7 +74,10 @@ export const OwnerMenuPage = () => {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [itemRows, restaurantRows] = await Promise.all([getOwnerMenuItems(), getOwnerRestaurants()]);
+      const [itemRows, restaurantRows] = await Promise.all([
+        getOwnerMenuItems(),
+        getOwnerRestaurants({ view: "summary" }),
+      ]);
       setItems(itemRows);
       setRestaurants(restaurantRows);
     } catch (error) {

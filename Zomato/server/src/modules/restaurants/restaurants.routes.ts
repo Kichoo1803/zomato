@@ -16,6 +16,7 @@ import {
   adminListRestaurantsSchema,
   createRestaurantSchema,
   listRestaurantsSchema,
+  ownerListRestaurantsSchema,
   restaurantIdParamSchema,
   restaurantSlugParamSchema,
   updateRestaurantSchema,
@@ -42,6 +43,7 @@ restaurantsRouter.get(
   "/owner/mine",
   requireAuth,
   authorize(Role.RESTAURANT_OWNER, Role.ADMIN),
+  validate(ownerListRestaurantsSchema),
   getMyRestaurants,
 );
 restaurantsRouter.post(

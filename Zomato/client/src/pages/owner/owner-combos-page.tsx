@@ -23,7 +23,7 @@ import {
   updateOwnerCombo,
   type OwnerCombo,
   type OwnerMenuItem,
-  type OwnerRestaurant,
+  type OwnerRestaurantSummary,
 } from "@/lib/owner";
 import {
   AddButton,
@@ -68,7 +68,7 @@ const emptyForm = (restaurantId = ""): ComboFormState => ({
 
 export const OwnerCombosPage = () => {
   const [combos, setCombos] = useState<OwnerCombo[]>([]);
-  const [restaurants, setRestaurants] = useState<OwnerRestaurant[]>([]);
+  const [restaurants, setRestaurants] = useState<OwnerRestaurantSummary[]>([]);
   const [menuItems, setMenuItems] = useState<OwnerMenuItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -87,7 +87,7 @@ export const OwnerCombosPage = () => {
     try {
       const [comboRows, restaurantRows, menuItemRows] = await Promise.all([
         getOwnerCombos(),
-        getOwnerRestaurants(),
+        getOwnerRestaurants({ view: "summary" }),
         getOwnerMenuItems(),
       ]);
       setCombos(comboRows);

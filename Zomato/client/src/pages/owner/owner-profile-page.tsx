@@ -6,6 +6,7 @@ import { AdminLoadingState } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage, logoutFromServer } from "@/lib/auth";
@@ -21,6 +22,7 @@ export const OwnerProfilePage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [form, setForm] = useState({ fullName: "", email: "", phone: "", profileImage: "" });
 
   const loadProfile = async () => {
@@ -28,6 +30,7 @@ export const OwnerProfilePage = () => {
     try {
       const user = await getOwnerProfile();
       setProfile(user);
+      setErrorMessage(null);
       setForm({
         fullName: user.fullName,
         email: user.email,
@@ -35,7 +38,9 @@ export const OwnerProfilePage = () => {
         profileImage: user.profileImage ?? "",
       });
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load the owner profile."));
+      const message = getApiErrorMessage(error, "Unable to load the owner profile.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -86,7 +91,23 @@ export const OwnerProfilePage = () => {
   };
 
   if (isLoading || !profile) {
-    return <AdminLoadingState rows={5} />;
+    return isLoading ? (
+      <AdminLoadingState rows={5} />
+    ) : (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Owner profile"
+          title="Your account details and restaurant identity."
+          description="Update your basic profile while keeping email and password flows aligned with the current backend."
+          action={<RefreshButton onClick={() => void loadProfile()} />}
+        />
+        <PageLoadErrorState
+          title="Unable to load the owner profile"
+          description={errorMessage ?? "Your owner account details could not be loaded right now."}
+          onRetry={() => void loadProfile()}
+        />
+      </div>
+    );
   }
 
   return (

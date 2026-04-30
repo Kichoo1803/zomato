@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { AdminDataTable, AdminLoadingState, AdminToolbar } from "@/components/admin/admin-ui";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
 import { Pagination } from "@/components/ui/pagination";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { getApiErrorMessage } from "@/lib/auth";
@@ -35,6 +36,7 @@ export const OpsAssignmentsPage = () => {
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof getOperationsRegions>> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [stateFilter, setStateFilter] = useState("");
   const [districtFilter, setDistrictFilter] = useState("");
@@ -67,8 +69,11 @@ export const OpsAssignmentsPage = () => {
       setOwners(ownerRows);
       setPartners(partnerRows);
       setSummary(regions);
+      setErrorMessage(null);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load the assignments view."));
+      const message = getApiErrorMessage(error, "Unable to load the assignments view.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -105,7 +110,23 @@ export const OpsAssignmentsPage = () => {
   };
 
   if (isLoading || !summary) {
-    return <AdminLoadingState rows={6} />;
+    return isLoading ? (
+      <AdminLoadingState rows={6} />
+    ) : (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Assignments"
+          title="Fix region mapping gaps without leaving operations."
+          description="Map owners and delivery partners into the right India state and district hierarchy, and keep assignment remarks close to the workflow."
+          action={<RefreshButton onClick={() => void loadAssignments()} />}
+        />
+        <PageLoadErrorState
+          title="Unable to load assignments"
+          description={errorMessage ?? "The regional assignment queue could not be loaded right now."}
+          onRetry={() => void loadAssignments()}
+        />
+      </div>
+    );
   }
 
   return (

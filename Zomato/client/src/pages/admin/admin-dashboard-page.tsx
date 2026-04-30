@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { AdminDataTable, AdminLoadingState } from "@/components/admin/admin-ui";
 import { AnalyticsChart } from "@/components/ui/analytics-chart";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { getAdminDashboard, type AdminDashboard } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
@@ -19,13 +20,17 @@ import {
 export const AdminDashboardPage = () => {
   const [dashboard, setDashboard] = useState<AdminDashboard | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadDashboard = async () => {
     setIsLoading(true);
     try {
       setDashboard(await getAdminDashboard());
+      setErrorMessage(null);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load the admin dashboard."));
+      const message = getApiErrorMessage(error, "Unable to load the admin dashboard.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -44,7 +49,15 @@ export const AdminDashboardPage = () => {
           description="Loading live admin analytics, recent orders, and new account activity."
           action={<RefreshButton onClick={() => void loadDashboard()} />}
         />
-        <AdminLoadingState rows={6} />
+        {isLoading ? (
+          <AdminLoadingState rows={6} />
+        ) : (
+          <PageLoadErrorState
+            title="Unable to load the admin dashboard"
+            description={errorMessage ?? "The latest admin analytics could not be loaded right now."}
+            onRetry={() => void loadDashboard()}
+          />
+        )}
       </div>
     );
   }

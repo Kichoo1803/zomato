@@ -3,6 +3,9 @@ base = "."
 command = "npm run build -w client"
 publish = "client/dist"
 
+[context.production.environment]
+VITE_API_BASE_URL = "https://zomato-csvi.onrender.com/api/v1"
+
 [[redirects]]
 from = "/*"
 to = "/index.html"

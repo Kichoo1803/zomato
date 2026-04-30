@@ -39,6 +39,12 @@ export const adminListRestaurantsSchema = {
   }),
 };
 
+export const ownerListRestaurantsSchema = {
+  query: z.object({
+    view: z.enum(["summary", "detail"]).optional(),
+  }),
+};
+
 const restaurantBodySchema = z.object({
   ownerId: z.coerce.number().int().positive().optional(),
   name: z.string().trim().min(2).max(191),

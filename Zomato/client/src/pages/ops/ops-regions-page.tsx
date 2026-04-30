@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { AdminDataTable, AdminLoadingState } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { getApiErrorMessage } from "@/lib/auth";
@@ -43,6 +44,7 @@ type RegionsData = {
 export const OpsRegionsPage = () => {
   const [regions, setRegions] = useState<RegionsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState("");
   const [districtFilter, setDistrictFilter] = useState("");
   const [expandedState, setExpandedState] = useState<string | null>(null);
@@ -56,8 +58,11 @@ export const OpsRegionsPage = () => {
           district: districtFilter || undefined,
         }),
       );
+      setErrorMessage(null);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load the regions view."));
+      const message = getApiErrorMessage(error, "Unable to load the regions view.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -121,7 +126,23 @@ export const OpsRegionsPage = () => {
   }, [stateFilter]);
 
   if (isLoading || !regions) {
-    return <AdminLoadingState rows={6} />;
+    return isLoading ? (
+      <AdminLoadingState rows={6} />
+    ) : (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Regional control"
+          title="One India-focused workflow for state and district operations."
+          description="Browse states first, drill into districts second, and keep owner and rider management inside one clean regional system."
+          action={<RefreshButton onClick={() => void loadRegions()} />}
+        />
+        <PageLoadErrorState
+          title="Unable to load regional control"
+          description={errorMessage ?? "The state and district view could not be loaded right now."}
+          onRetry={() => void loadRegions()}
+        />
+      </div>
+    );
   }
 
   return (

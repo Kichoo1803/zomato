@@ -26,6 +26,12 @@ type AuthResponse = {
 
 const allowedMembershipTiers: MembershipTier[] = ["CLASSIC", "GOLD", "PLATINUM"];
 const allowedMembershipStatuses: MembershipStatus[] = ["ACTIVE", "INACTIVE", "EXPIRED"];
+const networkUnavailableMessage = import.meta.env.DEV
+  ? "Unable to reach the server. Please check that the backend is running and reachable from this device."
+  : "Unable to reach the server right now. Please try again in a moment.";
+const loginUnavailableMessage = import.meta.env.DEV
+  ? "Server unavailable. Please check that the backend is running and reachable from this device."
+  : "Server unavailable right now. Please try again in a moment.";
 
 export const normalizeAuthUser = (user: BackendAuthUser): AuthUser => ({
   id: user.id,
@@ -205,7 +211,7 @@ export const getApiErrorMessage = (error: unknown, fallback: string) => {
   }
 
   if (error.code === "ERR_NETWORK") {
-    return "Unable to reach the server. Please check that the backend is running and reachable from this device.";
+    return networkUnavailableMessage;
   }
 
   if (error.code === "ERR_BAD_RESPONSE" || (error.response?.status ?? 0) >= 500) {
@@ -228,7 +234,7 @@ export const getLoginErrorMessage = (error: unknown) => {
   const statusCode = getApiErrorStatus(error);
 
   if (error.code === "ERR_NETWORK") {
-    return "Server unavailable. Please check that the backend is running and reachable from this device.";
+    return loginUnavailableMessage;
   }
 
   if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {

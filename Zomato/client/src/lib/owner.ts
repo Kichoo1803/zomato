@@ -211,6 +211,18 @@ export type OwnerRestaurant = {
   }>;
 };
 
+export type OwnerRestaurantSummary = {
+  id: number;
+  name: string;
+  slug: string;
+  area?: string | null;
+  city: string;
+  state: string;
+  isActive: boolean;
+  isFeatured: boolean;
+  isVegOnly: boolean;
+};
+
 export type OwnerMenuCategory = {
   id: number;
   restaurantId: number;
@@ -264,9 +276,19 @@ export type {
 export const getOwnerDashboard = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<OwnerDashboard>>("/owner/dashboard"));
 
-export const getOwnerRestaurants = async () =>
-  unwrapData(await apiClient.get<ApiEnvelope<{ restaurants: OwnerRestaurant[] }>>("/restaurants/owner/mine"))
-    .restaurants;
+export function getOwnerRestaurants(options: { view: "summary" }): Promise<OwnerRestaurantSummary[]>;
+export function getOwnerRestaurants(options?: { view?: "detail" }): Promise<OwnerRestaurant[]>;
+export async function getOwnerRestaurants(options?: { view?: "summary" | "detail" }) {
+  const response = await apiClient.get<
+    ApiEnvelope<{
+      restaurants: Array<OwnerRestaurant | OwnerRestaurantSummary>;
+    }>
+  >("/restaurants/owner/mine", {
+    params: options?.view ? { view: options.view } : undefined,
+  });
+
+  return unwrapData(response).restaurants;
+}
 
 export const updateOwnerRestaurant = async (restaurantId: number, payload: Record<string, unknown>) =>
   unwrapData(

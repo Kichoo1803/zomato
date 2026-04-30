@@ -4,6 +4,7 @@ import { AdminLoadingState } from "@/components/admin/admin-ui";
 import { EmptyState } from "@/components/ui/empty-state";
 import { AnalyticsChart } from "@/components/ui/analytics-chart";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
+import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { getApiErrorMessage } from "@/lib/auth";
 import { getOwnerDashboard, type OwnerDashboard } from "@/lib/owner";
@@ -17,13 +18,17 @@ import {
 export const OwnerAnalyticsPage = () => {
   const [dashboard, setDashboard] = useState<OwnerDashboard | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const loadDashboard = async () => {
     setIsLoading(true);
     try {
       setDashboard(await getOwnerDashboard());
+      setErrorMessage(null);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load your analytics."));
+      const message = getApiErrorMessage(error, "Unable to load your analytics.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -34,7 +39,23 @@ export const OwnerAnalyticsPage = () => {
   }, []);
 
   if (isLoading || !dashboard) {
-    return <AdminLoadingState rows={6} />;
+    return isLoading ? (
+      <AdminLoadingState rows={6} />
+    ) : (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Owner analytics"
+          title="Restaurant-only analytics and operational insights."
+          description="Use owner-scoped revenue, order, review, cancellation, and preparation signals to understand how your restaurants are performing."
+          action={<RefreshButton onClick={() => void loadDashboard()} />}
+        />
+        <PageLoadErrorState
+          title="Unable to load owner analytics"
+          description={errorMessage ?? "Your owner analytics could not be loaded right now."}
+          onRetry={() => void loadDashboard()}
+        />
+      </div>
+    );
   }
 
   return (

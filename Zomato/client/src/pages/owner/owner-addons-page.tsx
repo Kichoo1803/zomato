@@ -25,7 +25,7 @@ import {
   type OwnerAddon,
   type OwnerCombo,
   type OwnerMenuItem,
-  type OwnerRestaurant,
+  type OwnerRestaurantSummary,
 } from "@/lib/owner";
 import {
   ADDON_TYPES,
@@ -65,7 +65,7 @@ const emptyForm = (restaurantId = ""): AddonFormState => ({
 
 export const OwnerAddonsPage = () => {
   const [addons, setAddons] = useState<OwnerAddon[]>([]);
-  const [restaurants, setRestaurants] = useState<OwnerRestaurant[]>([]);
+  const [restaurants, setRestaurants] = useState<OwnerRestaurantSummary[]>([]);
   const [menuItems, setMenuItems] = useState<OwnerMenuItem[]>([]);
   const [combos, setCombos] = useState<OwnerCombo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -86,7 +86,7 @@ export const OwnerAddonsPage = () => {
     try {
       const [addonRows, restaurantRows, menuItemRows, comboRows] = await Promise.all([
         getOwnerAddons(),
-        getOwnerRestaurants(),
+        getOwnerRestaurants({ view: "summary" }),
         getOwnerMenuItems(),
         getOwnerCombos(),
       ]);

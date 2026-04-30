@@ -50,14 +50,27 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
     code: string;
     message: string;
     details?: unknown;
-  }) =>
-    res.status(statusCode).json({
+  }) => {
+    logger[statusCode >= StatusCodes.INTERNAL_SERVER_ERROR ? "error" : "warn"](
+      "API request failed",
+      {
+        path: req.originalUrl,
+        method: req.method,
+        requestId,
+        statusCode,
+        code,
+        message,
+      },
+    );
+
+    return res.status(statusCode).json({
       success: false,
       code,
       message,
       details,
       requestId,
     });
+  };
 
   const logLevel =
     error instanceof AppError
