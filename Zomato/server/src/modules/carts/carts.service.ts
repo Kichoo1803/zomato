@@ -161,8 +161,36 @@ const buildComboSnapshot = (
     categoryTag: combo.categoryTag,
   });
 
-const recalculateCart = async (tx: Prisma.TransactionClient, cartId: number) => {
-  const cart = await tx.cart.findUnique({
+const isPrismaKnownRequestError = (
+  error: unknown,
+  code?: string,
+): error is Error & { code: string } =>
+  error instanceof Error &&
+  error.name === "PrismaClientKnownRequestError" &&
+  typeof (error as unknown as { code?: unknown }).code === "string" &&
+  (!code || (error as unknown as { code: string }).code === code);
+
+const normalizeAddonIds = (addonIds?: number[]) =>
+  [...new Set(addonIds ?? [])].sort((leftId, rightId) => leftId - rightId);
+
+const normalizeSpecialInstructions = (value?: string | null) => value?.trim() || null;
+
+const hasSameAddonSelection = (
+  addonLinks: Array<{
+    addonId: number;
+  }>,
+  expectedAddonIds: number[],
+) => {
+  const actualAddonIds = addonLinks.map((addonLink) => addonLink.addonId).sort((leftId, rightId) => leftId - rightId);
+
+  return (
+    actualAddonIds.length === expectedAddonIds.length &&
+    actualAddonIds.every((addonId, index) => addonId === expectedAddonIds[index])
+  );
+};
+
+const recalculateCart = async (cartId: number) => {
+  const cart = await prisma.cart.findUnique({
     where: { id: cartId },
     include: cartInclude,
   });
@@ -179,7 +207,7 @@ const recalculateCart = async (tx: Prisma.TransactionClient, cartId: number) => 
     offer: cart.offer,
   });
 
-  return tx.cart.update({
+  return prisma.cart.update({
     where: { id: cartId },
     data: {
       totalAmount: totals.subtotal,
@@ -188,6 +216,109 @@ const recalculateCart = async (tx: Prisma.TransactionClient, cartId: number) => 
       discountAmount: totals.discountAmount,
     },
     include: cartInclude,
+  });
+};
+
+const getOrCreateCart = async (userId: number, restaurantId: number) => {
+  const uniqueWhere = {
+    userId_restaurantId: {
+      userId,
+      restaurantId,
+    },
+  } as const;
+
+  const existingCart = await prisma.cart.findUnique({
+    where: uniqueWhere,
+  });
+
+  if (existingCart) {
+    return existingCart;
+  }
+
+  try {
+    return await prisma.cart.create({
+      data: {
+        userId,
+        restaurantId,
+      },
+    });
+  } catch (error) {
+    if (isPrismaKnownRequestError(error, "P2002")) {
+      const cart = await prisma.cart.findUnique({
+        where: uniqueWhere,
+      });
+
+      if (cart) {
+        return cart;
+      }
+    }
+
+    throw error;
+  }
+};
+
+const findMatchingCartItem = async ({
+  cartId,
+  menuItemId,
+  comboId,
+  itemType,
+  addonIds,
+  specialInstructions,
+}: {
+  cartId: number;
+  menuItemId?: number;
+  comboId?: number;
+  itemType: CatalogItemType;
+  addonIds: number[];
+  specialInstructions: string | null;
+}) => {
+  const candidateItems = await prisma.cartItem.findMany({
+    where: {
+      cartId,
+      menuItemId: menuItemId ?? null,
+      comboId: comboId ?? null,
+      itemType,
+    },
+    include: {
+      addons: {
+        select: {
+          addonId: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return (
+    candidateItems.find(
+      (candidateItem) =>
+        normalizeSpecialInstructions(candidateItem.specialInstructions) === specialInstructions &&
+        hasSameAddonSelection(candidateItem.addons, addonIds),
+    ) ?? null
+  );
+};
+
+const syncCartItemAddons = async (
+  cartItemId: number,
+  selectedAddons: Array<{
+    id: number;
+    price: number;
+  }>,
+) => {
+  await prisma.cartItemAddon.deleteMany({
+    where: { cartItemId },
+  });
+
+  if (!selectedAddons.length) {
+    return;
+  }
+
+  await prisma.cartItemAddon.createMany({
+    data: selectedAddons.map((addon) => ({
+      cartItemId,
+      addonId: addon.id,
+      addonPrice: addon.price,
+    })),
   });
 };
 
@@ -304,63 +435,63 @@ export const cartsService = {
       );
     }
 
-    const addonIds = input.addonIds ?? [];
+    const addonIds = normalizeAddonIds(input.addonIds);
+    const specialInstructions = normalizeSpecialInstructions(input.specialInstructions);
     const availableAddons = menuItem?.addons ?? combo?.addons ?? [];
     const selectedAddons = availableAddons.filter((addon) => addonIds.includes(addon.id));
     if (selectedAddons.length !== addonIds.length) {
       throw new AppError(StatusCodes.BAD_REQUEST, "Some selected addons are invalid", "INVALID_ADDONS");
     }
 
-    return prisma.$transaction(async (tx) => {
-      const cart =
-        (await tx.cart.findUnique({
-          where: {
-            userId_restaurantId: {
-              userId,
-              restaurantId: input.restaurantId,
-            },
-          },
-        })) ??
-        (await tx.cart.create({
-          data: {
-            userId,
-            restaurantId: input.restaurantId,
-          },
-        }));
+    const cart = await getOrCreateCart(userId, input.restaurantId);
+    const itemType = menuItem ? CatalogItemType.MENU_ITEM : CatalogItemType.COMBO;
+    const itemPrice = menuItem
+      ? decimalToNumber(menuItem.discountPrice ?? menuItem.price)
+      : decimalToNumber(combo?.offerPrice ?? combo?.basePrice);
+    const addonTotal = selectedAddons.reduce((sum, addon) => sum + addon.price, 0);
+    const matchingCartItem = await findMatchingCartItem({
+      cartId: cart.id,
+      menuItemId: menuItem?.id,
+      comboId: combo?.id,
+      itemType,
+      addonIds,
+      specialInstructions,
+    });
+    const quantity = (matchingCartItem?.quantity ?? 0) + input.quantity;
+    const totalPrice = roundMoney((itemPrice + addonTotal) * quantity);
 
-      const itemPrice = menuItem
-        ? decimalToNumber(menuItem.discountPrice ?? menuItem.price)
-        : decimalToNumber(combo?.offerPrice ?? combo?.basePrice);
-      const addonTotal = selectedAddons.reduce((sum, addon) => sum + addon.price, 0);
-      const totalPrice = roundMoney((itemPrice + addonTotal) * input.quantity);
-
-      const cartItem = await tx.cartItem.create({
+    if (matchingCartItem) {
+      await prisma.cartItem.update({
+        where: { id: matchingCartItem.id },
+        data: {
+          quantity,
+          itemPrice,
+          totalPrice,
+          ...(itemType === CatalogItemType.COMBO && combo
+            ? { itemSnapshot: buildComboSnapshot(combo) }
+            : {}),
+        },
+      });
+    } else {
+      const cartItem = await prisma.cartItem.create({
         data: {
           cartId: cart.id,
           menuItemId: menuItem?.id,
           comboId: combo?.id,
-          itemType: menuItem ? CatalogItemType.MENU_ITEM : CatalogItemType.COMBO,
+          itemType,
           itemSnapshot: combo ? buildComboSnapshot(combo) : null,
-          quantity: input.quantity,
+          quantity,
           itemPrice,
           totalPrice,
-          specialInstructions: input.specialInstructions,
+          specialInstructions,
         },
       });
 
-      if (selectedAddons.length) {
-        await tx.cartItemAddon.createMany({
-          data: selectedAddons.map((addon) => ({
-            cartItemId: cartItem.id,
-            addonId: addon.id,
-            addonPrice: addon.price,
-          })),
-        });
-      }
+      await syncCartItemAddons(cartItem.id, selectedAddons);
+    }
 
-      const updatedCart = await recalculateCart(tx, cart.id);
-      return mapCart(updatedCart);
-    });
+    const updatedCart = await recalculateCart(cart.id);
+    return mapCart(updatedCart);
   },
 
   async updateItem(
@@ -438,7 +569,7 @@ export const cartsService = {
         ? availableAddons.filter((addon) => input.addonIds?.includes(addon.id))
         : cartItem.addons.map((addonLink) => addonLink.addon);
 
-    if (input.addonIds && selectedAddons.length !== input.addonIds.length) {
+    if (input.addonIds !== undefined && selectedAddons.length !== input.addonIds.length) {
       throw new AppError(StatusCodes.BAD_REQUEST, "Some selected addons are invalid", "INVALID_ADDONS");
     }
 
@@ -454,41 +585,27 @@ export const cartsService = {
     const addonTotal = selectedAddons.reduce((sum, addon) => sum + addon.price, 0);
     const totalPrice = roundMoney((itemPrice + addonTotal) * quantity);
 
-    return prisma.$transaction(async (tx) => {
-      await tx.cartItem.update({
-        where: { id: cartItemId },
-        data: {
-          quantity,
-          itemPrice,
-          totalPrice,
-          ...(cartItem.itemType === CatalogItemType.COMBO && cartItem.combo
-            ? { itemSnapshot: buildComboSnapshot(cartItem.combo) }
-            : {}),
-          ...(input.specialInstructions !== undefined
-            ? { specialInstructions: input.specialInstructions }
-            : {}),
-        },
-      });
-
-      if (input.addonIds) {
-        await tx.cartItemAddon.deleteMany({
-          where: { cartItemId },
-        });
-
-        if (selectedAddons.length) {
-          await tx.cartItemAddon.createMany({
-            data: selectedAddons.map((addon) => ({
-              cartItemId,
-              addonId: addon.id,
-              addonPrice: addon.price,
-            })),
-          });
-        }
-      }
-
-      const updatedCart = await recalculateCart(tx, cartItem.cartId);
-      return mapCart(updatedCart);
+    await prisma.cartItem.update({
+      where: { id: cartItemId },
+      data: {
+        quantity,
+        itemPrice,
+        totalPrice,
+        ...(cartItem.itemType === CatalogItemType.COMBO && cartItem.combo
+          ? { itemSnapshot: buildComboSnapshot(cartItem.combo) }
+          : {}),
+        ...(input.specialInstructions !== undefined
+          ? { specialInstructions: normalizeSpecialInstructions(input.specialInstructions) }
+          : {}),
+      },
     });
+
+    if (input.addonIds !== undefined) {
+      await syncCartItemAddons(cartItemId, selectedAddons);
+    }
+
+    const updatedCart = await recalculateCart(cartItem.cartId);
+    return mapCart(updatedCart);
   },
 
   async removeItem(userId: number, cartItemId: number) {
@@ -509,65 +626,57 @@ export const cartsService = {
       throw new AppError(StatusCodes.NOT_FOUND, "Cart item not found", "CART_ITEM_NOT_FOUND");
     }
 
-    return prisma.$transaction(async (tx) => {
-      await tx.cartItem.delete({
-        where: { id: cartItemId },
-      });
-
-      const remainingItems = await tx.cartItem.count({
-        where: { cartId: cartItem.cartId },
-      });
-
-      if (remainingItems === 0) {
-        await tx.cart.delete({
-          where: { id: cartItem.cartId },
-        });
-        return null;
-      }
-
-      const updatedCart = await recalculateCart(tx, cartItem.cartId);
-      return mapCart(updatedCart);
+    await prisma.cartItem.delete({
+      where: { id: cartItemId },
     });
+
+    const remainingItems = await prisma.cartItem.count({
+      where: { cartId: cartItem.cartId },
+    });
+
+    if (remainingItems === 0) {
+      await prisma.cart.delete({
+        where: { id: cartItem.cartId },
+      });
+      return null;
+    }
+
+    const updatedCart = await recalculateCart(cartItem.cartId);
+    return mapCart(updatedCart);
   },
 
   async applyOffer(userId: number, cartId: number, code: string) {
     const cart = await getOwnedCart(userId, cartId);
     const offer = await ensureOfferApplicable(cart.restaurantId, code);
+    if (calculateOfferDiscount(offer, decimalToNumber(cart.totalAmount)) === 0) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "The cart does not meet the minimum amount for this offer",
+        "OFFER_MINIMUM_NOT_MET",
+      );
+    }
 
-    return prisma.$transaction(async (tx) => {
-      await tx.cart.update({
-        where: { id: cartId },
-        data: {
-          offerId: offer.id,
-        },
-      });
-
-      const updatedCart = await recalculateCart(tx, cartId);
-
-      if (calculateOfferDiscount(offer, decimalToNumber(updatedCart.totalAmount)) === 0) {
-        throw new AppError(
-          StatusCodes.BAD_REQUEST,
-          "The cart does not meet the minimum amount for this offer",
-          "OFFER_MINIMUM_NOT_MET",
-        );
-      }
-
-      return mapCart(updatedCart);
+    await prisma.cart.update({
+      where: { id: cartId },
+      data: {
+        offerId: offer.id,
+      },
     });
+
+    const updatedCart = await recalculateCart(cartId);
+    return mapCart(updatedCart);
   },
 
   async removeOffer(userId: number, cartId: number) {
     await getOwnedCart(userId, cartId);
 
-    return prisma.$transaction(async (tx) => {
-      await tx.cart.update({
-        where: { id: cartId },
-        data: { offerId: null },
-      });
-
-      const updatedCart = await recalculateCart(tx, cartId);
-      return mapCart(updatedCart);
+    await prisma.cart.update({
+      where: { id: cartId },
+      data: { offerId: null },
     });
+
+    const updatedCart = await recalculateCart(cartId);
+    return mapCart(updatedCart);
   },
 
   async clearCart(userId: number, cartId: number) {

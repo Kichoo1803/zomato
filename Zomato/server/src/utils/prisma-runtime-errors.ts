@@ -71,6 +71,13 @@ const mongoReplicaSetFragments = [
   "not running with --replset",
 ];
 
+const transactionTimeoutFragments = [
+  "transaction api error",
+  "expired transaction",
+  "unable to start a transaction",
+  "transaction not found",
+];
+
 export const getPrismaRuntimeErrorResponse = (
   error: unknown,
   {
@@ -105,6 +112,9 @@ export const getPrismaRuntimeErrorResponse = (
     (isPrismaKnownRequestError(error) &&
       error.code === "P2010" &&
       includesAnyFragment(errorMessage, mongoReplicaSetFragments)) ||
+    (isPrismaKnownRequestError(error) &&
+      error.code === "P2028" &&
+      includesAnyFragment(errorMessage, mongoReplicaSetFragments)) ||
     (isPrismaUnknownRequestError(error) &&
       includesAnyFragment(errorMessage, mongoReplicaSetFragments))
   ) {
@@ -114,6 +124,21 @@ export const getPrismaRuntimeErrorResponse = (
       message: isDevelopment
         ? "MongoDB transactions require a replica set. Start MongoDB as a replica set and use a matching DATABASE_URL."
         : "The database deployment is not ready for transaction-based requests.",
+      details: isDevelopment ? getErrorMessage(error) : undefined,
+    };
+  }
+
+  if (
+    isPrismaKnownRequestError(error) &&
+    error.code === "P2028" &&
+    includesAnyFragment(errorMessage, transactionTimeoutFragments)
+  ) {
+    return {
+      statusCode: 503,
+      code: "DATABASE_TRANSACTION_UNAVAILABLE",
+      message: isDevelopment
+        ? "The database could not keep a transaction open long enough to finish this request. Retry the request or avoid transaction-heavy write paths."
+        : "The database could not keep this write request open long enough. Please try again.",
       details: isDevelopment ? getErrorMessage(error) : undefined,
     };
   }

@@ -10,6 +10,7 @@ import {
   Role,
 } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
+import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
 import {
   emitDispatchQueueUpdate,
@@ -618,15 +619,18 @@ export const ordersService = {
     );
     const paymentStatus =
       input.paymentMethod === PaymentMethod.COD ? PaymentStatus.PENDING : PaymentStatus.PAID;
+    const orderNumber = generateOrderNumber();
+    let createdOrderId: number | null = null;
+    const createdOrderItemIds: number[] = [];
 
-    const createdOrder = await prisma.$transaction(async (tx) => {
-      const order = await tx.order.create({
+    try {
+      const order = await prisma.order.create({
         data: {
           userId: user.id,
           restaurantId: cart.restaurantId,
           addressId: input.addressId,
           offerId: cart.offerId,
-          orderNumber: generateOrderNumber(),
+          orderNumber,
           status: OrderStatus.PLACED,
           paymentStatus,
           paymentMethod: input.paymentMethod,
@@ -645,6 +649,7 @@ export const ordersService = {
           specialInstructions: input.specialInstructions,
         },
       });
+      createdOrderId = order.id;
 
       for (const item of cart.items) {
         const isComboItem = item.itemType === CatalogItemType.COMBO;
@@ -658,7 +663,7 @@ export const ordersService = {
           );
         }
 
-        const orderItem = await tx.orderItem.create({
+        const orderItem = await prisma.orderItem.create({
           data: {
             orderId: order.id,
             menuItemId: item.menuItemId,
@@ -672,9 +677,10 @@ export const ordersService = {
             foodType: isComboItem ? null : item.menuItem?.foodType,
           },
         });
+        createdOrderItemIds.push(orderItem.id);
 
         if (item.addons.length) {
-          await tx.orderItemAddon.createMany({
+          await prisma.orderItemAddon.createMany({
             data: item.addons.map((addon) => ({
               orderItemId: orderItem.id,
               addonName: addon.addon.name,
@@ -684,7 +690,7 @@ export const ordersService = {
         }
       }
 
-      await tx.payment.create({
+      await prisma.payment.create({
         data: {
           orderId: order.id,
           transactionId:
@@ -696,7 +702,7 @@ export const ordersService = {
         },
       });
 
-      await tx.orderStatusEvent.create({
+      await prisma.orderStatusEvent.create({
         data: {
           orderId: order.id,
           actorId: user.id,
@@ -704,24 +710,73 @@ export const ordersService = {
           note: "Order placed successfully.",
         },
       });
+    } catch (error) {
+      try {
+        if (createdOrderItemIds.length) {
+          await prisma.orderItemAddon.deleteMany({
+            where: {
+              orderItemId: {
+                in: createdOrderItemIds,
+              },
+            },
+          });
 
-      await tx.cart.delete({
-        where: { id: cart.id },
-      });
+          await prisma.orderItem.deleteMany({
+            where: {
+              id: {
+                in: createdOrderItemIds,
+              },
+            },
+          });
+        }
 
-      return order;
-    });
+        if (createdOrderId != null) {
+          await prisma.payment.deleteMany({
+            where: { orderId: createdOrderId },
+          });
+          await prisma.orderStatusEvent.deleteMany({
+            where: { orderId: createdOrderId },
+          });
+          await prisma.order.deleteMany({
+            where: { id: createdOrderId },
+          });
+        }
+      } catch (cleanupError) {
+        logger.error("Order placement cleanup failed", {
+          userId: user.id,
+          cartId: cart.id,
+          orderId: createdOrderId,
+          orderItemIds: createdOrderItemIds,
+          message: cleanupError instanceof Error ? cleanupError.message : "Unknown cleanup error",
+        });
+      }
+
+      throw error;
+    }
 
     const placedOrder = assertOrderAccess(
       user,
       await prisma.order.findFirst({
         where: {
-          id: createdOrder.id,
+          id: createdOrderId ?? 0,
           ...notArchivedOrderWhere,
         },
         include: orderInclude,
       }),
     );
+
+    try {
+      await prisma.cart.delete({
+        where: { id: cart.id },
+      });
+    } catch (error) {
+      logger.warn("Placed order cart cleanup failed", {
+        userId: user.id,
+        cartId: cart.id,
+        orderId: placedOrder.id,
+        message: error instanceof Error ? error.message : "Unknown cart cleanup error",
+      });
+    }
 
     await createOrderNotification(
       user.id,
