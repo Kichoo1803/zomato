@@ -18,7 +18,8 @@ export const LandingPage = () => {
               Restaurant-quality nights, delivered with quiet confidence.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-ink-soft">
-              Discover premium restaurants, curated offers, and silky-smooth live tracking across customer, partner, delivery, and admin experiences.
+              Discover premium restaurants, curated offers, and silky-smooth live tracking across customer, partner,
+              delivery, and admin experiences.
             </p>
           </div>
         </motion.div>

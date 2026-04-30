@@ -14,12 +14,18 @@ import { Pagination } from "@/components/ui/pagination";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/hooks/use-auth";
 import { getRegionsAdmin, type AdminRegion } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
-import { getDistrictOptions, mergeRegionOptions, type RegionOptions } from "@/lib/india-regions";
+import {
+  getDistrictOptions,
+  getSingleRegionSelection,
+  resolveRegionOptions,
+  type RegionOptions,
+} from "@/lib/india-regions";
 import {
   getOperationsRegions,
-  type OperationsDashboard,
+  type OperationsRegionsSummary,
 } from "@/lib/ops";
 import {
   approveRegistrationApplication,
@@ -103,10 +109,12 @@ const getDocumentItems = (application: RegistrationApplication) => {
 };
 
 export const RegistrationApplicationsPage = ({ scope }: RegistrationApplicationsPageProps) => {
+  const { user } = useAuth();
   const copy = getReviewScopeCopy(scope);
   const [applications, setApplications] = useState<RegistrationApplication[]>([]);
   const [adminRegions, setAdminRegions] = useState<AdminRegion[]>([]);
   const [opsRegionOptions, setOpsRegionOptions] = useState<RegionOptions | null>(null);
+  const [scopeMessage, setScopeMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isReviewing, setIsReviewing] = useState(false);
   const [search, setSearch] = useState("");
@@ -121,12 +129,38 @@ export const RegistrationApplicationsPage = ({ scope }: RegistrationApplications
   const [page, setPage] = useState(1);
   const [detailsApplication, setDetailsApplication] = useState<RegistrationApplication | null>(null);
   const [reviewRemarks, setReviewRemarks] = useState("");
+  const isRegionalManager = user?.role === "REGIONAL_MANAGER";
 
-  const mergedOpsRegions = useMemo(() => mergeRegionOptions(opsRegionOptions), [opsRegionOptions]);
-  const districtOptions = useMemo(
-    () => getDistrictOptions(stateFilter, opsRegionOptions),
-    [opsRegionOptions, stateFilter],
+  const mergedOpsRegions = useMemo(
+    () =>
+      resolveRegionOptions(opsRegionOptions, {
+        includeIndiaDefaults: !(scope === "OPS" && isRegionalManager),
+      }),
+    [isRegionalManager, opsRegionOptions, scope],
   );
+  const districtOptions = useMemo(
+    () =>
+      getDistrictOptions(stateFilter, opsRegionOptions, {
+        includeIndiaDefaults: !(scope === "OPS" && isRegionalManager),
+      }),
+    [isRegionalManager, opsRegionOptions, scope, stateFilter],
+  );
+
+  useEffect(() => {
+    if (scope !== "OPS" || !isRegionalManager || !opsRegionOptions) {
+      return;
+    }
+
+    const assignedRegion = getSingleRegionSelection(opsRegionOptions);
+
+    if (stateFilter !== assignedRegion.state) {
+      setStateFilter(assignedRegion.state);
+    }
+
+    if (districtFilter !== assignedRegion.district) {
+      setDistrictFilter(assignedRegion.district);
+    }
+  }, [districtFilter, isRegionalManager, opsRegionOptions, scope, stateFilter]);
 
   const loadApplications = async () => {
     setIsLoading(true);
@@ -152,6 +186,7 @@ export const RegistrationApplicationsPage = ({ scope }: RegistrationApplications
 
         setApplications(applicationRows);
         setAdminRegions(regionRows);
+        setScopeMessage(null);
       } else {
         const [applicationRows, regions] = await Promise.all([
           getRegistrationApplications(filters),
@@ -159,7 +194,8 @@ export const RegistrationApplicationsPage = ({ scope }: RegistrationApplications
         ]);
 
         setApplications(applicationRows);
-        setOpsRegionOptions((regions as Omit<OperationsDashboard, "recentUpdates">).regionOptions);
+        setOpsRegionOptions((regions as OperationsRegionsSummary).regionOptions);
+        setScopeMessage((regions as OperationsRegionsSummary).scopeMessage ?? null);
       }
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to load registration applications."));
@@ -279,109 +315,118 @@ export const RegistrationApplicationsPage = ({ scope }: RegistrationApplications
         </SurfaceCard>
       </div>
 
-      <AdminToolbar
-        searchValue={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Search by applicant, email, phone, restaurant, vehicle, district, or ID proof"
-        filters={
-          <>
-            <Select
-              value={roleFilter}
-              onChange={(event) => setRoleFilter(event.target.value as typeof roleFilter)}
-              className="min-w-[180px]"
-            >
-              <option value="ALL">All roles</option>
-              {ROLE_FILTER_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {toLabel(option)}
-                </option>
-              ))}
-            </Select>
-            <Select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
-              className="min-w-[180px]"
-            >
-              <option value="ALL">All statuses</option>
-              {STATUS_FILTER_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {toLabel(option)}
-                </option>
-              ))}
-            </Select>
-            {scope === "ADMIN" ? (
+      {scope === "OPS" && isRegionalManager && scopeMessage ? (
+        <SurfaceCard>
+          <EmptyState title="No region assigned" description={scopeMessage} />
+        </SurfaceCard>
+      ) : (
+        <AdminToolbar
+          searchValue={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search by applicant, email, phone, restaurant, vehicle, district, or ID proof"
+          filters={
+            <>
               <Select
-                value={regionFilter}
-                onChange={(event) => setRegionFilter(event.target.value)}
-                className="min-w-[220px]"
+                value={roleFilter}
+                onChange={(event) => setRoleFilter(event.target.value as typeof roleFilter)}
+                className="min-w-[180px]"
               >
-                <option value="">All mapped regions</option>
-                {adminRegions.map((region) => (
-                  <option key={region.id} value={region.id}>
-                    {buildRegionLabel(region)}
+                <option value="ALL">All roles</option>
+                {ROLE_FILTER_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {toLabel(option)}
                   </option>
                 ))}
               </Select>
-            ) : (
-              <>
+              <Select
+                value={statusFilter}
+                onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
+                className="min-w-[180px]"
+              >
+                <option value="ALL">All statuses</option>
+                {STATUS_FILTER_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {toLabel(option)}
+                  </option>
+                ))}
+              </Select>
+              {scope === "ADMIN" ? (
                 <Select
-                  value={stateFilter}
-                  onChange={(event) => {
-                    setStateFilter(event.target.value);
-                    setDistrictFilter("");
-                  }}
-                  className="min-w-[180px]"
+                  value={regionFilter}
+                  onChange={(event) => setRegionFilter(event.target.value)}
+                  className="min-w-[220px]"
                 >
-                  <option value="">All assigned states</option>
-                  {mergedOpsRegions.states.map((state) => (
-                    <option key={state} value={state}>
-                      {state}
+                  <option value="">All mapped regions</option>
+                  {adminRegions.map((region) => (
+                    <option key={region.id} value={region.id}>
+                      {buildRegionLabel(region)}
                     </option>
                   ))}
                 </Select>
-                <Select
-                  value={districtFilter}
-                  onChange={(event) => setDistrictFilter(event.target.value)}
-                  className="min-w-[180px]"
-                  disabled={!stateFilter}
-                >
-                  <option value="">{stateFilter ? "All assigned districts" : "Choose a state first"}</option>
-                  {districtOptions.map((district) => (
-                    <option key={district} value={district}>
-                      {district}
-                    </option>
-                  ))}
-                </Select>
-              </>
-            )}
-            <Input
-              type="date"
-              value={createdFrom}
-              onChange={(event) => setCreatedFrom(event.target.value)}
-              className="min-w-[160px]"
-            />
-            <Input
-              type="date"
-              value={createdTo}
-              onChange={(event) => setCreatedTo(event.target.value)}
-              className="min-w-[160px]"
-            />
-            {scope === "ADMIN" ? (
-              <label className="flex items-center gap-2 rounded-full border border-accent/10 bg-white px-4 py-3 text-sm font-semibold text-ink shadow-soft">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 accent-[rgb(139,30,36)]"
-                  checked={unassignedOnly}
-                  onChange={(event) => setUnassignedOnly(event.target.checked)}
-                />
-                Unassigned only
-              </label>
-            ) : null}
-          </>
-        }
-      />
+              ) : (
+                <>
+                  <Select
+                    value={stateFilter}
+                    onChange={(event) => {
+                      setStateFilter(event.target.value);
+                      setDistrictFilter("");
+                    }}
+                    className="min-w-[180px]"
+                    disabled={isRegionalManager}
+                  >
+                    {isRegionalManager ? null : <option value="">All assigned states</option>}
+                    {mergedOpsRegions.states.map((state) => (
+                      <option key={state} value={state}>
+                        {state}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select
+                    value={districtFilter}
+                    onChange={(event) => setDistrictFilter(event.target.value)}
+                    className="min-w-[180px]"
+                    disabled={!stateFilter || isRegionalManager}
+                  >
+                    {isRegionalManager ? null : (
+                      <option value="">{stateFilter ? "All assigned districts" : "Choose a state first"}</option>
+                    )}
+                    {districtOptions.map((district) => (
+                      <option key={district} value={district}>
+                        {district}
+                      </option>
+                    ))}
+                  </Select>
+                </>
+              )}
+              <Input
+                type="date"
+                value={createdFrom}
+                onChange={(event) => setCreatedFrom(event.target.value)}
+                className="min-w-[160px]"
+              />
+              <Input
+                type="date"
+                value={createdTo}
+                onChange={(event) => setCreatedTo(event.target.value)}
+                className="min-w-[160px]"
+              />
+              {scope === "ADMIN" ? (
+                <label className="flex items-center gap-2 rounded-full border border-accent/10 bg-white px-4 py-3 text-sm font-semibold text-ink shadow-soft">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-[rgb(139,30,36)]"
+                    checked={unassignedOnly}
+                    onChange={(event) => setUnassignedOnly(event.target.checked)}
+                  />
+                  Unassigned only
+                </label>
+              ) : null}
+            </>
+          }
+        />
+      )}
 
-      {scope === "OPS" ? (
+      {scope === "OPS" && !(isRegionalManager && scopeMessage) ? (
         <SurfaceCard className="space-y-3">
           <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Regional scope enforcement</p>
           <p className="text-sm leading-7 text-ink-soft">

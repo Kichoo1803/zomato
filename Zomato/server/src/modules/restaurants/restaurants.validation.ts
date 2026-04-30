@@ -11,7 +11,12 @@ const discoveryLocationQuerySchema = z.object({
 export const listRestaurantsSchema = {
   query: discoveryLocationQuerySchema.extend({
     search: z.string().trim().optional(),
+    foodCategory: z.string().trim().optional(),
     includeMenuMatches: z
+      .enum(["true", "false"])
+      .transform((value) => value === "true")
+      .optional(),
+    allowGlobalResults: z
       .enum(["true", "false"])
       .transform((value) => value === "true")
       .optional(),

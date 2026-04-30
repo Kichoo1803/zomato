@@ -3,10 +3,7 @@ import { NotificationType, Role } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
 import { notificationsService } from "../notifications/notifications.service.js";
-import {
-  resolveRegionIdForAssignment,
-  syncRestaurantsRegionForOwner,
-} from "../regions/regions.service.js";
+import { resolveRegionIdForAssignment } from "../regions/regions.service.js";
 import { AppError } from "../../utils/app-error.js";
 import {
   ApprovalRequestActionType,
@@ -178,7 +175,6 @@ const applyApprovedRequest = async (
       where: { id: request.targetEntityId },
       select: {
         id: true,
-        role: true,
       },
     });
 
@@ -195,10 +191,6 @@ const applyApprovedRequest = async (
         regionId: region?.id ?? null,
       },
     });
-
-    if (targetUser.role === Role.RESTAURANT_OWNER) {
-      await syncRestaurantsRegionForOwner(tx, targetUser.id, region?.id ?? null);
-    }
 
     return;
   }

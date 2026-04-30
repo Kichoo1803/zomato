@@ -7,22 +7,28 @@ import {
   AdminToolbar,
 } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { IndianPhoneInput } from "@/components/ui/indian-phone-input";
 import { Input } from "@/components/ui/input";
 import { LicenseNumberInput } from "@/components/ui/license-number-input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
-import { SectionHeading, StatusPill } from "@/components/ui/page-shell";
+import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { VehicleNumberInput } from "@/components/ui/vehicle-number-input";
 import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
-import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
+import {
+  getDistrictOptions,
+  getSingleRegionSelection,
+  resolveRegionOptions,
+} from "@/lib/india-regions";
 import {
   createOperationsDeliveryPartner,
   getOperationsDeliveryPartners,
   getOperationsRegions,
+  type OperationsRegionsSummary,
   updateOperationsAssignment,
   type OperationsDeliveryPartner,
 } from "@/lib/ops";
@@ -44,6 +50,7 @@ export const OpsDeliveryPartnersPage = () => {
   const { user } = useAuth();
   const [partners, setPartners] = useState<OperationsDeliveryPartner[]>([]);
   const [regionOptions, setRegionOptions] = useState<{ states: string[]; districtsByState: Record<string, string[]> } | null>(null);
+  const [scopeMessage, setScopeMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -72,6 +79,7 @@ export const OpsDeliveryPartnersPage = () => {
     notes: "",
   });
   const canCreatePartners = user?.role === "ADMIN" || user?.role === "REGIONAL_MANAGER";
+  const isRegionalManager = user?.role === "REGIONAL_MANAGER";
 
   const loadPartners = async () => {
     setIsLoading(true);
@@ -88,6 +96,7 @@ export const OpsDeliveryPartnersPage = () => {
       ]);
       setPartners(partnerRows);
       setRegionOptions(regions.regionOptions);
+      setScopeMessage((regions as OperationsRegionsSummary).scopeMessage ?? null);
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to load delivery partners."));
     } finally {
@@ -99,21 +108,58 @@ export const OpsDeliveryPartnersPage = () => {
     void loadPartners();
   }, [search, stateFilter, districtFilter, availabilityFilter, assignmentFilter]);
 
-  const mergedOptions = useMemo(() => mergeRegionOptions(regionOptions), [regionOptions]);
-  const districtOptions = useMemo(() => getDistrictOptions(stateFilter, regionOptions), [regionOptions, stateFilter]);
+  const selectableOptions = useMemo(
+    () =>
+      resolveRegionOptions(regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, regionOptions],
+  );
+  const districtOptions = useMemo(
+    () =>
+      getDistrictOptions(stateFilter, regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, regionOptions, stateFilter],
+  );
   const createDistrictOptions = useMemo(
-    () => getDistrictOptions(createForm.state, regionOptions),
-    [createForm.state, regionOptions],
+    () =>
+      getDistrictOptions(createForm.state, regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [createForm.state, isRegionalManager, regionOptions],
   );
   const pagedPartners = paginate(partners, page);
 
+  useEffect(() => {
+    if (!isRegionalManager || !regionOptions) {
+      return;
+    }
+
+    const assignedRegion = getSingleRegionSelection(regionOptions);
+
+    if (stateFilter !== assignedRegion.state) {
+      setStateFilter(assignedRegion.state);
+    }
+
+    if (districtFilter !== assignedRegion.district) {
+      setDistrictFilter(assignedRegion.district);
+    }
+  }, [districtFilter, isRegionalManager, regionOptions, stateFilter]);
+
   const openCreateModal = () => {
-    const nextState = stateFilter || (mergedOptions.states.length === 1 ? mergedOptions.states[0] : "");
+    const assignedRegion = getSingleRegionSelection(regionOptions);
+    const nextState = isRegionalManager
+      ? assignedRegion.state
+      : stateFilter || (selectableOptions.states.length === 1 ? selectableOptions.states[0] : "");
     const nextDistrict =
-      districtFilter ||
-      (nextState && getDistrictOptions(nextState, regionOptions).length === 1
-        ? getDistrictOptions(nextState, regionOptions)[0]
-        : "");
+      isRegionalManager
+        ? assignedRegion.district
+        : districtFilter ||
+          (nextState &&
+          getDistrictOptions(nextState, regionOptions, { includeIndiaDefaults: true }).length === 1
+            ? getDistrictOptions(nextState, regionOptions, { includeIndiaDefaults: true })[0]
+            : "");
 
     setCreateForm({
       fullName: "",
@@ -195,11 +241,19 @@ export const OpsDeliveryPartnersPage = () => {
         action={
           <div className="flex gap-3">
             <RefreshButton onClick={() => void loadPartners()} />
-            {canCreatePartners ? <AddButton label="Add delivery partner" onClick={openCreateModal} /> : null}
+            {canCreatePartners && !scopeMessage ? <AddButton label="Add delivery partner" onClick={openCreateModal} /> : null}
           </div>
         }
       />
 
+      {isRegionalManager && scopeMessage ? (
+        <SurfaceCard>
+          <EmptyState title="No region assigned" description={scopeMessage} />
+        </SurfaceCard>
+      ) : null}
+
+      {isRegionalManager && scopeMessage ? null : (
+        <>
       <AdminToolbar
         searchValue={search}
         onSearchChange={(value) => {
@@ -209,16 +263,28 @@ export const OpsDeliveryPartnersPage = () => {
         searchPlaceholder="Search by rider, email, phone, vehicle, or license"
         filters={
           <>
-            <Select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value); setDistrictFilter(""); setPage(1); }} className="min-w-[180px]">
-              <option value="">All states</option>
-              {mergedOptions.states.map((state) => (
+            <Select
+              value={stateFilter}
+              onChange={(event) => { setStateFilter(event.target.value); setDistrictFilter(""); setPage(1); }}
+              className="min-w-[180px]"
+              disabled={isRegionalManager}
+            >
+              {isRegionalManager ? null : <option value="">All states</option>}
+              {selectableOptions.states.map((state) => (
                 <option key={state} value={state}>
                   {state}
                 </option>
               ))}
             </Select>
-            <Select value={districtFilter} onChange={(event) => { setDistrictFilter(event.target.value); setPage(1); }} className="min-w-[180px]" disabled={!stateFilter}>
-              <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+            <Select
+              value={districtFilter}
+              onChange={(event) => { setDistrictFilter(event.target.value); setPage(1); }}
+              className="min-w-[180px]"
+              disabled={!stateFilter || isRegionalManager}
+            >
+              {isRegionalManager ? null : (
+                <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+              )}
               {districtOptions.map((district) => (
                 <option key={district} value={district}>
                   {district}
@@ -374,9 +440,10 @@ export const OpsDeliveryPartnersPage = () => {
                 })
               }
               required
+              disabled={isRegionalManager}
             >
-              <option value="">Select state</option>
-              {mergedOptions.states.map((state) => (
+              {isRegionalManager ? null : <option value="">Select state</option>}
+              {selectableOptions.states.map((state) => (
                 <option key={state} value={state}>
                   {state}
                 </option>
@@ -386,10 +453,12 @@ export const OpsDeliveryPartnersPage = () => {
               label="District"
               value={createForm.district}
               onChange={(event) => setCreateForm({ ...createForm, district: event.target.value })}
-              disabled={!createForm.state}
+              disabled={!createForm.state || isRegionalManager}
               required
             >
-              <option value="">{createForm.state ? "Select district" : "Choose a state first"}</option>
+              {isRegionalManager ? null : (
+                <option value="">{createForm.state ? "Select district" : "Choose a state first"}</option>
+              )}
               {createDistrictOptions.map((district) => (
                 <option key={district} value={district}>
                   {district}
@@ -463,10 +532,13 @@ export const OpsDeliveryPartnersPage = () => {
         open={Boolean(assignmentTarget)}
         target={assignmentTarget}
         regionOptions={regionOptions}
+        restrictToAssignedRegion={isRegionalManager}
         isSubmitting={isSaving}
         onClose={() => setAssignmentTarget(null)}
         onSubmit={(payload) => void handleSaveAssignment(payload)}
       />
+        </>
+      )}
     </div>
   );
 };

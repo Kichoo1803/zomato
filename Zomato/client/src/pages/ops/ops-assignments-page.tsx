@@ -2,12 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { AdminDataTable, AdminLoadingState, AdminToolbar } from "@/components/admin/admin-ui";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Pagination } from "@/components/ui/pagination";
 import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
+import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
-import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
+import {
+  getDistrictOptions,
+  getSingleRegionSelection,
+  resolveRegionOptions,
+} from "@/lib/india-regions";
 import {
   getOperationsDeliveryPartners,
   getOperationsOwners,
@@ -31,6 +37,7 @@ type AssignmentTarget =
   | (OperationsDeliveryPartner & { targetType: "PARTNER" });
 
 export const OpsAssignmentsPage = () => {
+  const { user } = useAuth();
   const [owners, setOwners] = useState<OperationsOwner[]>([]);
   const [partners, setPartners] = useState<OperationsDeliveryPartner[]>([]);
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof getOperationsRegions>> | null>(null);
@@ -82,14 +89,40 @@ export const OpsAssignmentsPage = () => {
   useEffect(() => {
     void loadAssignments();
   }, [search, stateFilter, districtFilter, assignmentFilter]);
+  const isRegionalManager = user?.role === "REGIONAL_MANAGER";
 
-  const regionOptions = useMemo(() => mergeRegionOptions(summary?.regionOptions), [summary?.regionOptions]);
+  const regionOptions = useMemo(
+    () =>
+      resolveRegionOptions(summary?.regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, summary?.regionOptions],
+  );
   const districtOptions = useMemo(
-    () => getDistrictOptions(stateFilter, summary?.regionOptions),
-    [summary?.regionOptions, stateFilter],
+    () =>
+      getDistrictOptions(stateFilter, summary?.regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, stateFilter, summary?.regionOptions],
   );
   const pagedOwners = paginate(owners, ownerPage);
   const pagedPartners = paginate(partners, partnerPage);
+
+  useEffect(() => {
+    if (!isRegionalManager || !summary?.regionOptions) {
+      return;
+    }
+
+    const assignedRegion = getSingleRegionSelection(summary.regionOptions);
+
+    if (stateFilter !== assignedRegion.state) {
+      setStateFilter(assignedRegion.state);
+    }
+
+    if (districtFilter !== assignedRegion.district) {
+      setDistrictFilter(assignedRegion.district);
+    }
+  }, [districtFilter, isRegionalManager, stateFilter, summary?.regionOptions]);
 
   const handleSaveAssignment = async (payload: { state?: string; district?: string; notes?: string }) => {
     if (!assignmentTarget) {
@@ -129,6 +162,22 @@ export const OpsAssignmentsPage = () => {
     );
   }
 
+  if (isRegionalManager && summary.scopeMessage) {
+    return (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Assignments"
+          title="Fix region mapping gaps without leaving operations."
+          description="Map owners and delivery partners into the right India state and district hierarchy, and keep assignment remarks close to the workflow."
+          action={<RefreshButton onClick={() => void loadAssignments()} />}
+        />
+        <SurfaceCard>
+          <EmptyState title="No region assigned" description={summary.scopeMessage} />
+        </SurfaceCard>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       <SectionHeading
@@ -148,16 +197,28 @@ export const OpsAssignmentsPage = () => {
         searchPlaceholder="Search owners, riders, restaurants, vehicles, or notes"
         filters={
           <>
-            <Select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value); setDistrictFilter(""); }} className="min-w-[180px]">
-              <option value="">All states</option>
+            <Select
+              value={stateFilter}
+              onChange={(event) => { setStateFilter(event.target.value); setDistrictFilter(""); }}
+              className="min-w-[180px]"
+              disabled={isRegionalManager}
+            >
+              {isRegionalManager ? null : <option value="">All states</option>}
               {regionOptions.states.map((state) => (
                 <option key={state} value={state}>
                   {state}
                 </option>
               ))}
             </Select>
-            <Select value={districtFilter} onChange={(event) => setDistrictFilter(event.target.value)} className="min-w-[180px]" disabled={!stateFilter}>
-              <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+            <Select
+              value={districtFilter}
+              onChange={(event) => setDistrictFilter(event.target.value)}
+              className="min-w-[180px]"
+              disabled={!stateFilter || isRegionalManager}
+            >
+              {isRegionalManager ? null : (
+                <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+              )}
               {districtOptions.map((district) => (
                 <option key={district} value={district}>
                   {district}
@@ -224,7 +285,16 @@ export const OpsAssignmentsPage = () => {
               key: "actions",
               label: "Actions",
               render: (owner) => (
-                <RowActions onEdit={() => setAssignmentTarget({ ...owner, targetType: "OWNER" })} deleteLabel="Assign" />
+                isRegionalManager ? (
+                  <span className="text-xs font-semibold uppercase tracking-[0.18em] text-ink-muted">
+                    View only
+                  </span>
+                ) : (
+                  <RowActions
+                    onEdit={() => setAssignmentTarget({ ...owner, targetType: "OWNER" })}
+                    deleteLabel="Assign"
+                  />
+                )
               ),
             },
           ]}
@@ -292,6 +362,7 @@ export const OpsAssignmentsPage = () => {
         open={Boolean(assignmentTarget)}
         target={assignmentTarget}
         regionOptions={summary.regionOptions}
+        restrictToAssignedRegion={isRegionalManager}
         isSubmitting={isSaving}
         onClose={() => setAssignmentTarget(null)}
         onSubmit={(payload) => void handleSaveAssignment(payload)}

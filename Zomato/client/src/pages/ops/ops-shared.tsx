@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { getDistrictOptions, mergeRegionOptions, type RegionOptions } from "@/lib/india-regions";
+import {
+  getDistrictOptions,
+  getSingleRegionSelection,
+  resolveRegionOptions,
+  type RegionOptions,
+} from "@/lib/india-regions";
 
 type AssignmentTarget = {
   id: number;
@@ -17,6 +23,7 @@ export const OperationsAssignmentModal = ({
   open,
   target,
   regionOptions,
+  restrictToAssignedRegion,
   isSubmitting,
   onClose,
   onSubmit,
@@ -24,6 +31,7 @@ export const OperationsAssignmentModal = ({
   open: boolean;
   target: AssignmentTarget | null;
   regionOptions?: RegionOptions | null;
+  restrictToAssignedRegion?: boolean;
   isSubmitting?: boolean;
   onClose: () => void;
   onSubmit: (payload: { state?: string; district?: string; notes?: string }) => void;
@@ -47,8 +55,27 @@ export const OperationsAssignmentModal = ({
     });
   }, [target]);
 
-  const mergedOptions = mergeRegionOptions(regionOptions);
-  const districtOptions = getDistrictOptions(form.state, mergedOptions);
+  const exactRegionSelection = getSingleRegionSelection(regionOptions);
+  const selectableOptions = resolveRegionOptions(regionOptions, {
+    includeIndiaDefaults: !restrictToAssignedRegion,
+  });
+  const assignedState = restrictToAssignedRegion ? exactRegionSelection.state : "";
+  const assignedDistrict = restrictToAssignedRegion ? exactRegionSelection.district : "";
+  const districtOptions = getDistrictOptions(form.state, regionOptions, {
+    includeIndiaDefaults: !restrictToAssignedRegion,
+  });
+
+  useEffect(() => {
+    if (!restrictToAssignedRegion || !assignedState) {
+      return;
+    }
+
+    setForm((currentForm) => ({
+      ...currentForm,
+      state: assignedState,
+      district: assignedDistrict,
+    }));
+  }, [assignedDistrict, assignedState, restrictToAssignedRegion]);
 
   return (
     <Modal open={open} onClose={onClose} title={target ? `Assign ${target.fullName}` : "Update assignment"} className="max-w-2xl">
@@ -74,9 +101,10 @@ export const OperationsAssignmentModal = ({
                 district: "",
               })
             }
+            disabled={Boolean(restrictToAssignedRegion && assignedState)}
           >
-            <option value="">Select state</option>
-            {mergedOptions.states.map((state) => (
+            {restrictToAssignedRegion && assignedState ? null : <option value="">Select state</option>}
+            {selectableOptions.states.map((state) => (
               <option key={state} value={state}>
                 {state}
               </option>
@@ -86,9 +114,11 @@ export const OperationsAssignmentModal = ({
             label="District"
             value={form.district}
             onChange={(event) => setForm({ ...form, district: event.target.value })}
-            disabled={!form.state}
+            disabled={!form.state || Boolean(restrictToAssignedRegion && assignedDistrict)}
           >
-            <option value="">{form.state ? "Select district" : "Choose a state first"}</option>
+            {restrictToAssignedRegion && assignedDistrict ? null : (
+              <option value="">{form.state ? "Select district" : "Choose a state first"}</option>
+            )}
             {districtOptions.map((district) => (
               <option key={district} value={district}>
                 {district}
@@ -114,3 +144,11 @@ export const OperationsAssignmentModal = ({
     </Modal>
   );
 };
+
+export const RegionalScopeEmptyState = ({
+  title = "No region assigned",
+  description = "No region assigned. Contact admin.",
+}: {
+  title?: string;
+  description?: string;
+}) => <EmptyState title={title} description={description} />;

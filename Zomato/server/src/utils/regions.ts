@@ -6,6 +6,38 @@ export const normalizeRegionValue = (value?: string | null) => {
   return trimmed ? trimmed : null;
 };
 
+const districtAliasSuffixPattern = /\s+(urban|district)$/i;
+
+export const getRegionDistrictVariants = (district?: string | null) => {
+  const normalizedDistrict = normalizeRegionValue(district);
+
+  if (!normalizedDistrict) {
+    return [];
+  }
+
+  const variants = new Set([normalizedDistrict]);
+
+  if (districtAliasSuffixPattern.test(normalizedDistrict)) {
+    const baseDistrict = normalizedDistrict.replace(districtAliasSuffixPattern, "").trim();
+
+    if (baseDistrict) {
+      variants.add(baseDistrict);
+    }
+  }
+
+  return [...variants];
+};
+
+export const matchesRegionDistrict = (district?: string | null, candidate?: string | null) => {
+  const normalizedCandidate = normalizeRegionValue(candidate);
+
+  if (!normalizedCandidate) {
+    return false;
+  }
+
+  return getRegionDistrictVariants(district).includes(normalizedCandidate);
+};
+
 const stripDiacritics = (value: string) =>
   value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
 

@@ -6,7 +6,7 @@ export const getOperationsDashboard = asyncHandler(async (req, res) => {
   const dashboard = await operationsService.getDashboard(req.user!, {
     state: req.query.state as string | undefined,
     district: req.query.district as string | undefined,
-  });
+  }, { endpoint: req.originalUrl });
 
   return sendSuccess(res, {
     message: "Operations dashboard fetched successfully",
@@ -18,7 +18,7 @@ export const getOperationsRegions = asyncHandler(async (req, res) => {
   const regions = await operationsService.getRegions(req.user!, {
     state: req.query.state as string | undefined,
     district: req.query.district as string | undefined,
-  });
+  }, { endpoint: req.originalUrl });
 
   return sendSuccess(res, {
     message: "Operations regions fetched successfully",
@@ -33,7 +33,7 @@ export const listOperationsOwners = asyncHandler(async (req, res) => {
     search: req.query.search as string | undefined,
     status: req.query.status as "ACTIVE" | "INACTIVE" | undefined,
     assignmentStatus: req.query.assignmentStatus as "ASSIGNED" | "UNASSIGNED" | "PARTIAL" | undefined,
-  });
+  }, { endpoint: req.originalUrl });
 
   return sendSuccess(res, {
     message: "Operations owners fetched successfully",
@@ -42,7 +42,9 @@ export const listOperationsOwners = asyncHandler(async (req, res) => {
 });
 
 export const createOperationsOwner = asyncHandler(async (req, res) => {
-  const owner = await operationsService.createOwner(req.user!, req.body);
+  const owner = await operationsService.createOwner(req.user!, req.body, {
+    endpoint: req.originalUrl,
+  });
 
   return sendSuccess(res, {
     statusCode: 201,
@@ -58,7 +60,7 @@ export const listOperationsDeliveryPartners = asyncHandler(async (req, res) => {
     search: req.query.search as string | undefined,
     availabilityStatus: req.query.availabilityStatus as string | undefined,
     assignmentStatus: req.query.assignmentStatus as "ASSIGNED" | "UNASSIGNED" | "PARTIAL" | undefined,
-  });
+  }, { endpoint: req.originalUrl });
 
   return sendSuccess(res, {
     message: "Operations delivery partners fetched successfully",
@@ -67,7 +69,9 @@ export const listOperationsDeliveryPartners = asyncHandler(async (req, res) => {
 });
 
 export const createOperationsDeliveryPartner = asyncHandler(async (req, res) => {
-  const partner = await operationsService.createDeliveryPartner(req.user!, req.body);
+  const partner = await operationsService.createDeliveryPartner(req.user!, req.body, {
+    endpoint: req.originalUrl,
+  });
 
   return sendSuccess(res, {
     statusCode: 201,
@@ -77,13 +81,17 @@ export const createOperationsDeliveryPartner = asyncHandler(async (req, res) => 
 });
 
 export const updateOperationsAssignment = asyncHandler(async (req, res) => {
-  const assignment = await operationsService.updateUserAssignment(req.user!, Number(req.params.userId), req.body);
+  const assignment = await operationsService.updateUserAssignment(
+    req.user!,
+    Number(req.params.userId),
+    req.body,
+    {
+      endpoint: req.originalUrl,
+    },
+  );
 
   return sendSuccess(res, {
-    message:
-      assignment.mode === "REQUEST_CREATED"
-        ? "Approval request created successfully"
-        : "Operations assignment updated successfully",
+    message: "Operations assignment updated successfully",
     data: assignment,
   });
 });
@@ -93,7 +101,7 @@ export const listOperationsCommunications = asyncHandler(async (req, res) => {
     state: req.query.state as string | undefined,
     district: req.query.district as string | undefined,
     search: req.query.search as string | undefined,
-  });
+  }, { endpoint: req.originalUrl });
 
   return sendSuccess(res, {
     message: "Operations communications fetched successfully",
@@ -102,7 +110,9 @@ export const listOperationsCommunications = asyncHandler(async (req, res) => {
 });
 
 export const createOperationsRegionNote = asyncHandler(async (req, res) => {
-  const note = await operationsService.createRegionNote(req.user!, req.body);
+  const note = await operationsService.createRegionNote(req.user!, req.body, {
+    endpoint: req.originalUrl,
+  });
 
   return sendSuccess(res, {
     statusCode: 201,
@@ -112,7 +122,14 @@ export const createOperationsRegionNote = asyncHandler(async (req, res) => {
 });
 
 export const updateOperationsRegionNote = asyncHandler(async (req, res) => {
-  const note = await operationsService.updateRegionNote(req.user!, Number(req.params.noteId), req.body);
+  const note = await operationsService.updateRegionNote(
+    req.user!,
+    Number(req.params.noteId),
+    req.body,
+    {
+      endpoint: req.originalUrl,
+    },
+  );
 
   return sendSuccess(res, {
     message: "Operations region note updated successfully",

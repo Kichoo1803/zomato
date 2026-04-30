@@ -12,6 +12,8 @@ import {
 } from "../../utils/geo.js";
 import { getPagination, getPaginationMeta } from "../../utils/pagination.js";
 import { slugify } from "../../utils/slug.js";
+import { getRegionDistrictVariants, normalizeRegionValue } from "../../utils/regions.js";
+import { resolveRegionIdForAssignment } from "../regions/regions.service.js";
 
 const listSelect = {
   id: true,
@@ -300,12 +302,124 @@ const MAX_DISCOVERY_RADIUS_KM = Math.max(
 );
 const KILOMETERS_PER_LATITUDE_DEGREE = 111.32;
 const MENU_MATCH_LIMIT_PER_RESTAURANT = 4;
+const FOOD_DISCOVERY_KEYWORDS: Record<string, string[]> = {
+  biryani: ["Biryani", "Dum", "Rice"],
+  pizza: ["Pizza", "Pizzas", "Flatbread"],
+  burger: ["Burger", "Burgers", "Slider", "Sliders"],
+  "south indian": ["South Indian", "Dosa", "Idli", "Uttapam", "Kaapi", "Sambar"],
+  "north indian": ["North Indian", "Mughlai", "Naan", "Kebab", "Tikka", "Curry", "Paneer", "Thali"],
+  chinese: ["Chinese", "Noodle", "Noodles", "Fried Rice", "Dimsum", "Manchurian", "Wok"],
+  "fast food": ["Fast Food", "Quick Bites", "Burger", "Burgers", "Fries", "Taco", "Tacos", "Wrap", "Wraps"],
+  desserts: ["Dessert", "Desserts", "Sweet", "Sweets", "Cake", "Cheesecake", "Brownie", "Pastry", "Payasam"],
+  beverages: ["Beverage", "Beverages", "Drink", "Drinks", "Coffee", "Tea", "Juice", "Shake", "Soda", "Kaapi"],
+};
 
 const isValidLatitude = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= -90 && value <= 90;
 
 const isValidLongitude = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= -180 && value <= 180;
+
+const normalizeDiscoverySearchText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
+const getFoodDiscoveryKeywords = (value?: string | null) => {
+  const trimmedValue = value?.trim() ?? "";
+  if (!trimmedValue) {
+    return [];
+  }
+
+  const normalizedValue = normalizeDiscoverySearchText(trimmedValue);
+  return [...new Set([trimmedValue, ...(FOOD_DISCOVERY_KEYWORDS[normalizedValue] ?? [])])];
+};
+
+const buildMenuItemTextClause = (value: string): Prisma.MenuItemWhereInput => ({
+  OR: [
+    { name: { contains: value } },
+    { description: { contains: value } },
+    { category: { name: { contains: value } } },
+  ],
+});
+
+const buildRestaurantTextSearchClause = (value: string): Prisma.RestaurantWhereInput => ({
+  OR: [
+    { name: { contains: value } },
+    { area: { contains: value } },
+    { city: { contains: value } },
+    { state: { contains: value } },
+    { addressLine: { contains: value } },
+    { categoryMappings: { some: { category: { name: { contains: value } } } } },
+    { cuisineMappings: { some: { cuisine: { name: { contains: value } } } } },
+    { menuItems: { some: buildMenuItemTextClause(value) } },
+  ],
+});
+
+const buildRestaurantFoodCategoryClause = (value?: string | null): Prisma.RestaurantWhereInput | null => {
+  const keywords = getFoodDiscoveryKeywords(value);
+  if (!keywords.length) {
+    return null;
+  }
+
+  return {
+    OR: [
+      ...keywords.map((keyword) => ({ name: { contains: keyword } })),
+      ...keywords.map((keyword) => ({
+        categoryMappings: {
+          some: {
+            category: {
+              name: {
+                contains: keyword,
+              },
+            },
+          },
+        },
+      })),
+      ...keywords.map((keyword) => ({
+        cuisineMappings: {
+          some: {
+            cuisine: {
+              name: {
+                contains: keyword,
+              },
+            },
+          },
+        },
+      })),
+      {
+        menuItems: {
+          some: {
+            OR: keywords.map((keyword) => buildMenuItemTextClause(keyword)),
+          },
+        },
+      },
+    ],
+  };
+};
+
+const buildMenuItemMatchWhere = ({
+  foodCategory,
+  search,
+}: {
+  foodCategory?: string;
+  search?: string;
+}): Prisma.MenuItemWhereInput => {
+  const clauses: Prisma.MenuItemWhereInput[] = [{ isAvailable: true }];
+  const normalizedSearch = search?.trim() ?? "";
+  const foodDiscoveryKeywords = getFoodDiscoveryKeywords(foodCategory);
+
+  if (normalizedSearch) {
+    clauses.push(buildMenuItemTextClause(normalizedSearch));
+  }
+
+  if (foodDiscoveryKeywords.length) {
+    clauses.push({
+      OR: foodDiscoveryKeywords.map((keyword) => buildMenuItemTextClause(keyword)),
+    });
+  }
+
+  return {
+    AND: clauses,
+  };
+};
 
 const getDiscoveryOrigin = (query: Record<string, unknown>) => {
   if (!isValidLatitude(query.latitude) || !isValidLongitude(query.longitude)) {
@@ -327,8 +441,11 @@ const getDiscoveryRadiusKm = (radiusKm: unknown) => {
   return Math.min(requestedRadiusKm, MAX_DISCOVERY_RADIUS_KM);
 };
 
-const shouldIncludeMenuMatches = (query: Record<string, unknown>, search: string) =>
-  Boolean(search) && query.includeMenuMatches === true;
+const shouldIncludeMenuMatches = (
+  query: Record<string, unknown>,
+  search: string,
+  foodCategory: string,
+) => Boolean(search || foodCategory) && query.includeMenuMatches === true;
 
 const getNearbyRestaurantWhere = (
   where: Prisma.RestaurantWhereInput,
@@ -368,17 +485,13 @@ const buildListWhere = (query: Record<string, unknown>): Prisma.RestaurantWhereI
 
   const search = typeof query.search === "string" ? query.search.trim() : "";
   if (search) {
-    clauses.push({
-      OR: [
-        { name: { contains: search } },
-        { area: { contains: search } },
-        { city: { contains: search } },
-        { state: { contains: search } },
-        { addressLine: { contains: search } },
-        { cuisineMappings: { some: { cuisine: { name: { contains: search } } } } },
-        { menuItems: { some: { name: { contains: search } } } },
-      ],
-    });
+    clauses.push(buildRestaurantTextSearchClause(search));
+  }
+
+  const foodCategory = typeof query.foodCategory === "string" ? query.foodCategory.trim() : "";
+  const foodCategoryClause = buildRestaurantFoodCategoryClause(foodCategory);
+  if (foodCategoryClause) {
+    clauses.push(foodCategoryClause);
   }
 
   const cuisine = typeof query.cuisine === "string" ? query.cuisine.trim() : "";
@@ -480,27 +593,75 @@ const generateUniqueSlug = async (name: string, excludeId?: number) => {
   }
 };
 
+type RestaurantWriteClient = Prisma.TransactionClient | typeof prisma;
+
+const resolveRegionIdForRestaurantLocation = async (
+  client: RestaurantWriteClient,
+  state?: string | null,
+  city?: string | null,
+) => {
+  const normalizedState = normalizeRegionValue(state);
+  const normalizedCity = normalizeRegionValue(city);
+
+  if (!normalizedState || !normalizedCity) {
+    return null;
+  }
+
+  const exactRegion = await resolveRegionIdForAssignment(client, normalizedState, normalizedCity);
+
+  if (exactRegion) {
+    return exactRegion;
+  }
+
+  const stateRegions = await client.region.findMany({
+    where: {
+      isActive: true,
+      stateName: normalizedState,
+    },
+    select: {
+      id: true,
+      name: true,
+      stateName: true,
+      districtName: true,
+      code: true,
+      slug: true,
+    },
+    orderBy: [{ districtName: "asc" }, { id: "asc" }],
+  });
+
+  return (
+    stateRegions.find((region) => getRegionDistrictVariants(region.districtName).includes(normalizedCity)) ??
+    null
+  );
+};
+
 export const restaurantsService = {
   async list(query: Record<string, unknown>) {
     const pagination = getPagination({
       page: query.page,
       limit: query.limit,
-      maxLimit: 24,
+      maxLimit: 48,
     });
     const search = typeof query.search === "string" ? query.search.trim() : "";
+    const foodCategory = typeof query.foodCategory === "string" ? query.foodCategory.trim() : "";
+    const allowGlobalResults = query.allowGlobalResults === true;
     const where = buildListWhere(query);
     const orderBy = getRestaurantOrderBy(typeof query.sort === "string" ? query.sort : undefined);
     const origin = getDiscoveryOrigin(query);
-    const includeMenuMatches = shouldIncludeMenuMatches(query, search);
+    const includeMenuMatches = shouldIncludeMenuMatches(query, search, foodCategory);
+    const menuItemMatchWhere = buildMenuItemMatchWhere({
+      foodCategory,
+      search,
+    });
 
-    if (!origin) {
+    if (!origin && !allowGlobalResults) {
       return {
         restaurants: [],
         meta: {
           ...getPaginationMeta({
             total: 0,
-          page: pagination.page,
-          limit: pagination.limit,
+            page: pagination.page,
+            limit: pagination.limit,
           }),
           appliedRadiusKm: DEFAULT_DISCOVERY_RADIUS_KM,
           isLocationFiltered: false,
@@ -509,8 +670,78 @@ export const restaurantsService = {
       };
     }
 
+    if (!origin && allowGlobalResults) {
+      if (includeMenuMatches) {
+        const [total, globalRestaurantsWithMatches] = await Promise.all([
+          prisma.restaurant.count({ where }),
+          prisma.restaurant.findMany({
+            where,
+            select: {
+              ...listSelect,
+              menuItems: {
+                where: menuItemMatchWhere,
+                orderBy: [{ isRecommended: "desc" }, { createdAt: "desc" }],
+                take: MENU_MATCH_LIMIT_PER_RESTAURANT,
+                select: searchMatchMenuItemSelect,
+              },
+            },
+            orderBy,
+            skip: pagination.skip,
+            take: pagination.limit,
+          }),
+        ]);
+
+        return {
+          restaurants: globalRestaurantsWithMatches.map(({ menuItems, ...restaurant }) => ({
+            ...restaurant,
+            matchingMenuItems: menuItems,
+          })),
+          meta: {
+            ...getPaginationMeta({
+              total,
+              page: pagination.page,
+              limit: pagination.limit,
+            }),
+            appliedRadiusKm: null,
+            isLocationFiltered: false,
+            requiresLocation: false,
+          },
+        };
+      }
+
+      const [total, globalRestaurants] = await Promise.all([
+        prisma.restaurant.count({ where }),
+        prisma.restaurant.findMany({
+          where,
+          select: listSelect,
+          orderBy,
+          skip: pagination.skip,
+          take: pagination.limit,
+        }),
+      ]);
+
+      return {
+        restaurants: globalRestaurants,
+        meta: {
+          ...getPaginationMeta({
+            total,
+            page: pagination.page,
+            limit: pagination.limit,
+          }),
+          appliedRadiusKm: null,
+          isLocationFiltered: false,
+          requiresLocation: false,
+        },
+      };
+    }
+
+    if (!origin) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Discovery location is required", "DISCOVERY_LOCATION_REQUIRED");
+    }
+
     const radiusKm = getDiscoveryRadiusKm(query.radiusKm);
-    const nearbyRestaurantWhere = getNearbyRestaurantWhere(where, origin, radiusKm);
+    const discoveryOrigin = origin;
+    const nearbyRestaurantWhere = getNearbyRestaurantWhere(where, discoveryOrigin, radiusKm);
 
     const buildDistanceFilteredRows = <TRestaurant extends { latitude: number | null; longitude: number | null }>(
       restaurants: TRestaurant[],
@@ -520,7 +751,7 @@ export const restaurantsService = {
           return [];
         }
 
-        const distanceKm = haversineDistanceKm(origin, restaurant);
+        const distanceKm = haversineDistanceKm(discoveryOrigin, restaurant);
         if (distanceKm > radiusKm) {
           return [];
         }
@@ -544,21 +775,7 @@ export const restaurantsService = {
         select: {
           ...listSelect,
           menuItems: {
-            where: {
-              isAvailable: true,
-              OR: [
-                {
-                  name: {
-                    contains: search,
-                  },
-                },
-                {
-                  description: {
-                    contains: search,
-                  },
-                },
-              ],
-            },
+            where: menuItemMatchWhere,
             orderBy: [{ isRecommended: "desc" }, { createdAt: "desc" }],
             take: MENU_MATCH_LIMIT_PER_RESTAURANT,
             select: searchMatchMenuItemSelect,
@@ -685,7 +902,6 @@ export const restaurantsService = {
       where: { id: ownerId },
       select: {
         id: true,
-        regionId: true,
       },
     });
 
@@ -706,12 +922,17 @@ export const restaurantsService = {
               input.pincode as string | undefined,
             ]),
           );
+    const restaurantRegion = await resolveRegionIdForRestaurantLocation(
+      prisma,
+      input.state as string | undefined,
+      input.city as string | undefined,
+    );
 
     const restaurant = await prisma.$transaction(async (tx) => {
       const created = await tx.restaurant.create({
         data: {
           ownerId,
-          regionId: owner.regionId,
+          regionId: restaurantRegion?.id ?? null,
           name: String(input.name),
           slug,
           description: input.description as string | undefined,
@@ -796,8 +1017,9 @@ export const restaurantsService = {
       !("latitude" in input) &&
       !("longitude" in input) &&
       ["addressLine", "area", "city", "state", "pincode"].some((key) => key in input);
+    const shouldRefreshRegion = shouldGeocode || "city" in input || "state" in input;
     const currentRestaurant =
-      shouldGeocode
+      shouldRefreshRegion
         ? await prisma.restaurant.findUnique({
             where: { id: restaurant.id },
             select: {
@@ -821,6 +1043,13 @@ export const restaurantsService = {
             ]),
           )
         : null;
+    const nextRestaurantState =
+      typeof input.state === "string" ? input.state : currentRestaurant?.state;
+    const nextRestaurantCity =
+      typeof input.city === "string" ? input.city : currentRestaurant?.city;
+    const nextRegion = shouldRefreshRegion
+      ? await resolveRegionIdForRestaurantLocation(prisma, nextRestaurantState, nextRestaurantCity)
+      : null;
 
     await prisma.$transaction(async (tx) => {
       await tx.restaurant.update({
@@ -840,6 +1069,7 @@ export const restaurantsService = {
           ...(input.city !== undefined ? { city: input.city as string } : {}),
           ...(input.state !== undefined ? { state: input.state as string } : {}),
           ...(input.pincode !== undefined ? { pincode: input.pincode as string } : {}),
+          ...(shouldRefreshRegion ? { regionId: nextRegion?.id ?? null } : {}),
           ...(typeof input.latitude === "number" ? { latitude: input.latitude } : {}),
           ...(typeof input.longitude === "number" ? { longitude: input.longitude } : {}),
           ...(geocodedCoordinates

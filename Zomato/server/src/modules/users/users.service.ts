@@ -7,7 +7,6 @@ import {
   clearRegionalManagerAssignments,
   replaceRegionalManagerAssignments,
   resolveRegionIdForAssignment,
-  syncRestaurantsRegionForOwner,
 } from "../regions/regions.service.js";
 import { notificationsService } from "../notifications/notifications.service.js";
 import { AppError } from "../../utils/app-error.js";
@@ -349,13 +348,6 @@ export const usersService = {
           ...(input.phoneVerified !== undefined ? { phoneVerified: input.phoneVerified } : {}),
         },
       });
-
-      if (
-        shouldRecalculateRegion &&
-        (existingUser.role === Role.RESTAURANT_OWNER || nextRole === Role.RESTAURANT_OWNER)
-      ) {
-        await syncRestaurantsRegionForOwner(tx, userId, region?.id ?? null);
-      }
 
       if (nextRole === Role.REGIONAL_MANAGER) {
         if (managedRegionIds !== undefined) {

@@ -10,20 +10,28 @@ import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
-import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
+import {
+  getDistrictOptions,
+  getSingleRegionSelection,
+  resolveRegionOptions,
+} from "@/lib/india-regions";
 import {
   createOperationsRegionNote,
   getOperationsCommunications,
   getOperationsRegions,
+  type OperationsRegionsSummary,
   updateOperationsRegionNote,
   type OperationsCommunications,
   type OperationsRegionNote,
 } from "@/lib/ops";
 
 export const OpsCommunicationsPage = () => {
+  const { user } = useAuth();
   const [communications, setCommunications] = useState<OperationsCommunications | null>(null);
   const [regionOptions, setRegionOptions] = useState<{ states: string[]; districtsByState: Record<string, string[]> } | null>(null);
+  const [scopeMessage, setScopeMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -38,6 +46,7 @@ export const OpsCommunicationsPage = () => {
     title: "",
     message: "",
   });
+  const isRegionalManager = user?.role === "REGIONAL_MANAGER";
 
   const loadCommunications = async () => {
     setIsLoading(true);
@@ -54,6 +63,7 @@ export const OpsCommunicationsPage = () => {
       ]);
       setCommunications(communicationsData);
       setRegionOptions(regions.regionOptions);
+      setScopeMessage((regions as OperationsRegionsSummary).scopeMessage ?? null);
       setErrorMessage(null);
     } catch (error) {
       const message = getApiErrorMessage(error, "Unable to load operations communications.");
@@ -68,8 +78,36 @@ export const OpsCommunicationsPage = () => {
     void loadCommunications();
   }, [search, stateFilter, districtFilter]);
 
-  const mergedOptions = useMemo(() => mergeRegionOptions(regionOptions), [regionOptions]);
-  const districtOptions = useMemo(() => getDistrictOptions(form.state || stateFilter, regionOptions), [form.state, regionOptions, stateFilter]);
+  const selectableOptions = useMemo(
+    () =>
+      resolveRegionOptions(regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, regionOptions],
+  );
+  const districtOptions = useMemo(
+    () =>
+      getDistrictOptions(form.state || stateFilter, regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [form.state, isRegionalManager, regionOptions, stateFilter],
+  );
+
+  useEffect(() => {
+    if (!isRegionalManager || !regionOptions) {
+      return;
+    }
+
+    const assignedRegion = getSingleRegionSelection(regionOptions);
+
+    if (stateFilter !== assignedRegion.state) {
+      setStateFilter(assignedRegion.state);
+    }
+
+    if (districtFilter !== assignedRegion.district) {
+      setDistrictFilter(assignedRegion.district);
+    }
+  }, [districtFilter, isRegionalManager, regionOptions, stateFilter]);
 
   const openCreateModal = () => {
     setEditingNote(null);
@@ -157,10 +195,19 @@ export const OpsCommunicationsPage = () => {
         action={
           <div className="flex gap-3">
             <RefreshButton onClick={() => void loadCommunications()} />
-            <AddButton label="Add region note" onClick={openCreateModal} />
+            {scopeMessage ? null : <AddButton label="Add region note" onClick={openCreateModal} />}
           </div>
         }
       />
+
+      {isRegionalManager && scopeMessage ? (
+        <SurfaceCard>
+          <EmptyState title="No region assigned" description={scopeMessage} />
+        </SurfaceCard>
+      ) : null}
+
+      {isRegionalManager && scopeMessage ? null : (
+        <>
 
       <AdminToolbar
         searchValue={search}
@@ -168,17 +215,31 @@ export const OpsCommunicationsPage = () => {
         searchPlaceholder="Search notes, owners, partners, or messages"
         filters={
           <>
-            <Select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value); setDistrictFilter(""); }} className="min-w-[180px]">
-              <option value="">All states</option>
-              {mergedOptions.states.map((state) => (
+            <Select
+              value={stateFilter}
+              onChange={(event) => { setStateFilter(event.target.value); setDistrictFilter(""); }}
+              className="min-w-[180px]"
+              disabled={isRegionalManager}
+            >
+              {isRegionalManager ? null : <option value="">All states</option>}
+              {selectableOptions.states.map((state) => (
                 <option key={state} value={state}>
                   {state}
                 </option>
               ))}
             </Select>
-            <Select value={districtFilter} onChange={(event) => setDistrictFilter(event.target.value)} className="min-w-[180px]" disabled={!stateFilter}>
-              <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
-              {getDistrictOptions(stateFilter, regionOptions).map((district) => (
+            <Select
+              value={districtFilter}
+              onChange={(event) => setDistrictFilter(event.target.value)}
+              className="min-w-[180px]"
+              disabled={!stateFilter || isRegionalManager}
+            >
+              {isRegionalManager ? null : (
+                <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+              )}
+              {getDistrictOptions(stateFilter, regionOptions, {
+                includeIndiaDefaults: !isRegionalManager,
+              }).map((district) => (
                 <option key={district} value={district}>
                   {district}
                 </option>
@@ -292,9 +353,10 @@ export const OpsCommunicationsPage = () => {
               value={form.state}
               onChange={(event) => setForm({ ...form, state: event.target.value, district: "" })}
               required
+              disabled={isRegionalManager}
             >
-              <option value="">Select state</option>
-              {mergedOptions.states.map((state) => (
+              {isRegionalManager ? null : <option value="">Select state</option>}
+              {selectableOptions.states.map((state) => (
                 <option key={state} value={state}>
                   {state}
                 </option>
@@ -304,9 +366,11 @@ export const OpsCommunicationsPage = () => {
               label="District"
               value={form.district}
               onChange={(event) => setForm({ ...form, district: event.target.value })}
-              disabled={!form.state}
+              disabled={!form.state || isRegionalManager}
             >
-              <option value="">{form.state ? "Optional district" : "Choose a state first"}</option>
+              {isRegionalManager ? null : (
+                <option value="">{form.state ? "Optional district" : "Choose a state first"}</option>
+              )}
               {districtOptions.map((district) => (
                 <option key={district} value={district}>
                   {district}
@@ -326,6 +390,8 @@ export const OpsCommunicationsPage = () => {
           </div>
         </form>
       </Modal>
+        </>
+      )}
     </div>
   );
 };

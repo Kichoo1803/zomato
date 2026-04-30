@@ -56,7 +56,7 @@ export const listRegistrationApplications = asyncHandler(async (req, res) => {
     createdTo: req.query.createdTo as string | undefined,
     unassignedOnly:
       typeof req.query.unassignedOnly === "boolean" ? req.query.unassignedOnly : undefined,
-  });
+  }, { endpoint: req.originalUrl });
 
   return sendSuccess(res, {
     message: "Registration applications fetched successfully",
@@ -69,6 +69,7 @@ export const approveRegistrationApplication = asyncHandler(async (req, res) => {
     req.user!,
     Number(req.params.applicationId),
     req.body,
+    { endpoint: req.originalUrl },
   );
 
   return sendSuccess(res, {
@@ -82,6 +83,7 @@ export const rejectRegistrationApplication = asyncHandler(async (req, res) => {
     req.user!,
     Number(req.params.applicationId),
     req.body,
+    { endpoint: req.originalUrl },
   );
 
   return sendSuccess(res, {

@@ -8,8 +8,13 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
+import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
-import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
+import {
+  getDistrictOptions,
+  getSingleRegionSelection,
+  resolveRegionOptions,
+} from "@/lib/india-regions";
 import { getOperationsDashboard, type OperationsDashboard } from "@/lib/ops";
 import {
   QuickLinkCard,
@@ -19,6 +24,7 @@ import {
 } from "@/pages/admin/admin-shared";
 
 export const OpsDashboardPage = () => {
+  const { user } = useAuth();
   const [dashboard, setDashboard] = useState<OperationsDashboard | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -48,11 +54,37 @@ export const OpsDashboardPage = () => {
     void loadDashboard();
   }, [stateFilter, districtFilter]);
 
-  const regionOptions = useMemo(() => mergeRegionOptions(dashboard?.regionOptions), [dashboard?.regionOptions]);
-  const districtOptions = useMemo(
-    () => getDistrictOptions(stateFilter, dashboard?.regionOptions),
-    [dashboard?.regionOptions, stateFilter],
+  const isRegionalManager = user?.role === "REGIONAL_MANAGER";
+  const regionOptions = useMemo(
+    () =>
+      resolveRegionOptions(dashboard?.regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [dashboard?.regionOptions, isRegionalManager],
   );
+  const districtOptions = useMemo(
+    () =>
+      getDistrictOptions(stateFilter, dashboard?.regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [dashboard?.regionOptions, isRegionalManager, stateFilter],
+  );
+
+  useEffect(() => {
+    if (!isRegionalManager || !dashboard?.regionOptions) {
+      return;
+    }
+
+    const assignedRegion = getSingleRegionSelection(dashboard.regionOptions);
+
+    if (stateFilter !== assignedRegion.state) {
+      setStateFilter(assignedRegion.state);
+    }
+
+    if (districtFilter !== assignedRegion.district) {
+      setDistrictFilter(assignedRegion.district);
+    }
+  }, [dashboard?.regionOptions, districtFilter, isRegionalManager, stateFilter]);
 
   if (isLoading || !dashboard) {
     return (
@@ -76,6 +108,22 @@ export const OpsDashboardPage = () => {
     );
   }
 
+  if (isRegionalManager && dashboard.scopeMessage) {
+    return (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="India operations"
+          title="State and district control in one coordinated ops view."
+          description="Track owner coverage, delivery readiness, and assignment health across the combined India region hierarchy."
+          action={<RefreshButton onClick={() => void loadDashboard()} />}
+        />
+        <SurfaceCard>
+          <EmptyState title="No region assigned" description={dashboard.scopeMessage} />
+        </SurfaceCard>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       <SectionHeading
@@ -93,8 +141,9 @@ export const OpsDashboardPage = () => {
             setStateFilter(event.target.value);
             setDistrictFilter("");
           }}
+          disabled={isRegionalManager}
         >
-          <option value="">All states</option>
+          {isRegionalManager ? null : <option value="">All states</option>}
           {regionOptions.states.map((state) => (
             <option key={state} value={state}>
               {state}
@@ -105,9 +154,11 @@ export const OpsDashboardPage = () => {
           label="District"
           value={districtFilter}
           onChange={(event) => setDistrictFilter(event.target.value)}
-          disabled={!stateFilter}
+          disabled={!stateFilter || isRegionalManager}
         >
-          <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+          {isRegionalManager ? null : (
+            <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+          )}
           {districtOptions.map((district) => (
             <option key={district} value={district}>
               {district}
@@ -115,7 +166,11 @@ export const OpsDashboardPage = () => {
           ))}
         </Select>
         <div className="flex items-end">
-          <Button variant="secondary" onClick={() => { setStateFilter(""); setDistrictFilter(""); }}>
+          <Button
+            variant="secondary"
+            onClick={() => { setStateFilter(""); setDistrictFilter(""); }}
+            disabled={isRegionalManager}
+          >
             Clear filters
           </Button>
         </div>
@@ -163,9 +218,13 @@ export const OpsDashboardPage = () => {
                   key={summary.state}
                   type="button"
                   onClick={() => {
+                    if (isRegionalManager) {
+                      return;
+                    }
                     setStateFilter(summary.state);
                     setDistrictFilter("");
                   }}
+                  disabled={isRegionalManager}
                   className="rounded-[1.5rem] bg-cream px-5 py-4 text-left shadow-soft transition hover:-translate-y-0.5"
                 >
                   <div className="flex items-start justify-between gap-3">

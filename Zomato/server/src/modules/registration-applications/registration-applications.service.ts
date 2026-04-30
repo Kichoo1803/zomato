@@ -10,6 +10,12 @@ import { resolveRegionIdForAssignment } from "../regions/regions.service.js";
 import { slugify } from "../../utils/slug.js";
 import { AppError } from "../../utils/app-error.js";
 import {
+  applyRegionalReadScope,
+  assertRegionalRecordScope,
+  ensureAssignedRegionalAccess,
+  getRegionalAccessState,
+} from "../../utils/regional-access.js";
+import {
   getIndianPhoneSearchVariants,
   normalizeIndianPhoneNumber,
 } from "../../utils/phone.js";
@@ -26,6 +32,10 @@ import {
 type ApplicationActor = {
   id: number;
   role: Role;
+};
+
+type RequestContext = {
+  endpoint?: string;
 };
 
 type RegistrationApplicationFiles = Record<string, Express.Multer.File[] | undefined>;
@@ -265,6 +275,10 @@ const buildPayoutDetailsSnapshot = (input: {
 
 const mapRegistrationApplication = (application: RegistrationApplicationRecord) => ({
   ...application,
+  assignedRegionalManagerId:
+    application.region?.manager?.id ?? application.assignedRegionalManagerId ?? null,
+  assignedRegionalManager:
+    application.region?.manager ?? application.assignedRegionalManager ?? null,
   payoutDetails: parseSnapshot<PayoutDetailsSnapshot>(application.payoutDetails),
   documents: parseSnapshot<ApplicationDocumentsSnapshot>(application.documents),
   routingTarget: application.region?.manager?.id ? "REGIONAL_MANAGER" : "ADMIN",
@@ -447,17 +461,6 @@ const notifyAssignedRegionalManager = async (application: RegistrationApplicatio
   });
 };
 
-const getAssignedRegionalManagerRegionId = async (actorId: number) => {
-  const user = await prisma.user.findUnique({
-    where: { id: actorId },
-    select: {
-      regionId: true,
-    },
-  });
-
-  return user?.regionId ?? null;
-};
-
 const buildScopedWhere = async (
   actor: ApplicationActor,
   filters?: {
@@ -471,7 +474,27 @@ const buildScopedWhere = async (
     createdTo?: string;
     unassignedOnly?: boolean;
   },
+  context?: RequestContext,
 ): Promise<Prisma.RegistrationApplicationWhereInput> => {
+  const access = await getRegionalAccessState(actor);
+  const scopedRegionFilters = access.isRestricted
+    ? applyRegionalReadScope(
+        access,
+        {
+          regionId: filters?.regionId,
+          state: filters?.state,
+          district: filters?.district,
+        },
+        {
+          actor,
+          endpoint: context?.endpoint,
+        },
+      )
+    : {
+        regionId: filters?.regionId,
+        state: filters?.state,
+        district: filters?.district,
+      };
   const search = filters?.search?.trim();
   const clauses: Prisma.RegistrationApplicationWhereInput[] = [];
 
@@ -483,16 +506,16 @@ const buildScopedWhere = async (
     clauses.push({ status: filters.status });
   }
 
-  if (filters?.regionId) {
-    clauses.push({ regionId: filters.regionId });
+  if (scopedRegionFilters.regionId) {
+    clauses.push({ regionId: scopedRegionFilters.regionId });
   }
 
-  if (filters?.state) {
-    clauses.push({ state: filters.state });
+  if (scopedRegionFilters.state) {
+    clauses.push({ state: scopedRegionFilters.state });
   }
 
-  if (filters?.district) {
-    clauses.push({ district: filters.district });
+  if (scopedRegionFilters.district) {
+    clauses.push({ district: scopedRegionFilters.district });
   }
 
   if (filters?.createdFrom || filters?.createdTo) {
@@ -522,18 +545,13 @@ const buildScopedWhere = async (
     });
   }
 
-  if (actor.role === Role.REGIONAL_MANAGER) {
-    const assignedRegionId = await getAssignedRegionalManagerRegionId(actor.id);
+  if (access.isRestricted) {
+    if (!access.assignedRegion?.regionId) {
+      clauses.push({ regionId: -1 });
+    } else {
+      clauses.push({ regionId: access.assignedRegion.regionId });
+    }
 
-    clauses.push(
-      assignedRegionId
-        ? {
-            regionId: assignedRegionId,
-          }
-        : {
-            regionId: -1,
-          },
-    );
     clauses.push({
       region: {
         is: {
@@ -555,7 +573,9 @@ const buildScopedWhere = async (
 const ensureApplicationVisibleToActor = async (
   actor: ApplicationActor,
   applicationId: number,
+  context?: RequestContext,
 ) => {
+  const access = await getRegionalAccessState(actor);
   const application = await prisma.registrationApplication.findUnique({
     where: { id: applicationId },
     select: registrationApplicationSelect,
@@ -569,14 +589,31 @@ const ensureApplicationVisibleToActor = async (
     );
   }
 
-  if (actor.role === Role.REGIONAL_MANAGER) {
-    const assignedRegionId = await getAssignedRegionalManagerRegionId(actor.id);
+  if (access.isRestricted) {
+    ensureAssignedRegionalAccess(access, {
+      actor,
+      endpoint: context?.endpoint,
+      requestedRegion: {
+        regionId: application.regionId,
+        state: application.state,
+        district: application.district,
+      },
+    });
 
-    if (
-      !assignedRegionId ||
-      application.regionId !== assignedRegionId ||
-      application.region?.managerUserId !== actor.id
-    ) {
+    assertRegionalRecordScope(
+      access,
+      {
+        regionId: application.regionId,
+        state: application.state,
+        district: application.district,
+      },
+      {
+        actor,
+        endpoint: context?.endpoint,
+      },
+    );
+
+    if (application.region?.managerUserId !== actor.id) {
       throw new AppError(StatusCodes.FORBIDDEN, "Access denied", "ACCESS_DENIED");
     }
   }
@@ -961,9 +998,16 @@ export const registrationApplicationsService = {
       createdTo?: string;
       unassignedOnly?: boolean;
     },
+    context?: RequestContext,
   ) {
+    const access = await getRegionalAccessState(actor);
+
+    if (access.isRestricted && !access.assignedRegion) {
+      return [];
+    }
+
     const applications = await prisma.registrationApplication.findMany({
-      where: await buildScopedWhere(actor, filters),
+      where: await buildScopedWhere(actor, filters, context),
       select: registrationApplicationSelect,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     });
@@ -977,8 +1021,9 @@ export const registrationApplicationsService = {
     input: {
       remarks?: string;
     },
+    context?: RequestContext,
   ) {
-    const application = await ensureApplicationVisibleToActor(actor, applicationId);
+    const application = await ensureApplicationVisibleToActor(actor, applicationId, context);
 
     if (application.status !== RegistrationApplicationStatus.PENDING) {
       throw new AppError(
@@ -1042,8 +1087,9 @@ export const registrationApplicationsService = {
     input: {
       remarks: string;
     },
+    context?: RequestContext,
   ) {
-    const application = await ensureApplicationVisibleToActor(actor, applicationId);
+    const application = await ensureApplicationVisibleToActor(actor, applicationId, context);
 
     if (application.status !== RegistrationApplicationStatus.PENDING) {
       throw new AppError(

@@ -5,7 +5,16 @@ import { useNotificationInbox } from "@/hooks/use-notification-inbox";
 import { getDefaultRedirectPath } from "@/lib/auth";
 import { cn } from "@/utils/cn";
 
-export const Navbar = () => {
+type NavbarProps = {
+  cartItemCount?: number;
+  cartTotal?: number;
+  onOpenLocationSelector?: () => void;
+  paymentMethodCount?: number;
+  savedAddressCount?: number;
+  selectedLocation?: unknown;
+};
+
+export const Navbar = (_props: NavbarProps) => {
   const { isAuthenticated, user } = useAuth();
   const isCustomerSession = isAuthenticated && user?.role === "CUSTOMER";
   const navItems = [

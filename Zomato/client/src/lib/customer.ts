@@ -413,12 +413,27 @@ export type PendingCustomerCouponSelection = {
 
 export type PublicRestaurantQuery = {
   search?: string;
+  foodCategory?: string;
   includeMenuMatches?: boolean;
+  allowGlobalResults?: boolean;
   latitude?: number;
   longitude?: number;
   radiusKm?: number;
   page?: number;
   limit?: number;
+};
+
+export type PublicRestaurantCatalogue = {
+  restaurants: CustomerRestaurantSummary[];
+  meta: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    appliedRadiusKm?: number | null;
+    isLocationFiltered?: boolean;
+    requiresLocation?: boolean;
+  };
 };
 
 export type CustomerLocationLookup = {
@@ -559,6 +574,25 @@ export type CustomerOrder = {
 };
 
 const PENDING_CUSTOMER_COUPON_STORAGE_PREFIX = "zomato-luxe-pending-coupon";
+export const CUSTOMER_CART_UPDATED_EVENT = "zomato-luxe:customer-cart-updated";
+export const CUSTOMER_ADDRESSES_UPDATED_EVENT = "zomato-luxe:customer-addresses-updated";
+export const CUSTOMER_PAYMENT_METHODS_UPDATED_EVENT = "zomato-luxe:customer-payment-methods-updated";
+const publicRestaurantCatalogueRequests = new Map<string, Promise<PublicRestaurantCatalogue>>();
+
+const serializePublicRestaurantQuery = (params?: PublicRestaurantQuery) =>
+  JSON.stringify(
+    Object.entries(params ?? {})
+      .filter(([, value]) => value !== undefined)
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey)),
+  );
+
+const dispatchCustomerClientEvent = (eventName: string) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.dispatchEvent(new CustomEvent(eventName));
+};
 
 const getPendingCustomerCouponStorageKey = (userId?: number | null) =>
   `${PENDING_CUSTOMER_COUPON_STORAGE_PREFIX}:${userId ?? "guest"}`;
@@ -602,20 +636,26 @@ export const clearPendingCustomerCouponSelection = (userId?: number | null) => {
   window.localStorage.removeItem(getPendingCustomerCouponStorageKey(userId));
 };
 
+export const getPublicRestaurantCatalogue = async (params?: PublicRestaurantQuery) => {
+  const requestKey = serializePublicRestaurantQuery(params);
+  const inFlightRequest = publicRestaurantCatalogueRequests.get(requestKey);
+  if (inFlightRequest) {
+    return inFlightRequest;
+  }
+
+  const request = publicApi
+    .get<ApiEnvelope<PublicRestaurantCatalogue>>("/restaurants", { params })
+    .then(unwrapData)
+    .finally(() => {
+      publicRestaurantCatalogueRequests.delete(requestKey);
+    });
+
+  publicRestaurantCatalogueRequests.set(requestKey, request);
+  return request;
+};
+
 export const getPublicRestaurants = async (params?: PublicRestaurantQuery) =>
-  unwrapData(
-    await publicApi.get<
-      ApiEnvelope<{
-        restaurants: CustomerRestaurantSummary[];
-        meta: {
-          page: number;
-          limit: number;
-          total: number;
-          totalPages: number;
-        };
-      }>
-    >("/restaurants", { params }),
-  ).restaurants;
+  (await getPublicRestaurantCatalogue(params)).restaurants;
 
 export const geocodeCustomerLocation = async (query: string) =>
   unwrapData(
@@ -650,15 +690,23 @@ export const getPublicOffers = async () =>
 export const getCustomerCarts = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ carts: CustomerCart[] }>>("/carts")).carts;
 
-export const applyCustomerCartOffer = async (cartId: number, code: string) =>
-  unwrapData(
+export const applyCustomerCartOffer = async (cartId: number, code: string) => {
+  const cart = unwrapData(
     await apiClient.post<ApiEnvelope<{ cart: CustomerCart }>>(`/carts/${cartId}/apply-offer`, {
       code,
     }),
   ).cart;
+  dispatchCustomerClientEvent(CUSTOMER_CART_UPDATED_EVENT);
+  return cart;
+};
 
-export const removeCustomerCartOffer = async (cartId: number) =>
-  unwrapData(await apiClient.post<ApiEnvelope<{ cart: CustomerCart }>>(`/carts/${cartId}/remove-offer`)).cart;
+export const removeCustomerCartOffer = async (cartId: number) => {
+  const cart = unwrapData(
+    await apiClient.post<ApiEnvelope<{ cart: CustomerCart }>>(`/carts/${cartId}/remove-offer`),
+  ).cart;
+  dispatchCustomerClientEvent(CUSTOMER_CART_UPDATED_EVENT);
+  return cart;
+};
 
 export const addCustomerCartItem = async (payload: {
   restaurantId: number;
@@ -667,22 +715,36 @@ export const addCustomerCartItem = async (payload: {
   quantity: number;
   addonIds?: number[];
   specialInstructions?: string;
-}) =>
-  unwrapData(await apiClient.post<ApiEnvelope<{ cart: CustomerCart }>>("/carts/items", payload)).cart;
+}) => {
+  const cart = unwrapData(await apiClient.post<ApiEnvelope<{ cart: CustomerCart }>>("/carts/items", payload)).cart;
+  dispatchCustomerClientEvent(CUSTOMER_CART_UPDATED_EVENT);
+  return cart;
+};
 
 export const updateCustomerCartItem = async (
   cartItemId: number,
   payload: { quantity?: number; addonIds?: number[]; specialInstructions?: string },
-) =>
-  unwrapData(await apiClient.patch<ApiEnvelope<{ cart: CustomerCart }>>(`/carts/items/${cartItemId}`, payload))
-    .cart;
+) => {
+  const cart = unwrapData(
+    await apiClient.patch<ApiEnvelope<{ cart: CustomerCart }>>(`/carts/items/${cartItemId}`, payload),
+  ).cart;
+  dispatchCustomerClientEvent(CUSTOMER_CART_UPDATED_EVENT);
+  return cart;
+};
 
-export const removeCustomerCartItem = async (cartItemId: number) =>
-  unwrapData(await apiClient.delete<ApiEnvelope<{ cart: CustomerCart | null }>>(`/carts/items/${cartItemId}`))
-    .cart;
+export const removeCustomerCartItem = async (cartItemId: number) => {
+  const cart = unwrapData(
+    await apiClient.delete<ApiEnvelope<{ cart: CustomerCart | null }>>(`/carts/items/${cartItemId}`),
+  ).cart;
+  dispatchCustomerClientEvent(CUSTOMER_CART_UPDATED_EVENT);
+  return cart;
+};
 
-export const clearCustomerCart = async (cartId: number) =>
-  unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/carts/${cartId}`));
+export const clearCustomerCart = async (cartId: number) => {
+  const response = unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/carts/${cartId}`));
+  dispatchCustomerClientEvent(CUSTOMER_CART_UPDATED_EVENT);
+  return response;
+};
 
 export const getCustomerAddresses = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ addresses: CustomerAddress[] }>>("/addresses")).addresses;
@@ -691,31 +753,43 @@ export const getCustomerSavedPaymentMethods = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ paymentMethods: CustomerPaymentMethod[] }>>("/saved-payment-methods"))
     .paymentMethods;
 
-export const createCustomerSavedPaymentMethod = async (payload: CustomerPaymentMethodPayload) =>
-  unwrapData(
+export const createCustomerSavedPaymentMethod = async (payload: CustomerPaymentMethodPayload) => {
+  const paymentMethod = unwrapData(
     await apiClient.post<ApiEnvelope<{ paymentMethod: CustomerPaymentMethod }>>("/saved-payment-methods", payload),
   ).paymentMethod;
+  dispatchCustomerClientEvent(CUSTOMER_PAYMENT_METHODS_UPDATED_EVENT);
+  return paymentMethod;
+};
 
 export const updateCustomerSavedPaymentMethod = async (
   paymentMethodId: number,
   payload: CustomerPaymentMethodPayload,
-) =>
-  unwrapData(
+) => {
+  const paymentMethod = unwrapData(
     await apiClient.patch<ApiEnvelope<{ paymentMethod: CustomerPaymentMethod }>>(
       `/saved-payment-methods/${paymentMethodId}`,
       payload,
     ),
   ).paymentMethod;
+  dispatchCustomerClientEvent(CUSTOMER_PAYMENT_METHODS_UPDATED_EVENT);
+  return paymentMethod;
+};
 
-export const deleteCustomerSavedPaymentMethod = async (paymentMethodId: number) =>
-  unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/saved-payment-methods/${paymentMethodId}`));
+export const deleteCustomerSavedPaymentMethod = async (paymentMethodId: number) => {
+  const response = unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/saved-payment-methods/${paymentMethodId}`));
+  dispatchCustomerClientEvent(CUSTOMER_PAYMENT_METHODS_UPDATED_EVENT);
+  return response;
+};
 
-export const setDefaultCustomerSavedPaymentMethod = async (paymentMethodId: number) =>
-  unwrapData(
+export const setDefaultCustomerSavedPaymentMethod = async (paymentMethodId: number) => {
+  const paymentMethod = unwrapData(
     await apiClient.patch<ApiEnvelope<{ paymentMethod: CustomerPaymentMethod }>>(
       `/saved-payment-methods/${paymentMethodId}/default`,
     ),
   ).paymentMethod;
+  dispatchCustomerClientEvent(CUSTOMER_PAYMENT_METHODS_UPDATED_EVENT);
+  return paymentMethod;
+};
 
 export const getCustomerPaymentMethods = async () => getCustomerSavedPaymentMethods();
 
@@ -750,19 +824,29 @@ export const updateCustomerMembership = async (payload: {
     ).user,
   );
 
-export const createCustomerAddress = async (payload: CustomerAddressPayload) =>
-  unwrapData(await apiClient.post<ApiEnvelope<{ address: CustomerAddress }>>("/addresses", payload)).address;
+export const createCustomerAddress = async (payload: CustomerAddressPayload) => {
+  const address = unwrapData(await apiClient.post<ApiEnvelope<{ address: CustomerAddress }>>("/addresses", payload))
+    .address;
+  dispatchCustomerClientEvent(CUSTOMER_ADDRESSES_UPDATED_EVENT);
+  return address;
+};
 
 export const updateCustomerAddress = async (
   addressId: number,
   payload: Partial<CustomerAddressPayload>,
-) =>
-  unwrapData(
+) => {
+  const address = unwrapData(
     await apiClient.patch<ApiEnvelope<{ address: CustomerAddress }>>(`/addresses/${addressId}`, payload),
   ).address;
+  dispatchCustomerClientEvent(CUSTOMER_ADDRESSES_UPDATED_EVENT);
+  return address;
+};
 
-export const deleteCustomerAddress = async (addressId: number) =>
-  unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/addresses/${addressId}`));
+export const deleteCustomerAddress = async (addressId: number) => {
+  const response = unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/addresses/${addressId}`));
+  dispatchCustomerClientEvent(CUSTOMER_ADDRESSES_UPDATED_EVENT);
+  return response;
+};
 
 export const placeCustomerOrder = async (payload: {
   cartId: number;

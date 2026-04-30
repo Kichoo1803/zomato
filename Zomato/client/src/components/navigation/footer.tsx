@@ -2,7 +2,14 @@ import { Link } from "react-router-dom";
 import { useAuth } from "@/hooks/use-auth";
 import { getDefaultRedirectPath } from "@/lib/auth";
 
-export const Footer = () => {
+type FooterProps = {
+  canManageSavedLocation?: boolean;
+  onOpenLocationSelector?: () => void;
+  savedAddressCount?: number;
+  selectedLocation?: unknown;
+};
+
+export const Footer = (_props: FooterProps) => {
   const { isAuthenticated, user } = useAuth();
   const isCustomerSession = isAuthenticated && user?.role === "CUSTOMER";
   const footerLinks = [

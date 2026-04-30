@@ -17,11 +17,16 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
-import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
+import {
+  getDistrictOptions,
+  getSingleRegionSelection,
+  resolveRegionOptions,
+} from "@/lib/india-regions";
 import {
   createOperationsOwner,
   getOperationsOwners,
   getOperationsRegions,
+  type OperationsRegionsSummary,
   updateOperationsAssignment,
   type OperationsOwner,
 } from "@/lib/ops";
@@ -40,6 +45,7 @@ export const OpsRestaurantOwnersPage = () => {
   const { user } = useAuth();
   const [owners, setOwners] = useState<OperationsOwner[]>([]);
   const [regionOptions, setRegionOptions] = useState<{ states: string[]; districtsByState: Record<string, string[]> } | null>(null);
+  const [scopeMessage, setScopeMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -63,6 +69,7 @@ export const OpsRestaurantOwnersPage = () => {
     notes: "",
   });
   const canCreateOwners = user?.role === "ADMIN" || user?.role === "REGIONAL_MANAGER";
+  const isRegionalManager = user?.role === "REGIONAL_MANAGER";
 
   const loadOwners = async () => {
     setIsLoading(true);
@@ -79,6 +86,7 @@ export const OpsRestaurantOwnersPage = () => {
       ]);
       setOwners(ownerRows);
       setRegionOptions(regions.regionOptions);
+      setScopeMessage((regions as OperationsRegionsSummary).scopeMessage ?? null);
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to load restaurant owners."));
     } finally {
@@ -90,21 +98,69 @@ export const OpsRestaurantOwnersPage = () => {
     void loadOwners();
   }, [search, stateFilter, districtFilter, statusFilter, assignmentFilter]);
 
-  const mergedOptions = useMemo(() => mergeRegionOptions(regionOptions), [regionOptions]);
-  const districtOptions = useMemo(() => getDistrictOptions(stateFilter, regionOptions), [regionOptions, stateFilter]);
-  const createDistrictOptions = useMemo(
-    () => getDistrictOptions(createForm.state, regionOptions),
-    [createForm.state, regionOptions],
+  const selectableOptions = useMemo(
+    () =>
+      resolveRegionOptions(regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, regionOptions],
   );
+  const districtOptions = useMemo(
+    () =>
+      getDistrictOptions(stateFilter, regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, regionOptions, stateFilter],
+  );
+  const createDistrictOptions = useMemo(
+    () =>
+      getDistrictOptions(createForm.state, regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [createForm.state, isRegionalManager, regionOptions],
+  );
+  const emptyOwnersTitle = useMemo(() => {
+    if (stateFilter && districtFilter) {
+      return `No restaurant owners found in ${districtFilter}, ${stateFilter}`;
+    }
+
+    if (stateFilter) {
+      return `No restaurant owners found in ${stateFilter}`;
+    }
+
+    return "No restaurant owners found";
+  }, [districtFilter, stateFilter]);
   const pagedOwners = paginate(owners, page);
 
+  useEffect(() => {
+    if (!isRegionalManager || !regionOptions) {
+      return;
+    }
+
+    const assignedRegion = getSingleRegionSelection(regionOptions);
+
+    if (stateFilter !== assignedRegion.state) {
+      setStateFilter(assignedRegion.state);
+    }
+
+    if (districtFilter !== assignedRegion.district) {
+      setDistrictFilter(assignedRegion.district);
+    }
+  }, [districtFilter, isRegionalManager, regionOptions, stateFilter]);
+
   const openCreateModal = () => {
-    const nextState = stateFilter || (mergedOptions.states.length === 1 ? mergedOptions.states[0] : "");
+    const assignedRegion = getSingleRegionSelection(regionOptions);
+    const nextState = isRegionalManager
+      ? assignedRegion.state
+      : stateFilter || (selectableOptions.states.length === 1 ? selectableOptions.states[0] : "");
     const nextDistrict =
-      districtFilter ||
-      (nextState && getDistrictOptions(nextState, regionOptions).length === 1
-        ? getDistrictOptions(nextState, regionOptions)[0]
-        : "");
+      isRegionalManager
+        ? assignedRegion.district
+        : districtFilter ||
+          (nextState &&
+          getDistrictOptions(nextState, regionOptions, { includeIndiaDefaults: true }).length === 1
+            ? getDistrictOptions(nextState, regionOptions, { includeIndiaDefaults: true })[0]
+            : "");
 
     setCreateForm({
       fullName: "",
@@ -176,11 +232,19 @@ export const OpsRestaurantOwnersPage = () => {
         action={
           <div className="flex gap-3">
             <RefreshButton onClick={() => void loadOwners()} />
-            {canCreateOwners ? <AddButton label="Add owner" onClick={openCreateModal} /> : null}
+            {canCreateOwners && !scopeMessage ? <AddButton label="Add owner" onClick={openCreateModal} /> : null}
           </div>
         }
       />
 
+      {isRegionalManager && scopeMessage ? (
+        <SurfaceCard>
+          <EmptyState title="No region assigned" description={scopeMessage} />
+        </SurfaceCard>
+      ) : null}
+
+      {isRegionalManager && scopeMessage ? null : (
+        <>
       <AdminToolbar
         searchValue={search}
         onSearchChange={(value) => {
@@ -190,16 +254,28 @@ export const OpsRestaurantOwnersPage = () => {
         searchPlaceholder="Search by owner, email, phone, restaurant, city, or area"
         filters={
           <>
-            <Select value={stateFilter} onChange={(event) => { setStateFilter(event.target.value); setDistrictFilter(""); setPage(1); }} className="min-w-[180px]">
-              <option value="">All states</option>
-              {mergedOptions.states.map((state) => (
+            <Select
+              value={stateFilter}
+              onChange={(event) => { setStateFilter(event.target.value); setDistrictFilter(""); setPage(1); }}
+              className="min-w-[180px]"
+              disabled={isRegionalManager}
+            >
+              {isRegionalManager ? null : <option value="">All states</option>}
+              {selectableOptions.states.map((state) => (
                 <option key={state} value={state}>
                   {state}
                 </option>
               ))}
             </Select>
-            <Select value={districtFilter} onChange={(event) => { setDistrictFilter(event.target.value); setPage(1); }} className="min-w-[180px]" disabled={!stateFilter}>
-              <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+            <Select
+              value={districtFilter}
+              onChange={(event) => { setDistrictFilter(event.target.value); setPage(1); }}
+              className="min-w-[180px]"
+              disabled={!stateFilter || isRegionalManager}
+            >
+              {isRegionalManager ? null : (
+                <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+              )}
               {districtOptions.map((district) => (
                 <option key={district} value={district}>
                   {district}
@@ -228,7 +304,7 @@ export const OpsRestaurantOwnersPage = () => {
           <AdminDataTable
             rows={pagedOwners.items}
             getRowKey={(owner) => owner.id}
-            emptyTitle="No restaurant owners found"
+            emptyTitle={emptyOwnersTitle}
             emptyDescription="Broaden the filters or add new owner registrations from the operations workflow."
             columns={[
               {
@@ -284,7 +360,7 @@ export const OpsRestaurantOwnersPage = () => {
                 render: (owner) => (
                   <RowActions
                     onView={() => setDetailsOwner(owner)}
-                    onEdit={() => setAssignmentTarget(owner)}
+                    onEdit={isRegionalManager ? undefined : () => setAssignmentTarget(owner)}
                     deleteLabel="Assign"
                   />
                 ),
@@ -380,9 +456,10 @@ export const OpsRestaurantOwnersPage = () => {
                 })
               }
               required
+              disabled={isRegionalManager}
             >
-              <option value="">Select state</option>
-              {mergedOptions.states.map((state) => (
+              {isRegionalManager ? null : <option value="">Select state</option>}
+              {selectableOptions.states.map((state) => (
                 <option key={state} value={state}>
                   {state}
                 </option>
@@ -392,10 +469,12 @@ export const OpsRestaurantOwnersPage = () => {
               label="District"
               value={createForm.district}
               onChange={(event) => setCreateForm({ ...createForm, district: event.target.value })}
-              disabled={!createForm.state}
+              disabled={!createForm.state || isRegionalManager}
               required
             >
-              <option value="">{createForm.state ? "Select district" : "Choose a state first"}</option>
+              {isRegionalManager ? null : (
+                <option value="">{createForm.state ? "Select district" : "Choose a state first"}</option>
+              )}
               {createDistrictOptions.map((district) => (
                 <option key={district} value={district}>
                   {district}
@@ -434,10 +513,13 @@ export const OpsRestaurantOwnersPage = () => {
         open={Boolean(assignmentTarget)}
         target={assignmentTarget}
         regionOptions={regionOptions}
+        restrictToAssignedRegion={isRegionalManager}
         isSubmitting={isSaving}
         onClose={() => setAssignmentTarget(null)}
         onSubmit={(payload) => void handleSaveAssignment(payload)}
       />
+        </>
+      )}
     </div>
   );
 };

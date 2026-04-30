@@ -59,9 +59,7 @@ export const RestaurantCard = ({
           aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
         >
           <Heart className={`h-4 w-4 ${isFavorite ? "fill-current" : ""}`} />
-          {isFavoritePending
-            ? "Saving..."
-            : favoriteActionLabel ?? (isFavorite ? "Saved" : "Save")}
+          {isFavoritePending ? "Saving..." : favoriteActionLabel ?? (isFavorite ? "Saved" : "Save")}
         </Button>
       ) : null}
 

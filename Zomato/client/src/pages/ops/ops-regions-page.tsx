@@ -3,11 +3,17 @@ import { toast } from "sonner";
 import { AdminDataTable, AdminLoadingState } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { DashboardStatCard } from "@/components/ui/dashboard-stat-card";
+import { EmptyState } from "@/components/ui/empty-state";
 import { PageLoadErrorState } from "@/components/ui/page-load-error-state";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
+import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
-import { getDistrictOptions, mergeRegionOptions } from "@/lib/india-regions";
+import {
+  getDistrictOptions,
+  getSingleRegionSelection,
+  resolveRegionOptions,
+} from "@/lib/india-regions";
 import { getOperationsRegions, type OperationsSummaryStats } from "@/lib/ops";
 import { RefreshButton } from "@/pages/admin/admin-shared";
 
@@ -16,6 +22,7 @@ type RegionsData = {
     state?: string | null;
     district?: string | null;
   };
+  scopeMessage?: string | null;
   regionOptions: {
     states: string[];
     districtsByState: Record<string, string[]>;
@@ -42,6 +49,7 @@ type RegionsData = {
 };
 
 export const OpsRegionsPage = () => {
+  const { user } = useAuth();
   const [regions, setRegions] = useState<RegionsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -72,10 +80,20 @@ export const OpsRegionsPage = () => {
     void loadRegions();
   }, [stateFilter, districtFilter]);
 
-  const regionOptions = useMemo(() => mergeRegionOptions(regions?.regionOptions), [regions?.regionOptions]);
+  const isRegionalManager = user?.role === "REGIONAL_MANAGER";
+  const regionOptions = useMemo(
+    () =>
+      resolveRegionOptions(regions?.regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, regions?.regionOptions],
+  );
   const districtOptions = useMemo(
-    () => getDistrictOptions(stateFilter, regions?.regionOptions),
-    [regions?.regionOptions, stateFilter],
+    () =>
+      getDistrictOptions(stateFilter, regions?.regionOptions, {
+        includeIndiaDefaults: !isRegionalManager,
+      }),
+    [isRegionalManager, regions?.regionOptions, stateFilter],
   );
   const totalDistrictCount = useMemo(
     () => Object.values(regionOptions.districtsByState).reduce((count, districts) => count + districts.length, 0),
@@ -118,6 +136,21 @@ export const OpsRegionsPage = () => {
       )
       .filter((summary) => !districtFilter || summary.district === districtFilter);
   }, [districtFilter, districtSummaryMap, regionOptions.districtsByState, regions, stateFilter]);
+  useEffect(() => {
+    if (!isRegionalManager || !regions?.regionOptions) {
+      return;
+    }
+
+    const assignedRegion = getSingleRegionSelection(regions.regionOptions);
+
+    if (stateFilter !== assignedRegion.state) {
+      setStateFilter(assignedRegion.state);
+    }
+
+    if (districtFilter !== assignedRegion.district) {
+      setDistrictFilter(assignedRegion.district);
+    }
+  }, [districtFilter, isRegionalManager, regions?.regionOptions, stateFilter]);
 
   useEffect(() => {
     if (stateFilter) {
@@ -145,6 +178,22 @@ export const OpsRegionsPage = () => {
     );
   }
 
+  if (isRegionalManager && regions.scopeMessage) {
+    return (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Regional control"
+          title="One India-focused workflow for state and district operations."
+          description="Browse states first, drill into districts second, and keep owner and rider management inside one clean regional system."
+          action={<RefreshButton onClick={() => void loadRegions()} />}
+        />
+        <SurfaceCard>
+          <EmptyState title="No region assigned" description={regions.scopeMessage} />
+        </SurfaceCard>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       <SectionHeading
@@ -162,8 +211,9 @@ export const OpsRegionsPage = () => {
             setStateFilter(event.target.value);
             setDistrictFilter("");
           }}
+          disabled={isRegionalManager}
         >
-          <option value="">All states</option>
+          {isRegionalManager ? null : <option value="">All states</option>}
           {regionOptions.states.map((state) => (
             <option key={state} value={state}>
               {state}
@@ -174,9 +224,11 @@ export const OpsRegionsPage = () => {
           label="District"
           value={districtFilter}
           onChange={(event) => setDistrictFilter(event.target.value)}
-          disabled={!stateFilter}
+          disabled={!stateFilter || isRegionalManager}
         >
-          <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+          {isRegionalManager ? null : (
+            <option value="">{stateFilter ? "All districts" : "Choose a state first"}</option>
+          )}
           {districtOptions.map((district) => (
             <option key={district} value={district}>
               {district}
@@ -184,7 +236,11 @@ export const OpsRegionsPage = () => {
           ))}
         </Select>
         <div className="flex items-end">
-          <Button variant="secondary" onClick={() => { setStateFilter(""); setDistrictFilter(""); }}>
+          <Button
+            variant="secondary"
+            onClick={() => { setStateFilter(""); setDistrictFilter(""); }}
+            disabled={isRegionalManager}
+          >
             Reset view
           </Button>
         </div>

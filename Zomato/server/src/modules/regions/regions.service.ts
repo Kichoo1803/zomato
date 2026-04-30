@@ -8,6 +8,7 @@ import {
 } from "../../lib/india-region-data.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
+import { RegistrationApplicationStatus } from "../registration-applications/registration-applications.constants.js";
 import {
   buildRegionIdentity,
   isRegionalOperationsRole,
@@ -249,6 +250,7 @@ export const clearRegionalManagerAssignments = async (
   client: RegionWriteClient,
   managerUserId: number,
 ) => {
+  const currentManagedRegions = await getManagedRegionsForManager(client, managerUserId);
   await client.region.updateMany({
     where: {
       managerUserId,
@@ -258,6 +260,10 @@ export const clearRegionalManagerAssignments = async (
     },
   });
 
+  await syncPendingApplicationsForRegions(
+    client,
+    currentManagedRegions.map((region) => region.id),
+  );
   await syncRegionalManagerScope(client, managerUserId);
 };
 
@@ -267,6 +273,7 @@ export const replaceRegionalManagerAssignments = async (
   regionIds: number[],
 ) => {
   await validateManagerCandidate(client, managerUserId);
+  const currentManagedRegions = await getManagedRegionsForManager(client, managerUserId);
   const nextRegionIds = assertSingleRegionalManagerAssignment(
     await assertAssignableRegionIds(client, regionIds),
   );
@@ -315,6 +322,10 @@ export const replaceRegionalManagerAssignments = async (
     });
   }
 
+  await syncPendingApplicationsForRegions(client, [
+    ...currentManagedRegions.map((region) => region.id),
+    ...(nextRegionId ? [nextRegionId] : []),
+  ]);
   await Promise.all([...affectedManagerIds].map((userId) => syncRegionalManagerScope(client, userId)));
 };
 
@@ -352,6 +363,7 @@ const syncRegionManagerAssignment = async (
     affectedManagerIds.add(input.nextManagerUserId);
   }
 
+  await syncPendingApplicationsForRegions(client, [input.regionId]);
   await Promise.all([...affectedManagerIds].map((userId) => syncRegionalManagerScope(client, userId)));
 };
 
@@ -544,6 +556,43 @@ export const syncRestaurantsRegionForOwner = async (
       regionId,
     },
   });
+};
+
+const syncPendingApplicationsForRegions = async (
+  client: RegionWriteClient,
+  regionIds: number[],
+) => {
+  const uniqueRegionIds = [...new Set(regionIds)].filter((regionId) => Number.isInteger(regionId) && regionId > 0);
+
+  if (!uniqueRegionIds.length) {
+    return;
+  }
+
+  const regions = await client.region.findMany({
+    where: {
+      id: {
+        in: uniqueRegionIds,
+      },
+    },
+    select: {
+      id: true,
+      managerUserId: true,
+    },
+  });
+
+  await Promise.all(
+    regions.map((region) =>
+      client.registrationApplication.updateMany({
+        where: {
+          regionId: region.id,
+          status: RegistrationApplicationStatus.PENDING,
+        },
+        data: {
+          assignedRegionalManagerId: region.managerUserId ?? null,
+        },
+      }),
+    ),
+  );
 };
 
 export const regionsAdminService = {

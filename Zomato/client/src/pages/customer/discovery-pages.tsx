@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -13,52 +13,40 @@ import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { PageShell, SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { RatingBadge } from "@/components/ui/rating-badge";
+import { Select } from "@/components/ui/select";
 import { Tabs } from "@/components/ui/tabs";
-import { SearchBar } from "@/components/navigation/search-bar";
+import { SearchBar, type SearchBarSuggestion } from "@/components/navigation/search-bar";
 import { FoodItemCard } from "@/components/cards/food-item-card";
 import { OfferCard } from "@/components/cards/offer-card";
 import { RestaurantCard } from "@/components/cards/restaurant-card";
 import { ReviewCard } from "@/components/cards/review-card";
-import { LocationPickerMap } from "@/components/maps/location-picker-map";
+import {
+  DiscoveryLocationNotice,
+  LocationSelectionModal,
+  type SelectedDiscoveryLocation,
+  useDiscoveryLocation,
+} from "@/components/customer/discovery-location";
 import { useAuth } from "@/hooks/use-auth";
 import { useCustomerActionGuard } from "@/hooks/use-customer-action-guard";
 import { getApiErrorMessage } from "@/lib/auth";
-import {
-  areCustomerActiveLocationsEqual,
-  buildCustomerAddressSummary,
-  clearStoredCustomerActiveLocation,
-  createCustomerActiveLocationFromAddress,
-  getBrowserGeolocationPermissionState,
-  getBrowserCoordinates,
-  getCustomerLocationErrorMessage,
-  hasCustomerAddressCoordinates,
-  readStoredCustomerActiveLocation,
-  resolvePreferredCustomerActiveLocation,
-  writeStoredCustomerActiveLocation,
-  type CustomerActiveLocation,
-} from "@/lib/customer-location";
 import {
   addCustomerCartItem,
   addCustomerFavorite,
   applyCustomerCartOffer,
   clearPendingCustomerCouponSelection,
   createCustomerPaymentMethod,
-  getCustomerAddresses,
   getCustomerFavorites,
   getCustomerCarts,
   getCustomerPaymentMethods,
-  geocodeCustomerLocation,
   getPublicOffers,
+  getPublicRestaurantCatalogue,
   getPublicRestaurantBySlug,
-  getPublicRestaurants,
   readPendingCustomerCouponSelection,
   removeCustomerFavorite,
-  reverseGeocodeCustomerLocation,
   removeCustomerCartOffer,
   updateCustomerPaymentMethod,
   updateCustomerMembership,
   writePendingCustomerCouponSelection,
-  type CustomerAddress,
   type CustomerCart,
   type CustomerFavoriteRestaurant,
   type CustomerMenuItem,
@@ -68,11 +56,23 @@ import {
   type CustomerRestaurantSearchMatch,
   type CustomerRestaurantSummary,
 } from "@/lib/customer";
+import { addRecentSearch, clearRecentSearches, readRecentSearches } from "@/lib/search-history";
 import type { MembershipStatus, MembershipTier } from "@/types/auth";
 import { membershipBenefits } from "@/lib/demo-data";
 
 const linkButtonClassName =
   "inline-flex items-center justify-center rounded-full bg-accent px-5 py-3 text-sm font-semibold text-white shadow-soft";
+const SEARCH_FOOD_FILTERS = [
+  "Biryani",
+  "Pizza",
+  "Burger",
+  "South Indian",
+  "North Indian",
+  "Chinese",
+  "Fast Food",
+  "Desserts",
+  "Beverages",
+] as const;
 
 type RestaurantCardData = {
   id?: number;
@@ -86,6 +86,10 @@ type RestaurantCardData = {
   deliveryTime: number;
   distanceKm?: number | null;
   costForTwo: string;
+  priceForOne: string;
+  offerTitle?: string;
+  matchedDishName?: string;
+  matchedCategoryName?: string;
 };
 
 type DishSearchResult = {
@@ -101,6 +105,8 @@ const formatCurrency = (value: number) =>
     maximumFractionDigits: 0,
   }).format(value);
 
+const formatPriceForOne = (costForTwo: number) => formatCurrency(Math.max(1, Math.round(costForTwo / 2)));
+
 const formatLocationText = (...parts: Array<string | null | undefined>) =>
   parts
     .map((part) => part?.trim())
@@ -109,27 +115,33 @@ const formatLocationText = (...parts: Array<string | null | undefined>) =>
 
 const normalizeSearchText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 
-const isMatchingDishSearch = (menuItem: CustomerMenuItem, categoryName: string, normalizedSearch: string) => {
-  if (!normalizedSearch) {
-    return false;
-  }
+const getRestaurantOfferTitle = (restaurant: Pick<CustomerRestaurantSummary, "offers">) =>
+  restaurant.offers[0]?.offer.title ?? restaurant.offers[0]?.offer.code ?? undefined;
 
-  return [menuItem.name, menuItem.description, categoryName].some((value) =>
-    normalizeSearchText(value).includes(normalizedSearch),
-  );
+const compareRestaurantDistance = (leftDistanceKm?: number | null, rightDistanceKm?: number | null) => {
+  const normalizedLeftDistance =
+    typeof leftDistanceKm === "number" && Number.isFinite(leftDistanceKm) ? leftDistanceKm : Number.POSITIVE_INFINITY;
+  const normalizedRightDistance =
+    typeof rightDistanceKm === "number" && Number.isFinite(rightDistanceKm) ? rightDistanceKm : Number.POSITIVE_INFINITY;
+
+  return normalizedLeftDistance - normalizedRightDistance;
 };
 
-type SelectedDiscoveryLocation = CustomerActiveLocation;
+const sortRestaurantCardsForSearch = (restaurants: RestaurantCardData[], preferNearby: boolean) =>
+  [...restaurants].sort((leftRestaurant, rightRestaurant) => {
+    if (preferNearby) {
+      const distanceComparison = compareRestaurantDistance(leftRestaurant.distanceKm, rightRestaurant.distanceKm);
+      if (distanceComparison !== 0) {
+        return distanceComparison;
+      }
+    }
 
-const manualDiscoveryLocationSchema = z.object({
-  address: z.string().trim().min(6, "Enter a fuller address so we can find nearby restaurants.").max(240),
-});
+    if (rightRestaurant.rating !== leftRestaurant.rating) {
+      return rightRestaurant.rating - leftRestaurant.rating;
+    }
 
-type ManualDiscoveryLocationFormValues = z.infer<typeof manualDiscoveryLocationSchema>;
-
-const getSavedAddressLabel = (address: CustomerAddress) =>
-  address.title?.trim() ||
-  (address.addressType ? `${address.addressType.slice(0, 1)}${address.addressType.slice(1).toLowerCase()}` : "Saved address");
+    return leftRestaurant.name.localeCompare(rightRestaurant.name);
+  });
 
 const mapLiveRestaurantCard = (restaurant: CustomerRestaurantSummary): RestaurantCardData => ({
   id: restaurant.id,
@@ -144,6 +156,10 @@ const mapLiveRestaurantCard = (restaurant: CustomerRestaurantSummary): Restauran
   deliveryTime: restaurant.avgDeliveryTime,
   distanceKm: restaurant.distanceKm ?? null,
   costForTwo: formatCurrency(restaurant.costForTwo),
+  priceForOne: formatPriceForOne(restaurant.costForTwo),
+  offerTitle: getRestaurantOfferTitle(restaurant),
+  matchedDishName: restaurant.matchingMenuItems?.[0]?.name,
+  matchedCategoryName: restaurant.matchingMenuItems?.[0]?.category.name,
 });
 
 const mapFavoriteRestaurantCard = (favorite: CustomerFavoriteRestaurant): RestaurantCardData => ({
@@ -160,6 +176,7 @@ const mapFavoriteRestaurantCard = (favorite: CustomerFavoriteRestaurant): Restau
   rating: favorite.restaurant.avgRating,
   deliveryTime: favorite.restaurant.avgDeliveryTime,
   costForTwo: formatCurrency(favorite.restaurant.costForTwo),
+  priceForOne: formatPriceForOne(favorite.restaurant.costForTwo),
 });
 
 const mapSearchMatchToDishResult = (
@@ -173,6 +190,67 @@ const mapSearchMatchToDishResult = (
     menuItem,
     restaurant: mapLiveRestaurantCard(restaurant),
   };
+};
+
+const buildDiscoverySearchSuggestions = (
+  restaurants: RestaurantCardData[],
+  categories: string[],
+  query: string,
+): SearchBarSuggestion[] => {
+  const normalizedQuery = normalizeSearchText(query);
+  const suggestionMap = new Map<string, SearchBarSuggestion>();
+
+  restaurants.forEach((restaurant) => {
+    suggestionMap.set(`restaurant:${restaurant.slug}`, {
+      badge: "Restaurant",
+      description: restaurant.area || restaurant.addressSummary || "Nearby restaurant",
+      id: `restaurant:${restaurant.slug}`,
+      value: restaurant.name,
+    });
+
+    restaurant.cuisineLabel
+      .split("•")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .forEach((cuisine) => {
+        suggestionMap.set(`cuisine:${cuisine.toLowerCase()}`, {
+          badge: "Cuisine",
+          description: `Explore ${cuisine} nearby`,
+          id: `cuisine:${cuisine.toLowerCase()}`,
+          value: cuisine,
+        });
+      });
+
+    if (restaurant.area.trim()) {
+      suggestionMap.set(`area:${restaurant.area.toLowerCase()}`, {
+        badge: "Area",
+        description: `Search around ${restaurant.area}`,
+        id: `area:${restaurant.area.toLowerCase()}`,
+        value: restaurant.area,
+      });
+    }
+  });
+
+  categories
+    .filter((category) => category !== "All")
+    .forEach((category) => {
+      suggestionMap.set(`category:${category.toLowerCase()}`, {
+        badge: "Filter",
+        description: `Browse ${category} restaurants and dishes`,
+        id: `category:${category.toLowerCase()}`,
+        value: category,
+      });
+    });
+
+  return [...suggestionMap.values()]
+    .filter((suggestion) =>
+      normalizedQuery
+        ? normalizeSearchText(`${suggestion.value} ${suggestion.description} ${suggestion.badge}`).includes(
+            normalizedQuery,
+          )
+        : true,
+    )
+    .slice(0, 6);
 };
 
 const useCustomerFavorites = () => {
@@ -722,656 +800,37 @@ const MembershipUpiDetailsModal = ({
   );
 };
 
-type DiscoveryLocationNoticeProps = {
-  canManageSavedLocation: boolean;
-  errorMessage?: string;
-  isBootstrappingLocation?: boolean;
-  isResolvingCurrentLocation: boolean;
-  onEditAddress: () => void;
-  onUseCurrentLocation: () => void;
-  selectedLocation: SelectedDiscoveryLocation | null;
-};
-
-const DiscoveryLocationNotice = ({
-  canManageSavedLocation,
-  errorMessage,
-  isBootstrappingLocation,
-  isResolvingCurrentLocation,
-  onEditAddress,
-  onUseCurrentLocation,
-  selectedLocation,
-}: DiscoveryLocationNoticeProps) => {
-  const statusLabel = selectedLocation
-    ? selectedLocation.source === "gps"
-      ? "Current location"
-      : selectedLocation.source === "map"
-        ? "Map pin"
-        : selectedLocation.source === "default"
-          ? "Default address"
-          : selectedLocation.source === "saved"
-            ? "Saved address"
-            : "Temporary address"
-    : isBootstrappingLocation
-      ? "Checking addresses"
-      : "Location required";
-  const title = selectedLocation
-    ? selectedLocation.source === "default"
-      ? "Nearby restaurants are loading from your default delivery address."
-      : "Restaurants are filtered from your selected delivery location."
-    : isBootstrappingLocation
-      ? "Checking your saved delivery addresses before asking for a new location."
-      : "Choose a delivery location before browsing restaurants.";
-  const description = selectedLocation
-    ? selectedLocation.address
-    : isBootstrappingLocation
-      ? "If a default or previously selected address is available, nearby restaurants will load automatically."
-      : "Use a saved address, your current location, or enter an address manually. Restaurants stay hidden until a location is selected.";
-  const helperText = isBootstrappingLocation
-    ? "Saved delivery locations are checked first so you do not have to choose an address every time."
-    : "Nearby restaurants appear only after the delivery area is resolved.";
-
-  return (
-    <SurfaceCard>
-      <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-        <div className="space-y-3">
-          <StatusPill label={statusLabel} tone={selectedLocation ? "info" : "warning"} />
-          <div className="space-y-2">
-            <p className="text-sm font-semibold text-ink">{title}</p>
-            <p className="text-sm leading-7 text-ink-soft">{description}</p>
-            <p className="text-xs uppercase tracking-[0.2em] text-ink-muted">
-              {helperText}
-            </p>
-          </div>
-          {errorMessage ? <p className="text-sm font-medium text-accent-soft">{errorMessage}</p> : null}
-        </div>
-        <div className="flex flex-wrap gap-3">
-          <Button type="button" onClick={onUseCurrentLocation} disabled={isResolvingCurrentLocation}>
-            {isResolvingCurrentLocation ? "Locating..." : "Use current location"}
-          </Button>
-          <Button type="button" variant="secondary" onClick={onEditAddress}>
-            {selectedLocation ? "Change location" : "Select location"}
-          </Button>
-          {canManageSavedLocation ? (
-            <Link
-              to="/addresses"
-              className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-5 py-3 text-sm font-semibold text-ink shadow-soft"
-            >
-              Manage addresses
-            </Link>
-          ) : null}
-        </div>
-      </div>
-    </SurfaceCard>
-  );
-};
-
-type LocationSelectionModalProps = {
-  canManageSavedLocation: boolean;
-  initialAddress?: string;
-  initialCoordinates?: {
-    latitude: number;
-    longitude: number;
-  } | null;
-  isLoadingSavedAddresses: boolean;
-  isResolvingCurrentLocation: boolean;
-  isSavingManualLocation: boolean;
-  isSavingMapLocation: boolean;
-  onClose: () => void;
-  onSubmitManualAddress: (address: string) => Promise<boolean>;
-  onUseCurrentLocation: () => Promise<boolean>;
-  onUseMapLocation: (coordinates: { latitude: number; longitude: number }) => Promise<boolean>;
-  onUseSavedAddress: (address: CustomerAddress) => Promise<boolean>;
-  open: boolean;
-  savedAddresses: CustomerAddress[];
-  selectedLocationAddressId?: number | null;
-  selectedLocationSource?: SelectedDiscoveryLocation["source"];
-};
-
-const LocationSelectionModal = ({
-  canManageSavedLocation,
-  initialAddress,
-  initialCoordinates,
-  isLoadingSavedAddresses,
-  isResolvingCurrentLocation,
-  isSavingManualLocation,
-  isSavingMapLocation,
-  onClose,
-  onSubmitManualAddress,
-  onUseCurrentLocation,
-  onUseMapLocation,
-  onUseSavedAddress,
-  open,
-  savedAddresses,
-  selectedLocationAddressId,
-  selectedLocationSource,
-}: LocationSelectionModalProps) => {
-  const [activeTab, setActiveTab] = useState<"saved" | "current" | "map" | "manual">("current");
-  const [mapCoordinates, setMapCoordinates] = useState(() => initialCoordinates ?? { latitude: 20.5937, longitude: 78.9629 });
-  const [hasTouchedMap, setHasTouchedMap] = useState(Boolean(initialCoordinates));
-  const form = useForm<ManualDiscoveryLocationFormValues>({
-    resolver: zodResolver(manualDiscoveryLocationSchema),
-    defaultValues: {
-      address: initialAddress ?? "",
-    },
-  });
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    form.reset({
-      address: initialAddress ?? "",
-    });
-    setActiveTab(
-      savedAddresses.length
-        ? selectedLocationSource === "gps"
-          ? "current"
-          : selectedLocationSource === "map"
-            ? "map"
-            : selectedLocationSource === "manual"
-              ? "manual"
-              : "saved"
-        : initialCoordinates
-          ? "map"
-          : initialAddress
-            ? "manual"
-            : "current",
-    );
-    setMapCoordinates(initialCoordinates ?? { latitude: 20.5937, longitude: 78.9629 });
-    setHasTouchedMap(Boolean(initialCoordinates));
-  }, [form, initialAddress, initialCoordinates, open, savedAddresses.length, selectedLocationSource]);
-
-  const handleSubmit = form.handleSubmit(async (values) => {
-    const shouldClose = await onSubmitManualAddress(values.address.trim());
-
-    if (shouldClose) {
-      onClose();
-    }
-  });
-
-  const handleUseCurrentLocation = async () => {
-    const shouldClose = await onUseCurrentLocation();
-
-    if (shouldClose) {
-      onClose();
-    }
-  };
-
-  const handleUseMapLocation = async () => {
-    const shouldClose = await onUseMapLocation(mapCoordinates);
-
-    if (shouldClose) {
-      onClose();
-    }
-  };
-
-  const handleUseSavedAddress = async (address: CustomerAddress) => {
-    const shouldClose = await onUseSavedAddress(address);
-
-    if (shouldClose) {
-      onClose();
-    }
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title="Select delivery location" className="max-w-3xl">
-      <div className="space-y-5">
-        <Tabs
-          items={[
-            ...(canManageSavedLocation ? [{ value: "saved", label: "Saved" }] : []),
-            { value: "current", label: "Current" },
-            { value: "map", label: "Map" },
-            { value: "manual", label: "Manual" },
-          ]}
-          value={activeTab}
-          onChange={(value) => setActiveTab(value as "saved" | "current" | "map" | "manual")}
-        />
-
-        {activeTab === "saved" ? (
-          <div className="space-y-5">
-            <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
-              Your default or last selected saved address is used automatically on load when coordinates are available. Choose another saved address here only when you want to switch delivery areas.
-            </div>
-
-            {isLoadingSavedAddresses ? (
-              <div className="rounded-[1.5rem] bg-cream px-5 py-4 text-sm leading-7 text-ink-soft">
-                Loading your saved delivery addresses.
-              </div>
-            ) : savedAddresses.length ? (
-              <div className="grid gap-4">
-                {savedAddresses.map((address) => {
-                  const isSelected = selectedLocationAddressId === address.id;
-                  const isUsable = hasCustomerAddressCoordinates(address);
-
-                  return (
-                    <div
-                      key={address.id}
-                      className={`rounded-[1.5rem] border px-4 py-4 ${
-                        isSelected ? "border-accent/20 bg-white shadow-soft" : "border-accent/10 bg-white"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="space-y-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-semibold text-ink">{getSavedAddressLabel(address)}</p>
-                            {address.isDefault ? <StatusPill label="Default" tone="info" /> : null}
-                            {isSelected ? <StatusPill label="Selected" tone="success" /> : null}
-                            {!isUsable ? <StatusPill label="Location needed" tone="warning" /> : null}
-                          </div>
-                          <p className="text-sm leading-7 text-ink-soft">
-                            {buildCustomerAddressSummary(address) || formatLocationText(address.area, address.city, address.state) || "Saved delivery address"}
-                          </p>
-                        </div>
-                        {isUsable ? (
-                          <Button
-                            type="button"
-                            variant={isSelected ? "secondary" : "primary"}
-                            className="px-4 py-2 text-xs"
-                            onClick={() => void handleUseSavedAddress(address)}
-                            disabled={isSelected}
-                          >
-                            {isSelected ? "Using this address" : "Use this address"}
-                          </Button>
-                        ) : (
-                          <Link
-                            to="/addresses"
-                            className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
-                          >
-                            Fix in manage addresses
-                          </Link>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="flex flex-wrap items-center justify-between gap-4 rounded-[1.5rem] border border-accent/10 bg-white px-4 py-4">
-                <div>
-                  <p className="font-semibold text-ink">No saved addresses yet</p>
-                  <p className="mt-2 text-sm leading-7 text-ink-soft">
-                    Add a default delivery address to skip location selection the next time you open restaurant discovery.
-                  </p>
-                </div>
-                {canManageSavedLocation ? (
-                  <Link
-                    to="/addresses"
-                    className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
-                  >
-                    Manage addresses
-                  </Link>
-                ) : null}
-              </div>
-            )}
-          </div>
-        ) : null}
-
-        {activeTab === "current" ? (
-          <div className="space-y-5">
-            <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
-              Use your device GPS to set the active delivery location. If location access fails, you can switch to map or manual entry.
-            </div>
-            <div className="flex flex-wrap justify-end gap-3">
-              <Button type="button" variant="secondary" onClick={onClose} disabled={isResolvingCurrentLocation}>
-                Cancel
-              </Button>
-              <Button type="button" onClick={() => void handleUseCurrentLocation()} disabled={isResolvingCurrentLocation}>
-                {isResolvingCurrentLocation ? "Locating..." : "Use current location"}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-
-        {activeTab === "map" ? (
-          <div className="space-y-5">
-            <LocationPickerMap
-              value={mapCoordinates}
-              onChange={(coordinates) => {
-                setMapCoordinates(coordinates);
-                setHasTouchedMap(true);
-              }}
-            />
-            <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
-              Tap the map or drag the pin to the exact delivery point. Restaurants will refresh from this pin location after you confirm it.
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-[1.25rem] bg-cream px-4 py-3 text-sm text-ink-soft">
-                <span className="font-semibold text-ink">Latitude:</span> {mapCoordinates.latitude.toFixed(5)}
-              </div>
-              <div className="rounded-[1.25rem] bg-cream px-4 py-3 text-sm text-ink-soft">
-                <span className="font-semibold text-ink">Longitude:</span> {mapCoordinates.longitude.toFixed(5)}
-              </div>
-            </div>
-            <div className="flex flex-wrap justify-end gap-3">
-              <Button type="button" variant="secondary" onClick={onClose} disabled={isSavingMapLocation}>
-                Cancel
-              </Button>
-              <Button type="button" onClick={() => void handleUseMapLocation()} disabled={isSavingMapLocation || !hasTouchedMap}>
-                {isSavingMapLocation ? "Saving..." : "Use map location"}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-
-        {activeTab === "manual" ? (
-          <form onSubmit={handleSubmit} className="space-y-5">
-            <Input
-              label="Delivery address"
-              placeholder="Street, area, city, and pincode"
-              error={form.formState.errors.address?.message}
-              {...form.register("address")}
-            />
-            <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
-              This address is stored temporarily for nearby restaurant discovery. It will not replace your saved checkout addresses.
-            </div>
-            <div className="flex flex-wrap justify-end gap-3">
-              <Button type="button" variant="secondary" onClick={onClose} disabled={isSavingManualLocation}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={isSavingManualLocation}>
-                {isSavingManualLocation ? "Saving..." : initialAddress ? "Save temporary address" : "Use this address"}
-              </Button>
-            </div>
-          </form>
-        ) : null}
-      </div>
-    </Modal>
-  );
-};
-
-const useDiscoveryLocation = () => {
-  const { user } = useAuth();
-  const hasAttemptedAutoCurrentLocation = useRef(false);
-  const [selectedLocation, setSelectedLocation] = useState<SelectedDiscoveryLocation | null>(() =>
-    readStoredCustomerActiveLocation(),
-  );
-  const [savedAddresses, setSavedAddresses] = useState<CustomerAddress[]>([]);
-  const [errorMessage, setErrorMessage] = useState<string>();
-  const [hasResolvedInitialLocation, setHasResolvedInitialLocation] = useState(Boolean(readStoredCustomerActiveLocation()));
-  const [isLoadingSavedAddresses, setIsLoadingSavedAddresses] = useState(false);
-  const [isResolvingCurrentLocation, setIsResolvingCurrentLocation] = useState(false);
-  const [isSavingManualLocation, setIsSavingManualLocation] = useState(false);
-  const [isSavingMapLocation, setIsSavingMapLocation] = useState(false);
-
-  const clearLocation = () => {
-    setSelectedLocation(null);
-    clearStoredCustomerActiveLocation();
-  };
-
-  const persistSavedAddressLocation = (address: CustomerAddress) => {
-    const nextLocation = createCustomerActiveLocationFromAddress(
-      address,
-      address.isDefault ? "default" : "saved",
-    );
-
-    if (!nextLocation) {
-      return null;
-    }
-
-    setSelectedLocation(nextLocation);
-    setErrorMessage(undefined);
-    writeStoredCustomerActiveLocation(nextLocation);
-    return nextLocation;
-  };
-
-  const persistLocation = (location: Omit<SelectedDiscoveryLocation, "updatedAt">) => {
-    const nextLocation: SelectedDiscoveryLocation = {
-      ...location,
-      updatedAt: new Date().toISOString(),
-    };
-
-    setSelectedLocation(nextLocation);
-    setErrorMessage(undefined);
-    writeStoredCustomerActiveLocation(nextLocation);
-    return nextLocation;
-  };
-
-  useEffect(() => {
-    let isMounted = true;
-    hasAttemptedAutoCurrentLocation.current = false;
-
-    if (!user?.id || user.role !== "CUSTOMER") {
-      setSavedAddresses([]);
-      setIsLoadingSavedAddresses(false);
-      setHasResolvedInitialLocation(true);
-      return () => {
-        isMounted = false;
-      };
-    }
-
-    setIsLoadingSavedAddresses(true);
-    if (!selectedLocation) {
-      setHasResolvedInitialLocation(false);
-    }
-
-    void getCustomerAddresses()
-      .then((addresses) => {
-        if (!isMounted) {
-          return;
-        }
-
-        setSavedAddresses(addresses);
-      })
-      .catch(() => {
-        if (isMounted) {
-          setSavedAddresses([]);
-        }
-        // Default address loading is a convenience path; manual selection still remains available.
-      })
-      .finally(() => {
-        if (isMounted) {
-          setIsLoadingSavedAddresses(false);
-          setHasResolvedInitialLocation(true);
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [user?.id, user?.role]);
-
-  useEffect(() => {
-    if (isLoadingSavedAddresses) {
-      return;
-    }
-
-    const latestStoredLocation = readStoredCustomerActiveLocation();
-    const preferredLocation = resolvePreferredCustomerActiveLocation(savedAddresses, latestStoredLocation);
-
-    if (preferredLocation) {
-      if (!areCustomerActiveLocationsEqual(selectedLocation, preferredLocation)) {
-        setSelectedLocation(preferredLocation);
-      }
-
-      if (!areCustomerActiveLocationsEqual(latestStoredLocation, preferredLocation)) {
-        writeStoredCustomerActiveLocation(preferredLocation);
-      }
-
-      return;
-    }
-
-    if (selectedLocation?.source === "default" || selectedLocation?.source === "saved") {
-      clearLocation();
-    }
-  }, [isLoadingSavedAddresses, savedAddresses, selectedLocation]);
-
-  const useCurrentLocation = async ({ silently = false }: { silently?: boolean } = {}) => {
-    setIsResolvingCurrentLocation(true);
-    setErrorMessage(undefined);
-
-    try {
-      const coordinates = await getBrowserCoordinates();
-      const resolvedLocation = await reverseGeocodeCustomerLocation(coordinates).catch(() => null);
-
-      persistLocation({
-        latitude: coordinates.latitude,
-        longitude: coordinates.longitude,
-        address:
-          resolvedLocation?.address?.trim() ||
-          `Location near ${coordinates.latitude.toFixed(4)}, ${coordinates.longitude.toFixed(4)}`,
-        isTemporary: true,
-        source: "gps",
-      });
-
-      if (!silently) {
-        toast.success("Using your current location for nearby restaurants.");
-      }
-
-      return true;
-    } catch (error) {
-      const message = getCustomerLocationErrorMessage(error);
-      setErrorMessage(message);
-
-      if (!silently) {
-        toast.error(message);
-      }
-
-      return false;
-    } finally {
-      setIsResolvingCurrentLocation(false);
-    }
-  };
-
-  const saveManualLocation = async (address: string) => {
-    setIsSavingManualLocation(true);
-    setErrorMessage(undefined);
-
-    try {
-      const resolvedLocation = await geocodeCustomerLocation(address);
-
-      persistLocation({
-        latitude: resolvedLocation.latitude,
-        longitude: resolvedLocation.longitude,
-        address: resolvedLocation.address.trim() || address.trim(),
-        isTemporary: true,
-        source: "manual",
-      });
-      toast.success("Nearby restaurants updated for the selected address.");
-      return true;
-    } catch (error) {
-      const message = getApiErrorMessage(error, "Unable to resolve this address right now.");
-      setErrorMessage(message);
-      toast.error(message);
-      return false;
-    } finally {
-      setIsSavingManualLocation(false);
-    }
-  };
-
-  const saveMapLocation = async (coordinates: { latitude: number; longitude: number }) => {
-    setIsSavingMapLocation(true);
-    setErrorMessage(undefined);
-
-    try {
-      const resolvedLocation = await reverseGeocodeCustomerLocation(coordinates).catch(() => null);
-
-      persistLocation({
-        latitude: coordinates.latitude,
-        longitude: coordinates.longitude,
-        address:
-          resolvedLocation?.address?.trim() ||
-          `Pinned location near ${coordinates.latitude.toFixed(4)}, ${coordinates.longitude.toFixed(4)}`,
-        isTemporary: true,
-        source: "map",
-      });
-      toast.success("Nearby restaurants updated for the selected map location.");
-      return true;
-    } catch (error) {
-      const message = getApiErrorMessage(error, "Unable to use this map location right now.");
-      setErrorMessage(message);
-      toast.error(message);
-      return false;
-    } finally {
-      setIsSavingMapLocation(false);
-    }
-  };
-
-  const useSavedAddress = async (address: CustomerAddress) => {
-    if (!hasCustomerAddressCoordinates(address)) {
-      const message = "This saved address needs location details before it can be used for nearby restaurant search.";
-      setErrorMessage(message);
-      toast.error(message);
-      return false;
-    }
-
-    persistSavedAddressLocation(address);
-    toast.success(
-      address.isDefault
-        ? "Nearby restaurants updated from your default saved address."
-        : "Nearby restaurants updated from the selected saved address.",
-    );
-    return true;
-  };
-
-  useEffect(() => {
-    if (
-      !user?.id ||
-      user.role !== "CUSTOMER" ||
-      isLoadingSavedAddresses ||
-      selectedLocation ||
-      !hasResolvedInitialLocation ||
-      hasAttemptedAutoCurrentLocation.current
-    ) {
-      return;
-    }
-
-    hasAttemptedAutoCurrentLocation.current = true;
-    let isMounted = true;
-
-    void getBrowserGeolocationPermissionState().then((permissionState) => {
-      if (!isMounted || permissionState !== "granted") {
-        return;
-      }
-
-      void useCurrentLocation({ silently: true });
-    });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [hasResolvedInitialLocation, isLoadingSavedAddresses, selectedLocation, user?.id, user?.role]);
-
-  return {
-    canManageSavedLocation: user?.role === "CUSTOMER" && Boolean(user.id),
-    errorMessage,
-    isBootstrappingLocation: !selectedLocation && !hasResolvedInitialLocation,
-    isLoadingSavedAddresses,
-    isResolvingCurrentLocation,
-    isSavingManualLocation,
-    isSavingMapLocation,
-    needsLocation: !selectedLocation && hasResolvedInitialLocation,
-    saveMapLocation,
-    saveManualLocation,
-    savedAddresses,
-    selectedLocation,
-    useSavedAddress,
-    useCurrentLocation,
-  };
-};
-
 const useRestaurantCatalogue = (
   search?: string,
   selectedLocation?: SelectedDiscoveryLocation | null,
   {
+    allowGlobalResults = false,
+    foodCategory,
     includeMenuMatches = false,
+    limit = 24,
   }: {
+    allowGlobalResults?: boolean;
+    foodCategory?: string;
     includeMenuMatches?: boolean;
+    limit?: number;
   } = {},
 ) => {
   const [liveRestaurants, setLiveRestaurants] = useState<CustomerRestaurantSummary[] | null>(null);
   const [hasResolvedRestaurants, setHasResolvedRestaurants] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isLocationFiltered, setIsLocationFiltered] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const normalizedSearch = search?.trim() ?? "";
+  const normalizedFoodCategory = foodCategory?.trim() ?? "";
 
   useEffect(() => {
     let isMounted = true;
 
-    if (!selectedLocation) {
+    if (!selectedLocation && !allowGlobalResults) {
       setLiveRestaurants([]);
       setHasResolvedRestaurants(true);
       setErrorMessage(null);
+      setIsLocationFiltered(false);
       return () => {
         isMounted = false;
       };
@@ -1380,26 +839,37 @@ const useRestaurantCatalogue = (
     setLiveRestaurants([]);
     setHasResolvedRestaurants(false);
     setErrorMessage(null);
+    setIsLocationFiltered(Boolean(selectedLocation));
 
-    void getPublicRestaurants({
+    void getPublicRestaurantCatalogue({
       ...(normalizedSearch ? { search: normalizedSearch } : {}),
-      ...(includeMenuMatches && normalizedSearch ? { includeMenuMatches: true } : {}),
-      latitude: selectedLocation.latitude,
-      longitude: selectedLocation.longitude,
-      limit: 24,
+      ...(normalizedFoodCategory ? { foodCategory: normalizedFoodCategory } : {}),
+      ...(includeMenuMatches && (normalizedSearch || normalizedFoodCategory) ? { includeMenuMatches: true } : {}),
+      ...(allowGlobalResults ? { allowGlobalResults: true } : {}),
+      ...(selectedLocation
+        ? {
+            latitude: selectedLocation.latitude,
+            longitude: selectedLocation.longitude,
+          }
+        : {}),
+      limit,
     })
-      .then((rows) => {
+      .then((catalogue) => {
         if (isMounted) {
-          setLiveRestaurants(rows);
+          setLiveRestaurants(catalogue.restaurants);
+          setIsLocationFiltered(Boolean(catalogue.meta.isLocationFiltered));
         }
       })
       .catch((error) => {
         if (isMounted) {
           setLiveRestaurants([]);
+          setIsLocationFiltered(false);
           setErrorMessage(
             getApiErrorMessage(
               error,
-              "We couldn't load nearby restaurants right now. Please try again.",
+              selectedLocation
+                ? "We couldn't load nearby restaurants right now. Please try again."
+                : "We couldn't load restaurants right now. Please try again.",
             ),
           );
         }
@@ -1414,7 +884,10 @@ const useRestaurantCatalogue = (
       isMounted = false;
     };
   }, [
+    allowGlobalResults,
     includeMenuMatches,
+    limit,
+    normalizedFoodCategory,
     normalizedSearch,
     reloadToken,
     selectedLocation?.latitude,
@@ -1441,7 +914,8 @@ const useRestaurantCatalogue = (
     restaurantCards,
     categories,
     errorMessage,
-    isLoading: Boolean(selectedLocation) && !hasResolvedRestaurants,
+    isLoading: (Boolean(selectedLocation) || allowGlobalResults) && !hasResolvedRestaurants,
+    isLocationFiltered,
     retry: () => setReloadToken((currentValue) => currentValue + 1),
   };
 };
@@ -1449,6 +923,7 @@ const useRestaurantCatalogue = (
 export const RestaurantListingPage = () => {
   const [searchInput, setSearchInput] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const {
     canManageSavedLocation,
@@ -1476,6 +951,10 @@ export const RestaurantListingPage = () => {
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
   const [activeCategory, setActiveCategory] = useState("All");
   const [page, setPage] = useState(1);
+  const searchSuggestions = useMemo(
+    () => buildDiscoverySearchSuggestions(restaurantCards, categories, searchInput),
+    [categories, restaurantCards, searchInput],
+  );
 
   const filteredRestaurants = useMemo(() => {
     if (activeCategory === "All") {
@@ -1532,14 +1011,35 @@ export const RestaurantListingPage = () => {
               className="flex flex-col gap-3 sm:flex-row"
               onSubmit={(event) => {
                 event.preventDefault();
-                setAppliedSearch(searchInput.trim());
+                const submittedSearch = searchInput.trim();
+                if (submittedSearch) {
+                  setRecentSearches(addRecentSearch(submittedSearch));
+                }
+                setAppliedSearch(submittedSearch);
                 setPage(1);
               }}
             >
               <SearchBar
                 className="flex-1"
+                recentSearches={recentSearches}
+                suggestions={searchSuggestions}
                 value={searchInput}
                 onChange={(event) => setSearchInput(event.target.value)}
+                onClearRecentSearches={() => setRecentSearches(clearRecentSearches())}
+                onSelectRecentSearch={(value) => {
+                  setSearchInput(value);
+                  setAppliedSearch(value);
+                  setPage(1);
+                }}
+                onSelectSuggestion={(value) => {
+                  const submittedSearch = value.trim();
+                  setSearchInput(submittedSearch);
+                  if (submittedSearch) {
+                    setRecentSearches(addRecentSearch(submittedSearch));
+                  }
+                  setAppliedSearch(submittedSearch);
+                  setPage(1);
+                }}
                 placeholder="Search by restaurant, cuisine, dish, city, state, or locality"
               />
               <Button type="submit" className="shrink-0" disabled={isLoading}>
@@ -1643,10 +1143,159 @@ export const RestaurantListingPage = () => {
   );
 };
 
+const SearchRestaurantResultCard = ({
+  isFavorite,
+  isFavoritePending,
+  onFavoriteToggle,
+  restaurant,
+}: {
+  isFavorite: boolean;
+  isFavoritePending: boolean;
+  onFavoriteToggle?: () => void;
+  restaurant: RestaurantCardData;
+}) => (
+  <SurfaceCard className="space-y-5">
+    <div className="grid gap-5 lg:grid-cols-[220px_1fr]">
+      <Link to={`/restaurants/${restaurant.slug}`} className="overflow-hidden rounded-[1.75rem]">
+        <img
+          src={restaurant.image}
+          alt={restaurant.name}
+          className="h-48 w-full object-cover transition duration-500 hover:scale-105 lg:h-full"
+        />
+      </Link>
+
+      <div className="space-y-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {restaurant.offerTitle ? <StatusPill label={restaurant.offerTitle} tone="warning" /> : null}
+              {restaurant.matchedCategoryName ? <StatusPill label={restaurant.matchedCategoryName} tone="info" /> : null}
+            </div>
+            <div>
+              <Link
+                to={`/restaurants/${restaurant.slug}`}
+                className="font-display text-3xl font-semibold text-ink transition hover:text-accent"
+              >
+                {restaurant.name}
+              </Link>
+              <p className="mt-2 text-sm text-ink-soft">{restaurant.cuisineLabel}</p>
+            </div>
+            {restaurant.matchedDishName ? (
+              <p className="text-sm leading-7 text-ink-soft">Best dish match: {restaurant.matchedDishName}</p>
+            ) : null}
+          </div>
+          <RatingBadge value={restaurant.rating.toFixed(1)} />
+        </div>
+
+        <div className="flex flex-wrap gap-3 text-sm text-ink-soft">
+          <span>{restaurant.area}</span>
+          <span>{restaurant.deliveryTime} mins</span>
+          <span>{restaurant.priceForOne} for one</span>
+          {typeof restaurant.distanceKm === "number" ? <span>{restaurant.distanceKm.toFixed(1)} km away</span> : null}
+        </div>
+
+        {restaurant.addressSummary ? <p className="text-xs text-ink-muted">{restaurant.addressSummary}</p> : null}
+
+        <div className="flex flex-wrap gap-3">
+          <Link
+            to={`/restaurants/${restaurant.slug}`}
+            className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
+          >
+            View restaurant
+          </Link>
+          {restaurant.id != null && onFavoriteToggle ? (
+            <Button type="button" variant="secondary" onClick={onFavoriteToggle} disabled={isFavoritePending}>
+              {isFavoritePending ? "Saving..." : isFavorite ? "Saved" : "Save"}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  </SurfaceCard>
+);
+
+const SearchDishResultCard = ({
+  onAddToCart,
+  result,
+}: {
+  onAddToCart: () => void;
+  result: DishSearchResult;
+}) => (
+  <SurfaceCard className="space-y-5">
+    <div className="grid gap-5 lg:grid-cols-[1fr_200px]">
+      <div className="space-y-4">
+        <div className="flex flex-wrap gap-2">
+          {result.restaurant.offerTitle ? <StatusPill label={result.restaurant.offerTitle} tone="warning" /> : null}
+          <StatusPill label={result.categoryName} tone="neutral" />
+          <StatusPill label={result.menuItem.isRecommended ? "Recommended" : result.menuItem.foodType} tone="info" />
+        </div>
+
+        <div className="space-y-2">
+          <Link
+            to={`/restaurants/${result.restaurant.slug}`}
+            className="font-display text-3xl font-semibold text-ink transition hover:text-accent"
+          >
+            {result.menuItem.name}
+          </Link>
+          <p className="text-sm leading-7 text-ink-soft">
+            {result.menuItem.description ?? "Freshly prepared and available for delivery from this restaurant."}
+          </p>
+        </div>
+
+        <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Served by</p>
+          <Link
+            to={`/restaurants/${result.restaurant.slug}`}
+            className="mt-2 block font-semibold text-accent transition hover:text-accent-soft"
+          >
+            {result.restaurant.name}
+          </Link>
+          <p className="mt-1 text-sm text-ink-soft">{result.restaurant.cuisineLabel}</p>
+        </div>
+
+        <div className="flex flex-wrap gap-3 text-sm text-ink-soft">
+          <span>{formatCurrency(result.menuItem.discountPrice ?? result.menuItem.price)} for one</span>
+          <span>{result.restaurant.deliveryTime} mins</span>
+          <span>{result.restaurant.rating.toFixed(1)} rating</span>
+          {typeof result.restaurant.distanceKm === "number" ? (
+            <span>{result.restaurant.distanceKm.toFixed(1)} km away</span>
+          ) : null}
+        </div>
+      </div>
+
+      <Link to={`/restaurants/${result.restaurant.slug}`} className="overflow-hidden rounded-[1.75rem]">
+        <img
+          src={
+            result.menuItem.image ??
+            result.restaurant.image ??
+            "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1200&q=80"
+          }
+          alt={result.menuItem.name}
+          className="h-48 w-full object-cover transition duration-500 hover:scale-105"
+        />
+      </Link>
+    </div>
+
+    <div className="flex flex-wrap gap-3">
+      <Link
+        to={`/restaurants/${result.restaurant.slug}`}
+        className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
+      >
+        View restaurant
+      </Link>
+      <Button type="button" className="gap-2" onClick={onAddToCart}>
+        Add to cart
+      </Button>
+    </div>
+  </SurfaceCard>
+);
+
 export const SearchResultsPage = () => {
   const [params, setParams] = useSearchParams();
   const requestedQuery = params.get("q") ?? "";
+  const requestedFoodCategory = params.get("category") ?? "";
   const [query, setQuery] = useState(requestedQuery);
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const [selection, setSelection] = useState<CatalogItemSelection | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
@@ -1658,7 +1307,6 @@ export const SearchResultsPage = () => {
     isResolvingCurrentLocation,
     isSavingManualLocation,
     isSavingMapLocation,
-    needsLocation,
     saveMapLocation,
     saveManualLocation,
     savedAddresses,
@@ -1668,36 +1316,79 @@ export const SearchResultsPage = () => {
   } = useDiscoveryLocation();
   const { requireCustomerAccess } = useCustomerActionGuard();
   const appliedQuery = requestedQuery.trim();
+  const appliedFoodCategory = requestedFoodCategory.trim();
   const {
     restaurants,
     restaurantCards,
     errorMessage: catalogueErrorMessage,
     isLoading,
+    isLocationFiltered,
     retry,
   } = useRestaurantCatalogue(
     appliedQuery,
     selectedLocation,
     {
-      includeMenuMatches: Boolean(appliedQuery),
+      allowGlobalResults: true,
+      foodCategory: appliedFoodCategory,
+      includeMenuMatches: Boolean(appliedQuery || appliedFoodCategory),
+      limit: 48,
     },
   );
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
+  const availableSearchFilters = useMemo(() => {
+    const filterOptions = new Set<string>(SEARCH_FOOD_FILTERS);
+
+    restaurants.forEach((restaurant) => {
+      restaurant.cuisineMappings.forEach((mapping) => {
+        filterOptions.add(mapping.cuisine.name);
+      });
+    });
+
+    if (appliedFoodCategory) {
+      filterOptions.add(appliedFoodCategory);
+    }
+
+    return [...filterOptions];
+  }, [appliedFoodCategory, restaurants]);
+  const searchSuggestions = useMemo(
+    () => buildDiscoverySearchSuggestions(restaurantCards, availableSearchFilters, query),
+    [availableSearchFilters, query, restaurantCards],
+  );
+  const preferNearbyResults = Boolean(selectedLocation && isLocationFiltered);
+  const orderedRestaurantCards = useMemo(
+    () => sortRestaurantCardsForSearch(restaurantCards, preferNearbyResults),
+    [preferNearbyResults, restaurantCards],
+  );
 
   useEffect(() => {
     setQuery(requestedQuery);
   }, [requestedQuery]);
 
-  const handleSearchSubmit = (event?: FormEvent<HTMLFormElement>) => {
+  const handleSearchSubmit = (event?: FormEvent<HTMLFormElement>, nextQuery = query) => {
     event?.preventDefault();
 
     const next = new URLSearchParams(params);
-    const submittedQuery = query.trim();
+    const submittedQuery = nextQuery.trim();
 
     if (submittedQuery) {
       next.set("q", submittedQuery);
+      setRecentSearches(addRecentSearch(submittedQuery));
     } else {
       next.delete("q");
     }
+    setParams(next);
+  };
+
+  const updateFoodCategory = (nextFoodCategory?: string) => {
+    const next = new URLSearchParams(params);
+    const normalizedFoodCategory = nextFoodCategory?.trim() ?? "";
+
+    if (normalizedFoodCategory) {
+      next.set("category", normalizedFoodCategory);
+    } else {
+      next.delete("category");
+    }
+
     setParams(next);
   };
 
@@ -1745,26 +1436,78 @@ export const SearchResultsPage = () => {
 
   const dishResults = useMemo(
     () =>
-      appliedQuery
-        ? restaurants.flatMap((restaurant) =>
-            (restaurant.matchingMenuItems ?? []).flatMap((menuItemMatch) =>
-              isMatchingDishSearch(
-                menuItemMatch,
-                menuItemMatch.category.name,
-                normalizeSearchText(appliedQuery),
-              )
-                ? [mapSearchMatchToDishResult(restaurant, menuItemMatch)]
-                : [],
-            ),
-          )
-        : [],
-    [appliedQuery, restaurants],
+      restaurants
+        .flatMap((restaurant) =>
+          (restaurant.matchingMenuItems ?? []).map((menuItemMatch) => mapSearchMatchToDishResult(restaurant, menuItemMatch)),
+        )
+        .sort((leftResult, rightResult) => {
+          if (preferNearbyResults) {
+            const distanceComparison = compareRestaurantDistance(
+              leftResult.restaurant.distanceKm,
+              rightResult.restaurant.distanceKm,
+            );
+            if (distanceComparison !== 0) {
+              return distanceComparison;
+            }
+          }
+
+          if (rightResult.restaurant.rating !== leftResult.restaurant.rating) {
+            return rightResult.restaurant.rating - leftResult.restaurant.rating;
+          }
+
+          return leftResult.menuItem.name.localeCompare(rightResult.menuItem.name);
+        }),
+    [preferNearbyResults, restaurants],
   );
 
-  const restaurantLabel = `${restaurantCards.length} restaurant match${restaurantCards.length === 1 ? "" : "es"}`;
+  const restaurantLabel = `${orderedRestaurantCards.length} restaurant match${orderedRestaurantCards.length === 1 ? "" : "es"}`;
   const dishLabel = `${dishResults.length} dish match${dishResults.length === 1 ? "" : "es"}`;
-  const hasQuery = Boolean(appliedQuery);
-  const hasAnyMatches = Boolean(restaurantCards.length || dishResults.length);
+  const hasSearchCriteria = Boolean(appliedQuery || appliedFoodCategory);
+  const hasSelectedLocation = Boolean(selectedLocation);
+  const hasAnyMatches = Boolean(orderedRestaurantCards.length || dishResults.length);
+  const loadingCopy = isLoading
+    ? hasSelectedLocation
+      ? appliedFoodCategory
+        ? `Finding ${appliedFoodCategory} near you...`
+        : hasSearchCriteria
+          ? "Searching nearby restaurants and dishes for this location."
+          : "Loading nearby restaurants for your selected area."
+      : appliedFoodCategory
+        ? `Finding ${appliedFoodCategory} across all available restaurants.`
+        : hasSearchCriteria
+          ? "Searching all available restaurants and dishes. Set a location to prioritize nearby results."
+          : "Loading all available restaurants. Set a location to see nearby results first."
+    : "";
+  const emptyTitle = hasSelectedLocation
+    ? appliedFoodCategory
+      ? `No ${appliedFoodCategory} found near your location`
+      : "No nearby restaurants or dishes matched that search"
+    : appliedFoodCategory
+      ? `No ${appliedFoodCategory} available right now`
+      : "No restaurants or dishes matched that search";
+  const emptyDescription = hasSelectedLocation
+    ? appliedFoodCategory
+      ? "Try another category, broaden your search text, or switch to a different delivery location."
+      : "Try a broader restaurant name, dish, cuisine, city, or area while staying inside the current nearby delivery radius."
+    : "Set a delivery location to prioritize nearby results, or try a broader restaurant, dish, or cuisine search.";
+  const resultsHeadingTitle = hasSearchCriteria
+    ? appliedFoodCategory
+      ? appliedQuery
+        ? `${appliedFoodCategory} matches for "${appliedQuery}"`
+        : `${appliedFoodCategory} results`
+      : `Results for "${appliedQuery}"`
+    : "Start with a dish, cuisine, restaurant, or location";
+  const resultsHeadingDescription = isBootstrappingLocation
+    ? "Checking your saved delivery addresses before loading search results."
+    : isLoading
+      ? loadingCopy
+      : hasSelectedLocation
+        ? hasSearchCriteria
+          ? `${restaurantLabel} and ${dishLabel} near your selected delivery location.`
+          : `${orderedRestaurantCards.length} nearby restaurants ready to browse. Add a dish, cuisine, or area search to narrow them down.`
+        : hasSearchCriteria
+          ? `${restaurantLabel} and ${dishLabel} across all available restaurants. Set a location to see nearby results first.`
+          : `${orderedRestaurantCards.length} restaurants available right now. Set a location to prioritize nearby restaurants first.`;
 
   return (
     <PageShell
@@ -1782,49 +1525,90 @@ export const SearchResultsPage = () => {
         selectedLocation={selectedLocation}
       />
 
-      {!needsLocation ? (
-        <SurfaceCard>
-          <form className="flex flex-col gap-3 sm:flex-row" onSubmit={handleSearchSubmit}>
-            <SearchBar
-              className="flex-1"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search restaurants, dishes, cuisines, or areas like Anna Nagar"
-            />
-            <Button type="submit" className="shrink-0" disabled={isLoading}>
-              Search
-            </Button>
-          </form>
+      <SurfaceCard className="space-y-5">
+        <form className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px_auto]" onSubmit={handleSearchSubmit}>
+          <SearchBar
+            className="min-w-0"
+            recentSearches={recentSearches}
+            suggestions={searchSuggestions}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onClearRecentSearches={() => setRecentSearches(clearRecentSearches())}
+            onSelectRecentSearch={(value) => {
+              setQuery(value);
+              handleSearchSubmit(undefined, value);
+            }}
+            onSelectSuggestion={(value) => {
+              setQuery(value);
+              handleSearchSubmit(undefined, value);
+            }}
+            placeholder="Search restaurants, dishes, cuisines, or areas like Anna Nagar"
+          />
+          <Select
+            aria-label="Cuisine or category"
+            value={appliedFoodCategory}
+            onChange={(event) => updateFoodCategory(event.target.value)}
+          >
+            <option value="">All cuisines and categories</option>
+            {availableSearchFilters.map((filterValue) => (
+              <option key={filterValue} value={filterValue}>
+                {filterValue}
+              </option>
+            ))}
+          </Select>
+          <Button type="submit" className="shrink-0" disabled={isLoading}>
+            Search
+          </Button>
+        </form>
+
+        <div className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {SEARCH_FOOD_FILTERS.map((filterValue) => (
+              <Chip
+                key={filterValue}
+                active={appliedFoodCategory === filterValue}
+                onClick={() => updateFoodCategory(appliedFoodCategory === filterValue ? "" : filterValue)}
+              >
+                {filterValue}
+              </Chip>
+            ))}
+          </div>
+
+          {appliedFoodCategory ? (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center gap-2 rounded-full border border-accent bg-accent px-4 py-2 text-sm font-semibold text-white"
+                onClick={() => updateFoodCategory("")}
+              >
+                {appliedFoodCategory}
+                <span aria-hidden="true">x</span>
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </SurfaceCard>
+
+      {!hasSelectedLocation && !isBootstrappingLocation ? (
+        <SurfaceCard className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-ink">Showing all available results</p>
+            <p className="text-sm leading-7 text-ink-soft">
+              Set a delivery location to prioritize nearby restaurants and dishes first.
+            </p>
+          </div>
+          <Button type="button" variant="secondary" onClick={() => setIsLocationModalOpen(true)}>
+            Set location
+          </Button>
         </SurfaceCard>
       ) : null}
 
-      <SectionHeading
-        eyebrow="Search results"
-        title={hasQuery ? `Results for "${appliedQuery}"` : "Start with a dish, cuisine, restaurant, or location"}
-        description={
-          needsLocation
-            ? isBootstrappingLocation
-              ? "Checking your saved delivery addresses before loading the nearby catalogue."
-              : "Choose a delivery location first, then search only within the nearby restaurants for that address."
-            : isLoading
-              ? hasQuery
-                ? "Looking up restaurant and dish matches for this location."
-                : "Looking up the nearby catalogue for this location."
-              : hasQuery
-                ? `${restaurantLabel} and ${dishLabel} in the current delivery area.`
-                : `${restaurantCards.length} nearby restaurants ready to browse. Start typing to narrow by dish, cuisine, or area.`
-        }
-      />
+      <SectionHeading eyebrow="Search results" title={resultsHeadingTitle} description={resultsHeadingDescription} />
 
       {isBootstrappingLocation ? (
         <SurfaceCard>
           <p className="text-sm leading-7 text-ink-soft">Checking your saved delivery addresses for nearby restaurant search.</p>
         </SurfaceCard>
-      ) : needsLocation ? (
-        <EmptyState
-          title="Set a location before searching restaurants"
-          description="Search results stay empty until a saved or temporary delivery address is selected."
-        />
       ) : catalogueErrorMessage && !hasAnyMatches ? (
         <SurfaceCard className="space-y-4">
           <p className="text-sm leading-7 text-ink-soft">{catalogueErrorMessage}</p>
@@ -1836,24 +1620,27 @@ export const SearchResultsPage = () => {
         </SurfaceCard>
       ) : isLoading ? (
         <SurfaceCard>
-          <p className="text-sm leading-7 text-ink-soft">Fetching nearby restaurants for the selected delivery area.</p>
+          <p className="text-sm leading-7 text-ink-soft">{loadingCopy}</p>
         </SurfaceCard>
-      ) : !hasQuery ? (
-        restaurantCards.length ? (
+      ) : !hasSearchCriteria ? (
+        orderedRestaurantCards.length ? (
           <div className="space-y-6">
             <SectionHeading
-              eyebrow="Nearby restaurants"
-              title="Browse nearby restaurants before narrowing the search."
-              description="Every result here already respects the current delivery location."
+              eyebrow={hasSelectedLocation ? "Nearby restaurants" : "All restaurants"}
+              title={hasSelectedLocation ? "Browse nearby restaurants before narrowing the search." : "Browse all restaurants while you pick a location."}
+              description={
+                hasSelectedLocation
+                  ? "Every result here already respects the current delivery location."
+                  : "Set a delivery location any time to switch from platform-wide browsing to nearby-first results."
+              }
             />
-            <div className="grid gap-6 lg:grid-cols-2">
-              {restaurantCards.map((restaurant) => (
-                <RestaurantCard
+            <div className="grid gap-5 lg:grid-cols-2">
+              {orderedRestaurantCards.map((restaurant) => (
+                <SearchRestaurantResultCard
                   key={restaurant.slug}
-                  {...restaurant}
+                  restaurant={restaurant}
                   isFavorite={restaurant.id != null ? favoriteIdSet.has(restaurant.id) : false}
                   isFavoritePending={isFavoritePending(restaurant.id)}
-                  favoriteActionLabel={restaurant.id != null && favoriteIdSet.has(restaurant.id) ? "Saved" : "Save"}
                   onFavoriteToggle={restaurant.id != null ? () => void toggleFavorite(restaurant) : undefined}
                 />
               ))}
@@ -1861,27 +1648,30 @@ export const SearchResultsPage = () => {
           </div>
         ) : (
           <EmptyState
-            title="No nearby restaurants found in your area"
-            description="Change the temporary delivery address or refresh your current location to search a different nearby area."
+            title={hasSelectedLocation ? "No nearby restaurants found in your area" : "No restaurants available right now"}
+            description={
+              hasSelectedLocation
+                ? "Change the temporary delivery address or refresh your current location to search a different nearby area."
+                : "Try setting a delivery location or checking back after more restaurants are available."
+            }
           />
         )
       ) : hasAnyMatches ? (
         <div className="space-y-10">
-          {restaurantCards.length ? (
+          {orderedRestaurantCards.length ? (
             <div className="space-y-6">
               <SectionHeading
                 eyebrow="Restaurants"
                 title="Matching restaurants"
-                description="Restaurant matches include name, cuisine, address, city, and area search."
+                description="Matches consider dish categories, cuisines, restaurant cuisine tags, dish names, and your current search text."
               />
-              <div className="grid gap-6 lg:grid-cols-2">
-                {restaurantCards.map((restaurant) => (
-                  <RestaurantCard
+              <div className="grid gap-5 lg:grid-cols-2">
+                {orderedRestaurantCards.map((restaurant) => (
+                  <SearchRestaurantResultCard
                     key={restaurant.slug}
-                    {...restaurant}
+                    restaurant={restaurant}
                     isFavorite={restaurant.id != null ? favoriteIdSet.has(restaurant.id) : false}
                     isFavoritePending={isFavoritePending(restaurant.id)}
-                    favoriteActionLabel={restaurant.id != null && favoriteIdSet.has(restaurant.id) ? "Saved" : "Save"}
                     onFavoriteToggle={restaurant.id != null ? () => void toggleFavorite(restaurant) : undefined}
                   />
                 ))}
@@ -1894,95 +1684,34 @@ export const SearchResultsPage = () => {
               <SectionHeading
                 eyebrow="Dishes"
                 title="Matching dishes"
-                description="Each dish result links back to the nearby restaurant that currently serves it."
+                description="Each dish card keeps the existing add-to-cart and restaurant detail flow intact."
               />
               <div className="grid gap-5 lg:grid-cols-2">
                 {dishResults.map((result) => (
-                  <SurfaceCard key={`${result.restaurant.slug}-${result.menuItem.id}`} className="space-y-5">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="space-y-3">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <StatusPill
-                            label={result.menuItem.isRecommended ? "Recommended" : result.menuItem.foodType}
-                            tone="info"
-                          />
-                          <StatusPill label={result.categoryName} tone="neutral" />
-                        </div>
-                        <div>
-                          <h3 className="font-display text-3xl font-semibold text-ink">{result.menuItem.name}</h3>
-                          <p className="mt-2 text-sm leading-7 text-ink-soft">
-                            {result.menuItem.description ?? "Freshly prepared and available for delivery from this nearby restaurant."}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="overflow-hidden rounded-[1.5rem] sm:w-32">
-                        <img
-                          src={
-                            result.menuItem.image ??
-                            result.restaurant.image ??
-                            "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1200&q=80"
-                          }
-                          alt={result.menuItem.name}
-                          className="h-28 w-full object-cover"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="rounded-[1.5rem] bg-cream px-4 py-4">
-                      <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Served by</p>
-                      <Link
-                        to={`/restaurants/${result.restaurant.slug}`}
-                        className="mt-2 block font-semibold text-accent transition hover:text-accent-soft"
-                      >
-                        {result.restaurant.name}
-                      </Link>
-                      <p className="mt-1 text-sm text-ink-soft">{result.restaurant.area}</p>
-                      <p className="mt-1 text-xs text-ink-muted">{result.restaurant.cuisineLabel}</p>
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <p className="text-lg font-semibold text-ink">
-                        {formatCurrency(result.menuItem.discountPrice ?? result.menuItem.price)}
-                      </p>
-                      <div className="flex flex-wrap gap-3">
-                        <Link
-                          to={`/restaurants/${result.restaurant.slug}`}
-                          className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
-                        >
-                          View restaurant
-                        </Link>
-                        <Button
-                          type="button"
-                          className="gap-2"
-                          onClick={() =>
-                            handleStartCartSelection({
-                              type: "MENU_ITEM",
-                              restaurantId: result.menuItem.restaurantId,
-                              item: result.menuItem,
-                            })
-                          }
-                        >
-                          Add to cart
-                        </Button>
-                      </div>
-                    </div>
-                  </SurfaceCard>
+                  <SearchDishResultCard
+                    key={`${result.restaurant.slug}-${result.menuItem.id}`}
+                    result={result}
+                    onAddToCart={() =>
+                      handleStartCartSelection({
+                        type: "MENU_ITEM",
+                        restaurantId: result.menuItem.restaurantId,
+                        item: result.menuItem,
+                      })
+                    }
+                  />
                 ))}
               </div>
             </div>
-          ) : restaurantCards.length ? (
+          ) : orderedRestaurantCards.length ? (
             <SurfaceCard>
               <p className="text-sm leading-7 text-ink-soft">
-                We found nearby restaurants for this search, but no dish names matched exactly in their menus yet.
+                We found matching restaurants, but no dish cards matched exactly yet. Try another category or broaden the search text.
               </p>
             </SurfaceCard>
           ) : null}
         </div>
       ) : (
-        <EmptyState
-          title="No nearby restaurants or dishes matched that search"
-          description="Try a broader restaurant name, dish, cuisine, city, or area while staying inside the current nearby delivery radius."
-        />
+        <EmptyState title={emptyTitle} description={emptyDescription} />
       )}
 
       <LocationSelectionModal

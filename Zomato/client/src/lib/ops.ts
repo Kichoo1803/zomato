@@ -29,6 +29,7 @@ export type OperationsDashboard = {
     state?: string | null;
     district?: string | null;
   };
+  scopeMessage?: string | null;
   regionOptions: RegionOptions;
   stats: OperationsSummaryStats;
   stateSummaries: Array<{
@@ -60,6 +61,8 @@ export type OperationsDashboard = {
     updatedAt: string;
   }>;
 };
+
+export type OperationsRegionsSummary = Omit<OperationsDashboard, "recentUpdates">;
 
 export type OperationsOwner = {
   id: number;
@@ -244,7 +247,7 @@ export const getOperationsDashboard = async (params?: { state?: string; district
   unwrapData(await apiClient.get<ApiEnvelope<OperationsDashboard>>("/operations/dashboard", { params }));
 
 export const getOperationsRegions = async (params?: { state?: string; district?: string }) =>
-  unwrapData(await apiClient.get<ApiEnvelope<Omit<OperationsDashboard, "recentUpdates">>>("/operations/regions", { params }));
+  unwrapData(await apiClient.get<ApiEnvelope<OperationsRegionsSummary>>("/operations/regions", { params }));
 
 export const getOperationsOwners = async (params?: {
   search?: string;
