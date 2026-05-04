@@ -21,23 +21,39 @@ export const hasCoordinates = (
 ): point is { latitude: number; longitude: number } =>
   Boolean(point && isValidCoordinate(point.latitude) && isValidCoordinate(point.longitude));
 
-export const haversineDistanceKm = (
-  origin: { latitude: number; longitude: number },
-  destination: { latitude: number; longitude: number },
+export const calculateDistanceKm = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
 ) => {
   const toRadians = (value: number) => (value * Math.PI) / 180;
   const earthRadiusKm = 6371;
-  const dLat = toRadians(destination.latitude - origin.latitude);
-  const dLng = toRadians(destination.longitude - origin.longitude);
-  const originLat = toRadians(origin.latitude);
-  const destinationLat = toRadians(destination.latitude);
+  const dLat = toRadians(lat2 - lat1);
+  const dLng = toRadians(lon2 - lon1);
+  const originLat = toRadians(lat1);
+  const destinationLat = toRadians(lat2);
 
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.sin(dLng / 2) * Math.sin(dLng / 2) * Math.cos(originLat) * Math.cos(destinationLat);
+    Math.sin(dLng / 2) *
+      Math.sin(dLng / 2) *
+      Math.cos(originLat) *
+      Math.cos(destinationLat);
 
   return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
+
+export const haversineDistanceKm = (
+  origin: { latitude: number; longitude: number },
+  destination: { latitude: number; longitude: number },
+) =>
+  calculateDistanceKm(
+    origin.latitude,
+    origin.longitude,
+    destination.latitude,
+    destination.longitude,
+  );
 
 const estimateTravelDurationMinutes = (distanceKm: number) => {
   const averageSpeedKmPerHour = distanceKm > 8 ? 24 : 18;

@@ -130,6 +130,10 @@ const DeliveryRequestCard = ({
 }) => {
   const actionState = getDeliveryRequestAction(order, profile);
   const pickupDistance = order.deliveryOffer?.distanceKm ?? order.routeDistanceKm;
+  const isNearbyAreaOrder =
+    (order.deliveryOffer?.radiusKm ?? 0) > 5 ||
+    ((order.deliveryOffer?.distanceKm ?? 0) > 5 &&
+      (order.deliveryOffer?.distanceKm ?? 0) <= 7);
 
   return (
     <div id={`delivery-order-${order.id}`} className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4">
@@ -138,6 +142,7 @@ const DeliveryRequestCard = ({
           <div className="flex flex-wrap items-center gap-3">
             <p className="font-semibold text-ink">{order.orderNumber}</p>
             <StatusPill label={toLabel(order.status)} tone={getToneForStatus(order.status)} />
+            {isNearbyAreaOrder ? <StatusPill label="Nearby area order" tone="info" /> : null}
           </div>
           <p className="text-sm text-ink-soft">{order.restaurant.name}</p>
           <p className="text-sm text-ink-soft">{buildDeliveryItemsSummary(order.items)}</p>
@@ -166,6 +171,15 @@ const DeliveryRequestCard = ({
       {order.deliveryOffer ? (
         <div className="mt-4 rounded-[1.25rem] bg-cream px-4 py-3 text-sm leading-7 text-ink-soft">
           Broadcast radius {formatDistanceKm(order.deliveryOffer.radiusKm)} • Batch {order.deliveryOffer.batchNumber}
+        </div>
+      ) : null}
+      {isNearbyAreaOrder ? (
+        <div className="mt-4 rounded-[1.25rem] border border-accent/10 bg-accent/[0.03] px-4 py-3 text-sm leading-7 text-ink-soft">
+          <p className="font-semibold text-ink">Nearby area order</p>
+          <p className="mt-1">
+            Restaurant area/name: {order.restaurant.area?.trim() || order.restaurant.name}
+          </p>
+          <p>Distance from restaurant: {formatDistanceKm(order.deliveryOffer?.distanceKm ?? pickupDistance)}</p>
         </div>
       ) : null}
       {order.specialInstructions ? (

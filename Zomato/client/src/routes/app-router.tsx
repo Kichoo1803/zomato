@@ -188,6 +188,7 @@ export const AppRouter = () => {
             <Route path="/ops/regions" element={<OpsRegionsPage />} />
             <Route path="/ops/restaurant-owners" element={<OpsRestaurantOwnersPage />} />
             <Route path="/ops/delivery-partners" element={<OpsDeliveryPartnersPage />} />
+            <Route path="/ops/orders" element={<AdminOrdersPage />} />
             <Route path="/ops/assignments" element={<OpsAssignmentsPage />} />
             <Route path="/ops/applications" element={<OpsApplicationsPage />} />
             <Route path="/ops/communications" element={<OpsCommunicationsPage />} />

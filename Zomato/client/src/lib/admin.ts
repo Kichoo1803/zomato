@@ -375,6 +375,7 @@ export type AdminOrder = {
   discountAmount: number;
   tipAmount: number;
   totalAmount: number;
+  assignmentRadiusKm?: number | null;
   routeDistanceKm?: number | null;
   travelDurationMinutes?: number | null;
   estimatedDeliveryMinutes?: number | null;
@@ -382,6 +383,9 @@ export type AdminOrder = {
   weatherDelayMinutes: number;
   delayMinutes: number;
   specialInstructions?: string | null;
+  cancelReason?: string | null;
+  cancelledBy?: string | null;
+  refundStatus?: string | null;
   orderedAt: string;
   confirmedAt?: string | null;
   acceptedAt?: string | null;

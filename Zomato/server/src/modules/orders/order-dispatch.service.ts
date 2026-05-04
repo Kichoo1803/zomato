@@ -4,6 +4,7 @@ import {
   DeliveryOfferStatus,
   NotificationType,
   OrderStatus,
+  PaymentStatus,
   Role,
 } from "../../constants/enums.js";
 import { env } from "../../config/env.js";
@@ -14,8 +15,12 @@ import {
   emitOrderStatusUpdate,
 } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
-import { hasCoordinates, haversineDistanceKm } from "../../utils/geo.js";
 import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
+import {
+  ORDER_ASSIGNMENT_RADII_KM,
+  PRIMARY_ASSIGNMENT_RADIUS_KM,
+  getEligibleDeliveryPartnersForRestaurant,
+} from "./order-assignment.service.js";
 
 const deliveryOfferOrderInclude = {
   user: {
@@ -100,11 +105,16 @@ const dispatchOrderSelect = {
   deliveryPartnerId: true,
   orderNumber: true,
   status: true,
+  paymentStatus: true,
   paymentMethod: true,
   totalAmount: true,
   tipAmount: true,
+  assignmentRadiusKm: true,
   routeDistanceKm: true,
   estimatedDeliveryMinutes: true,
+  cancelReason: true,
+  cancelledBy: true,
+  refundStatus: true,
   specialInstructions: true,
   orderedAt: true,
   readyForPickupAt: true,
@@ -172,86 +182,13 @@ const terminalOrderStatuses = [
   OrderStatus.PAYMENT_FAILED,
 ] as const;
 
-const getDispatchRadiiKm = () => {
-  const values = env.DELIVERY_ASSIGNMENT_RADII_KM
-    .split(",")
-    .map((value) => Number(value.trim()))
-    .filter((value) => Number.isFinite(value) && value > 0)
-    .sort((left, right) => left - right);
-
-  return values.length ? [...new Set(values)] : [2, 3, 5];
-};
-
 const dispatchConfig = {
-  radiiKm: getDispatchRadiiKm(),
+  radiiKm: [...ORDER_ASSIGNMENT_RADII_KM],
   offerTtlSeconds: env.DELIVERY_ASSIGNMENT_OFFER_TTL_SECONDS,
   staleLocationMinutes: env.DELIVERY_ASSIGNMENT_STALE_LOCATION_MINUTES,
   maxActiveOrders: env.DELIVERY_ASSIGNMENT_MAX_ACTIVE_ORDERS,
   maxBroadcastPartners: env.DELIVERY_ASSIGNMENT_MAX_BROADCAST_PARTNERS,
   reassignTimeoutMinutes: env.DELIVERY_ASSIGNMENT_REASSIGN_TIMEOUT_MINUTES,
-};
-
-const normalizeLocationValue = (value?: string | null) =>
-  value
-    ?.trim()
-    .toLowerCase()
-    .replace(/district|urban|rural/g, " ")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim() ?? "";
-
-const tokenizeLocation = (value?: string | null) =>
-  normalizeLocationValue(value)
-    .split(" ")
-    .map((token) => token.trim())
-    .filter(Boolean);
-
-const matchesServiceZone = (
-  partner: {
-    user: {
-      opsState?: string | null;
-      opsDistrict?: string | null;
-    };
-  },
-  restaurant: {
-    state?: string | null;
-    city?: string | null;
-    area?: string | null;
-    pincode?: string | null;
-  },
-) => {
-  const partnerState = normalizeLocationValue(partner.user.opsState);
-  const restaurantState = normalizeLocationValue(restaurant.state);
-
-  if (partnerState && restaurantState && partnerState !== restaurantState) {
-    return false;
-  }
-
-  const districtTokens = tokenizeLocation(partner.user.opsDistrict);
-  if (!districtTokens.length) {
-    return true;
-  }
-
-  const restaurantTokens = [
-    ...tokenizeLocation(restaurant.city),
-    ...tokenizeLocation(restaurant.area),
-    ...tokenizeLocation(restaurant.pincode),
-  ];
-
-  return districtTokens.some((token) => restaurantTokens.includes(token));
-};
-
-const buildBoundingBox = (latitude: number, longitude: number, radiusKm: number) => {
-  const latitudeDelta = radiusKm / 111;
-  const longitudeDivisor = Math.max(Math.cos((latitude * Math.PI) / 180), 0.2);
-  const longitudeDelta = radiusKm / (111 * longitudeDivisor);
-
-  return {
-    minLatitude: latitude - latitudeDelta,
-    maxLatitude: latitude + latitudeDelta,
-    minLongitude: longitude - longitudeDelta,
-    maxLongitude: longitude + longitudeDelta,
-  };
 };
 
 const buildAddressSummary = (parts: Array<string | null | undefined>) =>
@@ -353,34 +290,6 @@ const getNextRadiusSequence = (lastRadiusKm?: number | null) => {
     : dispatchConfig.radiiKm.slice(nextIndex);
 };
 
-const getActiveOrderCountMap = async (partnerIds: number[]) => {
-  if (!partnerIds.length) {
-    return new Map<number, number>();
-  }
-
-  const groupedOrders = await prisma.order.groupBy({
-    by: ["deliveryPartnerId"],
-    where: {
-      deletedAt: null,
-      deliveryPartnerId: {
-        in: partnerIds,
-      },
-      status: {
-        in: [...activeDeliveryStatuses],
-      },
-    },
-    _count: {
-      _all: true,
-    },
-  });
-
-  return new Map(
-    groupedOrders
-      .filter((entry) => entry.deliveryPartnerId != null)
-      .map((entry) => [entry.deliveryPartnerId as number, entry._count._all]),
-  );
-};
-
 const getLatestOfferBatch = async (orderId: number) =>
   prisma.deliveryAssignmentOffer.findFirst({
     where: { orderId },
@@ -455,129 +364,189 @@ const getDispatchOrderById = async (orderId: number) =>
     select: dispatchOrderSelect,
   });
 
-const getEligiblePartnersForRadius = async (
-  order: DispatchOrder,
-  radiusKm: number,
-) => {
-  const staleLocationCutoff = new Date(
-    Date.now() - dispatchConfig.staleLocationMinutes * 60 * 1000,
-  );
-  const restaurantHasCoordinates = hasCoordinates(order.restaurant);
-  const boundingBox = restaurantHasCoordinates
-    ? buildBoundingBox(
-        order.restaurant.latitude as number,
-        order.restaurant.longitude as number,
-        radiusKm,
-      )
-    : null;
-
-  const candidates = await prisma.deliveryPartner.findMany({
+const getPreviouslyContactedPartnerIds = async (orderId: number) => {
+  const offerRows = await prisma.deliveryAssignmentOffer.findMany({
     where: {
-      availabilityStatus: DeliveryAvailabilityStatus.ONLINE,
-      isVerified: true,
-      currentLatitude: restaurantHasCoordinates
-        ? {
-            gte: boundingBox!.minLatitude,
-            lte: boundingBox!.maxLatitude,
-          }
-        : { not: null },
-      currentLongitude: restaurantHasCoordinates
-        ? {
-            gte: boundingBox!.minLongitude,
-            lte: boundingBox!.maxLongitude,
-          }
-        : { not: null },
-      lastLocationUpdatedAt: {
-        gte: staleLocationCutoff,
-      },
-      user: {
-        isActive: true,
-        ...(order.restaurant.state
-          ? {
-              OR: [
-                { opsState: null },
-                { opsState: order.restaurant.state },
-              ],
-            }
-          : {}),
+      orderId,
+    },
+    select: {
+      deliveryPartnerId: true,
+    },
+  });
+
+  return [...new Set(offerRows.map((offer) => offer.deliveryPartnerId))];
+};
+
+const cancelUnassignedOrderForDispatchFailure = async (
+  orderId: number,
+  payload: {
+    cancelReason: string;
+    refundedCustomerMessage: string;
+    unpaidCustomerMessage: string;
+    closedReason: string;
+  },
+) => {
+  const order = await prisma.order.findFirst({
+    where: {
+      id: orderId,
+      deletedAt: null,
+      deliveryPartnerId: null,
+      status: {
+        in: [...claimableOrderStatuses],
       },
     },
     select: {
       id: true,
       userId: true,
-      currentLatitude: true,
-      currentLongitude: true,
-      lastLocationUpdatedAt: true,
-      user: {
+      orderNumber: true,
+      paymentStatus: true,
+      restaurant: {
         select: {
           id: true,
-          fullName: true,
-          isActive: true,
-          opsState: true,
-          opsDistrict: true,
+          ownerId: true,
+          name: true,
+        },
+      },
+      payments: {
+        select: {
+          id: true,
+          status: true,
         },
       },
     },
-    orderBy: [{ lastLocationUpdatedAt: "desc" }, { updatedAt: "desc" }],
-    take: dispatchConfig.maxBroadcastPartners * 4,
   });
 
-  const activeOrderCountMap = await getActiveOrderCountMap(candidates.map((partner) => partner.id));
+  if (!order) {
+    return {
+      orderId,
+      cancelled: false,
+      refunded: false,
+    };
+  }
 
-  return candidates
-    .map((partner) => {
-      const partnerHasCoordinates = hasCoordinates({
-        latitude: partner.currentLatitude,
-        longitude: partner.currentLongitude,
+  const requiresRefund =
+    order.paymentStatus === PaymentStatus.PAID ||
+    order.payments.some((payment) => payment.status === PaymentStatus.PAID);
+  const customerMessage = requiresRefund
+    ? payload.refundedCustomerMessage
+    : payload.unpaidCustomerMessage;
+  const now = new Date();
+
+  const updatedOrder = await prisma.$transaction(async (tx) => {
+    const cancelledOrder = await tx.order.findFirst({
+      where: {
+        id: orderId,
+        deletedAt: null,
+        deliveryPartnerId: null,
+        status: {
+          in: [...claimableOrderStatuses],
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!cancelledOrder) {
+      return null;
+    }
+
+    await tx.order.update({
+      where: { id: orderId },
+      data: {
+        status: OrderStatus.CANCELLED,
+        cancelledAt: now,
+        cancelReason: payload.cancelReason,
+        cancelledBy: "SYSTEM",
+        refundStatus: requiresRefund ? "REFUNDED" : "NOT_REQUIRED",
+        ...(requiresRefund ? { paymentStatus: PaymentStatus.REFUNDED } : {}),
+      },
+    });
+
+    if (requiresRefund) {
+      await tx.payment.updateMany({
+        where: {
+          orderId,
+          status: PaymentStatus.PAID,
+        },
+        data: {
+          status: PaymentStatus.REFUNDED,
+        },
       });
-      const distanceKm =
-        restaurantHasCoordinates && partnerHasCoordinates
-          ? Number(
-              haversineDistanceKm(
-                {
-                  latitude: partner.currentLatitude as number,
-                  longitude: partner.currentLongitude as number,
-                },
-                {
-                  latitude: order.restaurant.latitude as number,
-                  longitude: order.restaurant.longitude as number,
-                },
-              ).toFixed(2),
-            )
-          : null;
+    }
 
-      return {
-        ...partner,
-        activeOrderCount: activeOrderCountMap.get(partner.id) ?? 0,
-        distanceKm,
-      };
-    })
-    .filter((partner) => {
-      if (!matchesServiceZone(partner, order.restaurant)) {
-        return false;
-      }
+    await tx.orderStatusEvent.create({
+      data: {
+        orderId,
+        status: OrderStatus.CANCELLED,
+        note: customerMessage,
+      },
+    });
 
-      if (partner.activeOrderCount >= dispatchConfig.maxActiveOrders) {
-        return false;
-      }
+    return cancelledOrder;
+  });
 
-      if (restaurantHasCoordinates && partner.distanceKm != null) {
-        return partner.distanceKm <= radiusKm;
-      }
+  if (!updatedOrder) {
+    return {
+      orderId,
+      cancelled: false,
+      refunded: requiresRefund,
+    };
+  }
 
-      return true;
-    })
-    .sort((left, right) => {
-      const leftDistance = left.distanceKm ?? Number.MAX_SAFE_INTEGER;
-      const rightDistance = right.distanceKm ?? Number.MAX_SAFE_INTEGER;
+  await closePendingOffersForOrder(orderId, {
+    status: DeliveryOfferStatus.CANCELLED,
+    closedReason: payload.closedReason,
+  });
 
-      if (leftDistance !== rightDistance) {
-        return leftDistance - rightDistance;
-      }
+  await Promise.all([
+    createDispatchNotification(
+      order.userId,
+      "Order cancelled",
+      customerMessage,
+      JSON.stringify({
+        eventKey: "customer:dispatch-order-cancelled",
+        orderId,
+        orderNumber: order.orderNumber,
+        status: OrderStatus.CANCELLED,
+        cancelReason: payload.cancelReason,
+        refundStatus: requiresRefund ? "REFUNDED" : "NOT_REQUIRED",
+      }),
+    ),
+    createDispatchNotification(
+      order.restaurant.ownerId,
+      "Order cancelled",
+      requiresRefund
+        ? `${order.orderNumber} was cancelled because no eligible delivery partner remained. Payment refunded automatically.`
+        : `${order.orderNumber} was cancelled because no eligible delivery partner remained. No payment capture needed a refund.`,
+      JSON.stringify({
+        eventKey: "owner:dispatch-order-cancelled",
+        orderId,
+        orderNumber: order.orderNumber,
+        status: OrderStatus.CANCELLED,
+        cancelReason: payload.cancelReason,
+        refundStatus: requiresRefund ? "REFUNDED" : "NOT_REQUIRED",
+      }),
+      {
+        restaurantId: order.restaurant.id,
+      },
+    ),
+  ]);
 
-      return left.activeOrderCount - right.activeOrderCount;
-    })
-    .slice(0, dispatchConfig.maxBroadcastPartners);
+  emitOrderStatusUpdate({
+    orderId,
+    userId: order.userId,
+    ownerId: order.restaurant.ownerId,
+    restaurantId: order.restaurant.id,
+    status: OrderStatus.CANCELLED,
+    note: customerMessage,
+  });
+
+  return {
+    orderId,
+    cancelled: true,
+    refunded: requiresRefund,
+  };
 };
 
 const syncOrderDispatch = async (orderId: number) => {
@@ -687,9 +656,17 @@ const syncOrderDispatch = async (orderId: number) => {
 
   const latestBatch = await getLatestOfferBatch(orderId);
   const nextRadii = getNextRadiusSequence(latestBatch?.radiusKm);
+  const previouslyContactedPartnerIds = await getPreviouslyContactedPartnerIds(orderId);
 
   for (const radiusKm of nextRadii) {
-    const partners = await getEligiblePartnersForRadius(order, radiusKm);
+    const partners = await getEligibleDeliveryPartnersForRestaurant(
+      order.restaurant,
+      radiusKm,
+      {
+        excludePartnerIds: previouslyContactedPartnerIds,
+        maxPartners: dispatchConfig.maxBroadcastPartners,
+      },
+    );
 
     if (!partners.length) {
       continue;
@@ -698,23 +675,34 @@ const syncOrderDispatch = async (orderId: number) => {
     const batchNumber = (latestBatch?.batchNumber ?? 0) + 1;
     const expiresAt = new Date(now.getTime() + dispatchConfig.offerTtlSeconds * 1000);
 
-    await prisma.deliveryAssignmentOffer.createMany({
-      data: partners.map((partner) => ({
-        orderId,
-        deliveryPartnerId: partner.id,
-        batchNumber,
-        status: DeliveryOfferStatus.PENDING,
-        radiusKm,
-        distanceKm: partner.distanceKm,
-        expiresAt,
-      })),
+    await prisma.$transaction(async (tx) => {
+      await tx.deliveryAssignmentOffer.createMany({
+        data: partners.map((partner) => ({
+          orderId,
+          deliveryPartnerId: partner.id,
+          batchNumber,
+          status: DeliveryOfferStatus.PENDING,
+          radiusKm,
+          distanceKm: partner.distanceKm,
+          expiresAt,
+        })),
+      });
+
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          assignmentRadiusKm: radiusKm,
+        },
+      });
     });
 
     await Promise.all(
       partners.map((partner) =>
         createDispatchNotification(
           partner.userId,
-          "Nearby delivery request",
+          radiusKm > PRIMARY_ASSIGNMENT_RADIUS_KM
+            ? "Nearby area order"
+            : "Nearby delivery request",
           [
             `${order.orderNumber} from ${order.restaurant.name}`,
             `Pickup ${buildAddressSummary([
@@ -726,7 +714,13 @@ const syncOrderDispatch = async (orderId: number) => {
               order.address.area,
               order.address.city,
             ]) || order.address.city}`,
-            partner.distanceKm != null ? `${partner.distanceKm.toFixed(1)} km away` : null,
+            radiusKm > PRIMARY_ASSIGNMENT_RADIUS_KM ? "Nearby area order" : null,
+            order.restaurant.area?.trim()
+              ? `Restaurant area ${order.restaurant.area.trim()}`
+              : null,
+            partner.distanceKm != null
+              ? `Distance from restaurant ${partner.distanceKm.toFixed(1)} km`
+              : null,
           ]
             .filter(Boolean)
             .join(" • "),
@@ -761,11 +755,39 @@ const syncOrderDispatch = async (orderId: number) => {
     };
   }
 
+  const cancellationResult = await cancelUnassignedOrderForDispatchFailure(orderId, {
+    cancelReason:
+      latestBatch?.radiusKm != null ||
+      previouslyContactedPartnerIds.length ||
+      expiredOffers.length
+        ? "No delivery partner accepted the order."
+        : "No delivery partner available near this restaurant right now.",
+    refundedCustomerMessage:
+      latestBatch?.radiusKm != null ||
+      previouslyContactedPartnerIds.length ||
+      expiredOffers.length
+        ? "Order cancelled because no delivery partner accepted the order. Amount refunded."
+        : "Order cancelled because no delivery partner is available near this restaurant right now. Amount refunded.",
+    unpaidCustomerMessage:
+      latestBatch?.radiusKm != null ||
+      previouslyContactedPartnerIds.length ||
+      expiredOffers.length
+        ? "Order cancelled because no delivery partner accepted the order."
+        : "Order cancelled because no delivery partner is available near this restaurant right now.",
+    closedReason:
+      latestBatch?.radiusKm != null ||
+      previouslyContactedPartnerIds.length ||
+      expiredOffers.length
+        ? "NO_ELIGIBLE_DELIVERY_PARTNER_REMAINING"
+        : "NO_ELIGIBLE_DELIVERY_PARTNER_AVAILABLE",
+  });
+
   return {
     orderId,
     offersCreated: 0,
     radiusKm: null as number | null,
     rebroadcasted: expiredOffers.length > 0,
+    cancelled: cancellationResult.cancelled,
   };
 };
 

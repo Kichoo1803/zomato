@@ -70,6 +70,7 @@ export type DeliveryOrder = {
   discountAmount: number;
   tipAmount: number;
   totalAmount: number;
+  assignmentRadiusKm?: number | null;
   routeDistanceKm?: number | null;
   travelDurationMinutes?: number | null;
   estimatedDeliveryMinutes?: number | null;
@@ -77,6 +78,9 @@ export type DeliveryOrder = {
   weatherDelayMinutes: number;
   delayMinutes: number;
   specialInstructions?: string | null;
+  cancelReason?: string | null;
+  cancelledBy?: string | null;
+  refundStatus?: string | null;
   orderedAt: string;
   confirmedAt?: string | null;
   acceptedAt?: string | null;

@@ -93,6 +93,7 @@ const opsNavItems = [
   { to: "/ops/regions", label: "Regions", icon: Map },
   { to: "/ops/restaurant-owners", label: "Owners", icon: Store },
   { to: "/ops/delivery-partners", label: "Delivery", icon: Bike },
+  { to: "/ops/orders", label: "Orders", icon: ShoppingBag },
   { to: "/ops/assignments", label: "Assignments", icon: BriefcaseBusiness },
   { to: "/ops/applications", label: "Applications", icon: BriefcaseBusiness },
   { to: "/ops/notifications", label: "Notifications", icon: Bell },

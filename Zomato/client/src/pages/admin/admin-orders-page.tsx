@@ -11,6 +11,7 @@ import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
 import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
+import { useAuth } from "@/hooks/use-auth";
 import { getOrders, updateOrderStatus, type AdminOrder } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
 import {
@@ -26,6 +27,7 @@ import {
 } from "./admin-shared";
 
 export const AdminOrdersPage = () => {
+  const { user } = useAuth();
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -34,6 +36,8 @@ export const AdminOrdersPage = () => {
   const [selectedOrder, setSelectedOrder] = useState<AdminOrder | null>(null);
   const [statusDraft, setStatusDraft] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const isRegionalOpsView = user?.role === "REGIONAL_MANAGER";
+  const canEditOrders = user?.role === "ADMIN";
 
   const loadData = async () => {
     setIsLoading(true);
@@ -67,7 +71,7 @@ export const AdminOrdersPage = () => {
   };
 
   const handleSaveOrder = async () => {
-    if (!selectedOrder) {
+    if (!selectedOrder || !canEditOrders) {
       return;
     }
 
@@ -92,8 +96,12 @@ export const AdminOrdersPage = () => {
     <div className="space-y-8">
       <SectionHeading
         eyebrow="Orders"
-        title="Live platform order visibility."
-        description="Search, filter, inspect, and update order status while nearby rider matching stays automatic by default."
+        title={isRegionalOpsView ? "Regional order visibility." : "Live platform order visibility."}
+        description={
+          isRegionalOpsView
+            ? "Inspect cancelled, refunded, and active orders inside your assigned region while nearby rider matching stays automatic."
+            : "Search, filter, inspect, and update order status while nearby rider matching stays automatic by default."
+        }
         action={<RefreshButton onClick={() => void loadData()} />}
       />
 
@@ -217,6 +225,10 @@ export const AdminOrdersPage = () => {
                   label: "Payment",
                   value: `${toLabel(selectedOrder.paymentMethod)} • ${toLabel(selectedOrder.paymentStatus)}`,
                 },
+                {
+                  label: "Refund status",
+                  value: selectedOrder.refundStatus ? toLabel(selectedOrder.refundStatus) : "Not set",
+                },
                 { label: "Total", value: formatCurrency(selectedOrder.totalAmount) },
                 { label: "Tip", value: formatCurrency(selectedOrder.tipAmount) },
                 { label: "Placed at", value: formatDateTime(selectedOrder.orderedAt) },
@@ -237,6 +249,21 @@ export const AdminOrdersPage = () => {
                     selectedOrder.routeDistanceKm != null
                       ? `${selectedOrder.routeDistanceKm.toFixed(1)} km`
                       : "Pending distance",
+                },
+                {
+                  label: "Assignment radius",
+                  value:
+                    selectedOrder.assignmentRadiusKm != null
+                      ? `${selectedOrder.assignmentRadiusKm.toFixed(1)} km`
+                      : "Emergency/manual flow",
+                },
+                {
+                  label: "Cancel reason",
+                  value: selectedOrder.cancelReason ?? "No cancellation reason recorded",
+                },
+                {
+                  label: "Cancelled by",
+                  value: selectedOrder.cancelledBy ? toLabel(selectedOrder.cancelledBy) : "Not cancelled",
                 },
               ]}
             />
@@ -262,8 +289,12 @@ export const AdminOrdersPage = () => {
 
             <SurfaceCard className="space-y-4">
               <SectionHeading
-                title="Address and controls"
-                description="Monitor dispatch state and move safe order statuses forward without interrupting automatic rider matching."
+                title={canEditOrders ? "Address and controls" : "Address and cancellation context"}
+                description={
+                  canEditOrders
+                    ? "Monitor dispatch state and move safe order statuses forward without interrupting automatic rider matching."
+                    : "Monitor dispatch state, refund outcomes, and cancellation reasons without changing the live order workflow."
+                }
               />
               <AdminDetailsGrid
                 className="md:grid-cols-1"
@@ -291,17 +322,24 @@ export const AdminOrdersPage = () => {
                 ]}
               />
               <div className="grid gap-4 md:grid-cols-2">
-                <Select
-                  label="Update status"
-                  value={statusDraft}
-                  onChange={(event) => setStatusDraft(event.target.value)}
-                >
-                  {ORDER_STATUS_OPTIONS.map((status) => (
-                    <option key={status} value={status}>
-                      {toLabel(status)}
-                    </option>
-                  ))}
-                </Select>
+                {canEditOrders ? (
+                  <Select
+                    label="Update status"
+                    value={statusDraft}
+                    onChange={(event) => setStatusDraft(event.target.value)}
+                  >
+                    {ORDER_STATUS_OPTIONS.map((status) => (
+                      <option key={status} value={status}>
+                        {toLabel(status)}
+                      </option>
+                    ))}
+                  </Select>
+                ) : (
+                  <div className="rounded-[1.5rem] border border-accent/10 bg-white px-4 py-4 text-sm leading-7 text-ink-soft">
+                    Regional managers can review refund outcomes and cancellation reasons here, but
+                    order-status changes stay limited to admin and the active restaurant workflow.
+                  </div>
+                )}
                 <div className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4 text-sm leading-7 text-ink-soft">
                   Nearby, online riders are matched automatically from the restaurant pickup point.
                   Manual rider assignment is reserved for explicit emergency overrides outside the
@@ -311,11 +349,13 @@ export const AdminOrdersPage = () => {
               <div className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4 text-sm leading-7 text-ink-soft">
                 Order deletion stays disabled in admin to preserve payment and status history.
               </div>
-              <div className="flex justify-end">
-                <Button type="button" onClick={() => void handleSaveOrder()} disabled={isSaving}>
-                  {isSaving ? "Saving..." : "Save order changes"}
-                </Button>
-              </div>
+              {canEditOrders ? (
+                <div className="flex justify-end">
+                  <Button type="button" onClick={() => void handleSaveOrder()} disabled={isSaving}>
+                    {isSaving ? "Saving..." : "Save order changes"}
+                  </Button>
+                </div>
+              ) : null}
             </SurfaceCard>
           </div>
         ) : null}

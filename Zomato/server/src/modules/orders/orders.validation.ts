@@ -32,6 +32,13 @@ export const placeOrderSchema = {
     }),
 };
 
+export const previewOrderPlacementSchema = {
+  body: z.object({
+    cartId: z.coerce.number().int().positive(),
+    addressId: z.coerce.number().int().positive(),
+  }),
+};
+
 export const ordersListQuerySchema = {
   query: z.object({
     status: z.nativeEnum(OrderStatus).optional(),

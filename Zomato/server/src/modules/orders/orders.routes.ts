@@ -7,6 +7,7 @@ import {
   getOrderById,
   listOrders,
   placeOrder,
+  previewOrderPlacement,
   updateOrderStatus,
 } from "./orders.controller.js";
 import {
@@ -14,6 +15,7 @@ import {
   orderIdParamSchema,
   ordersListQuerySchema,
   placeOrderSchema,
+  previewOrderPlacementSchema,
   updateOrderStatusSchema,
 } from "./orders.validation.js";
 
@@ -22,6 +24,7 @@ export const ordersRouter = Router();
 ordersRouter.use(requireAuth);
 ordersRouter.get("/", validate(ordersListQuerySchema), listOrders);
 ordersRouter.get("/:orderId", validate(orderIdParamSchema), getOrderById);
+ordersRouter.post("/placement-preview", validate(previewOrderPlacementSchema), previewOrderPlacement);
 ordersRouter.post("/", validate(placeOrderSchema), placeOrder);
 ordersRouter.patch("/:orderId/status", validate(updateOrderStatusSchema), updateOrderStatus);
 ordersRouter.patch(

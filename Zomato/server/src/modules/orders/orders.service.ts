@@ -21,8 +21,16 @@ import { AppError } from "../../utils/app-error.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import { generateOrderNumber } from "../../utils/order-number.js";
 import { decimalToNumber, roundMoney } from "../../utils/pricing.js";
+import {
+  ensureAssignedRegionalAccess,
+  getRegionalAccessState,
+} from "../../utils/regional-access.js";
 import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
 import { orderDispatchService } from "./order-dispatch.service.js";
+import {
+  NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
+  previewOrderPlacementAvailability,
+} from "./order-assignment.service.js";
 
 const orderInclude = {
   address: true,
@@ -328,6 +336,158 @@ const assertOrderAccess = <
   return order;
 };
 
+const getRegionalOrderScope = async (user: { id: number; role: Role }) => {
+  if (user.role !== Role.REGIONAL_MANAGER) {
+    return null;
+  }
+
+  const access = ensureAssignedRegionalAccess(await getRegionalAccessState(user), {
+    actor: user,
+    endpoint: "/orders",
+  });
+
+  if (!access.assignedRegion?.regionId) {
+    throw new AppError(StatusCodes.FORBIDDEN, "No region assigned. Contact admin.", "REGIONAL_SCOPE_NOT_ASSIGNED");
+  }
+
+  return access.assignedRegion.regionId;
+};
+
+const loadOrderPlacementContext = async (
+  user: { id: number; role: Role },
+  input: {
+    cartId: number;
+    addressId: number;
+    paymentMethod?: PaymentMethod;
+    paymentMethodId?: number;
+    savedPaymentMethodId?: number;
+  },
+) => {
+  const cart = await prisma.cart.findFirst({
+    where: {
+      id: input.cartId,
+      userId: user.id,
+    },
+    include: {
+      restaurant: {
+        select: {
+          id: true,
+          ownerId: true,
+          name: true,
+          area: true,
+          city: true,
+          state: true,
+          latitude: true,
+          longitude: true,
+          avgDeliveryTime: true,
+          preparationTime: true,
+        },
+      },
+      offer: true,
+      items: {
+        include: {
+          menuItem: true,
+          combo: {
+            include: {
+              items: {
+                include: {
+                  menuItem: {
+                    select: {
+                      id: true,
+                      name: true,
+                      image: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          addons: {
+            include: {
+              addon: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!cart) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Cart not found", "CART_NOT_FOUND");
+  }
+
+  if (!cart.items.length) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Cart is empty", "EMPTY_CART");
+  }
+
+  const address = await prisma.address.findFirst({
+    where: {
+      id: input.addressId,
+      userId: user.id,
+      isServiceable: true,
+    },
+    select: {
+      id: true,
+      latitude: true,
+      longitude: true,
+    },
+  });
+
+  if (!address) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Address is not serviceable", "ADDRESS_NOT_SERVICEABLE");
+  }
+
+  const selectedSavedPaymentMethodId =
+    input.savedPaymentMethodId ?? input.paymentMethodId;
+
+  if (
+    input.paymentMethod &&
+    (input.paymentMethod === PaymentMethod.CARD ||
+      input.paymentMethod === PaymentMethod.UPI)
+  ) {
+    if (!selectedSavedPaymentMethodId) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Select a saved card or UPI ID before continuing",
+        "PAYMENT_METHOD_REQUIRED",
+      );
+    }
+
+    const paymentMethod = await prisma.savedPaymentMethod.findFirst({
+      where: {
+        id: selectedSavedPaymentMethodId,
+        userId: user.id,
+      },
+      select: {
+        id: true,
+        type: true,
+      },
+    });
+
+    if (!paymentMethod) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Select a valid saved card or UPI ID before continuing",
+        "PAYMENT_METHOD_INVALID",
+      );
+    }
+
+    if (paymentMethod.type !== input.paymentMethod) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Selected payment details do not match the chosen payment mode",
+        "PAYMENT_METHOD_MODE_MISMATCH",
+      );
+    }
+  }
+
+  return {
+    cart,
+    address,
+    selectedSavedPaymentMethodId,
+  };
+};
+
 const createOrderNotification = async (
   userId: number,
   orderId: number,
@@ -462,6 +622,13 @@ export const ordersService = {
       };
     }
 
+    if (user.role === Role.REGIONAL_MANAGER) {
+      const regionId = await getRegionalOrderScope(user);
+      where.restaurant = {
+        regionId,
+      };
+    }
+
     return prisma.order.findMany({
       where,
       include: orderInclude,
@@ -470,6 +637,26 @@ export const ordersService = {
   },
 
   async getById(user: { id: number; role: Role }, orderId: number) {
+    if (user.role === Role.REGIONAL_MANAGER) {
+      const regionId = await getRegionalOrderScope(user);
+      const order = await prisma.order.findFirst({
+        where: {
+          id: orderId,
+          restaurant: {
+            regionId,
+          },
+          ...notArchivedOrderWhere,
+        },
+        include: orderInclude,
+      });
+
+      if (!order) {
+        throw new AppError(StatusCodes.NOT_FOUND, "Order not found", "ORDER_NOT_FOUND");
+      }
+
+      return order;
+    }
+
     const order = await prisma.order.findFirst({
       where: {
         id: orderId,
@@ -479,6 +666,17 @@ export const ordersService = {
     });
 
     return assertOrderAccess(user, order);
+  },
+
+  async previewPlacement(
+    user: { id: number; role: Role },
+    input: {
+      cartId: number;
+      addressId: number;
+    },
+  ) {
+    const { cart } = await loadOrderPlacementContext(user, input);
+    return previewOrderPlacementAvailability(cart.restaurant);
   },
 
   async place(
@@ -493,114 +691,17 @@ export const ordersService = {
       specialInstructions?: string;
     },
   ) {
-    const cart = await prisma.cart.findFirst({
-      where: {
-        id: input.cartId,
-        userId: user.id,
-      },
-      include: {
-        restaurant: {
-          select: {
-            id: true,
-            ownerId: true,
-            name: true,
-            latitude: true,
-            longitude: true,
-            avgDeliveryTime: true,
-            preparationTime: true,
-          },
-        },
-        offer: true,
-        items: {
-          include: {
-            menuItem: true,
-            combo: {
-              include: {
-                items: {
-                  include: {
-                    menuItem: {
-                      select: {
-                        id: true,
-                        name: true,
-                        image: true,
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            addons: {
-              include: {
-                addon: true,
-              },
-            },
-          },
-        },
-      },
-    });
+    const { cart, address } = await loadOrderPlacementContext(user, input);
+    const placementAvailability = await previewOrderPlacementAvailability(
+      cart.restaurant,
+    );
 
-    if (!cart) {
-      throw new AppError(StatusCodes.NOT_FOUND, "Cart not found", "CART_NOT_FOUND");
-    }
-
-    if (!cart.items.length) {
-      throw new AppError(StatusCodes.BAD_REQUEST, "Cart is empty", "EMPTY_CART");
-    }
-
-    const address = await prisma.address.findFirst({
-      where: {
-        id: input.addressId,
-        userId: user.id,
-        isServiceable: true,
-      },
-      select: {
-        id: true,
-        latitude: true,
-        longitude: true,
-      },
-    });
-
-    if (!address) {
-      throw new AppError(StatusCodes.BAD_REQUEST, "Address is not serviceable", "ADDRESS_NOT_SERVICEABLE");
-    }
-
-    const selectedSavedPaymentMethodId = input.savedPaymentMethodId ?? input.paymentMethodId;
-
-    if (input.paymentMethod === PaymentMethod.CARD || input.paymentMethod === PaymentMethod.UPI) {
-      if (!selectedSavedPaymentMethodId) {
-        throw new AppError(
-          StatusCodes.BAD_REQUEST,
-          "Select a saved card or UPI ID before continuing",
-          "PAYMENT_METHOD_REQUIRED",
-        );
-      }
-
-      const paymentMethod = await prisma.savedPaymentMethod.findFirst({
-        where: {
-          id: selectedSavedPaymentMethodId,
-          userId: user.id,
-        },
-        select: {
-          id: true,
-          type: true,
-        },
-      });
-
-      if (!paymentMethod) {
-        throw new AppError(
-          StatusCodes.BAD_REQUEST,
-          "Select a valid saved card or UPI ID before continuing",
-          "PAYMENT_METHOD_INVALID",
-        );
-      }
-
-      if (paymentMethod.type !== input.paymentMethod) {
-        throw new AppError(
-          StatusCodes.BAD_REQUEST,
-          "Selected payment details do not match the chosen payment mode",
-          "PAYMENT_METHOD_MODE_MISMATCH",
-        );
-      }
+    if (!placementAvailability.canPlaceOrder) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
+        "DELIVERY_PARTNER_NOT_AVAILABLE_NEAR_RESTAURANT",
+      );
     }
 
     const subtotal = decimalToNumber(cart.totalAmount);
@@ -640,6 +741,7 @@ export const ordersService = {
           discountAmount,
           tipAmount,
           totalAmount,
+          assignmentRadiusKm: placementAvailability.matchedRadiusKm,
           routeDistanceKm: deliveryIntelligence.routeDistanceKm,
           travelDurationMinutes: deliveryIntelligence.travelDurationMinutes,
           estimatedDeliveryMinutes: deliveryIntelligence.estimatedDeliveryMinutes,
@@ -937,12 +1039,20 @@ export const ordersService = {
         : {}),
       ...(input.status === OrderStatus.DELAYED ? { delayedAt: now } : {}),
       ...(input.status === OrderStatus.DELIVERED ? { deliveredAt: now } : {}),
-      ...(input.status === OrderStatus.CANCELLED ? { cancelledAt: now } : {}),
+      ...(input.status === OrderStatus.CANCELLED
+        ? {
+            cancelledAt: now,
+            cancelReason: input.note?.trim() || "Order cancelled.",
+            cancelledBy: user.role,
+          }
+        : {}),
       ...(input.status === OrderStatus.DELIVERED && order.paymentStatus === PaymentStatus.PENDING
         ? { paymentStatus: PaymentStatus.PAID }
         : {}),
       ...(input.status === OrderStatus.PAYMENT_FAILED ? { paymentStatus: PaymentStatus.FAILED } : {}),
-      ...(input.status === OrderStatus.REFUNDED ? { paymentStatus: PaymentStatus.REFUNDED } : {}),
+      ...(input.status === OrderStatus.REFUNDED
+        ? { paymentStatus: PaymentStatus.REFUNDED, refundStatus: "REFUNDED" }
+        : {}),
     };
 
     await prisma.$transaction(async (tx) => {
@@ -1247,6 +1357,7 @@ export const ordersService = {
       },
       select: {
         id: true,
+        radiusKm: true,
       },
     });
 
@@ -1322,6 +1433,7 @@ export const ordersService = {
           deliveryPartnerId: deliveryPartner.id,
           status: nextStatus,
           assignedAt: now,
+          assignmentRadiusKm: pendingOffer.radiusKm,
           routeDistanceKm: deliveryIntelligence.routeDistanceKm,
           travelDurationMinutes: deliveryIntelligence.travelDurationMinutes,
           estimatedDeliveryMinutes: deliveryIntelligence.estimatedDeliveryMinutes,
@@ -1535,6 +1647,7 @@ export const ordersService = {
           deliveryPartnerId,
           status: nextStatus,
           ...(nextStatus === OrderStatus.DELIVERY_PARTNER_ASSIGNED ? { assignedAt: now } : {}),
+          assignmentRadiusKm: null,
           routeDistanceKm: deliveryIntelligence.routeDistanceKm,
           travelDurationMinutes: deliveryIntelligence.travelDurationMinutes,
           estimatedDeliveryMinutes: deliveryIntelligence.estimatedDeliveryMinutes,

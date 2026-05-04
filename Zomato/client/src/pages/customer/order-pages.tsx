@@ -34,12 +34,14 @@ import {
   getCustomerPaymentMethods,
   getPublicOffers,
   placeCustomerOrder,
+  previewCustomerOrderPlacement,
   readPendingCustomerCouponSelection,
   removeCustomerCartItem,
   removeCustomerCartOffer,
   setDefaultCustomerSavedPaymentMethod,
   type CustomerAddressPayload,
   type CustomerPaymentMethod,
+  type CustomerOrderPlacementAvailability,
   type CustomerOffer,
   updateCustomerCartItem,
   updateCustomerReview,
@@ -1660,6 +1662,7 @@ export const PaymentPage = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingOffers, setIsLoadingOffers] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isCheckingPlacementAvailability, setIsCheckingPlacementAvailability] = useState(false);
   const [isApplyingCoupon, setIsApplyingCoupon] = useState(false);
   const [savedPaymentPreferences, setSavedPaymentPreferences] = useState<StoredPaymentPreferences>({});
   const [savedPaymentMethods, setSavedPaymentMethods] = useState<CustomerPaymentMethod[]>([]);
@@ -1674,6 +1677,7 @@ export const PaymentPage = () => {
   const [isDeletingPaymentMethod, setIsDeletingPaymentMethod] = useState(false);
   const [cardSecurityCode, setCardSecurityCode] = useState("");
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [placementAvailability, setPlacementAvailability] = useState<CustomerOrderPlacementAvailability | null>(null);
   const [couponCode, setCouponCode] = useState("");
   const [couponMessage, setCouponMessage] = useState<string | null>(null);
   const [couponMessageTone, setCouponMessageTone] = useState<"info" | "success" | "error">("info");
@@ -1836,6 +1840,49 @@ export const PaymentPage = () => {
   const savedUpiDetails = useLiveFlow ? toStoredUpiDetails(selectedUpiMethod) : savedPaymentPreferences.upi ?? null;
   const editingCardDetails = useLiveFlow ? toStoredCardDetails(editingCardMethod) : savedCardDetails;
   const editingUpiDetails = useLiveFlow ? toStoredUpiDetails(editingUpiMethod) : savedUpiDetails;
+  const loadPlacementAvailability = async ({
+    quietly = false,
+  }: {
+    quietly?: boolean;
+  } = {}) => {
+    if (!useLiveFlow || !selectedCart || !addressId) {
+      setPlacementAvailability(null);
+      return null;
+    }
+
+    if (!quietly) {
+      setIsCheckingPlacementAvailability(true);
+    }
+
+    try {
+      const availability = await previewCustomerOrderPlacement({
+        cartId: selectedCart.id,
+        addressId,
+      });
+      setPlacementAvailability(availability);
+      return availability;
+    } catch (error) {
+      const message = getApiErrorMessage(
+        error,
+        "Unable to check nearby delivery partner availability right now.",
+      );
+
+      setPlacementAvailability({
+        canPlaceOrder: false,
+        coverageType: "NONE",
+        matchedRadiusKm: null,
+        partnerCount: 0,
+        primaryRadiusKm: 5,
+        fallbackRadiusKm: 7,
+        message,
+      });
+      return null;
+    } finally {
+      if (!quietly) {
+        setIsCheckingPlacementAvailability(false);
+      }
+    }
+  };
   const selectedPaymentSummary =
     activeMethod === "CARD"
       ? useLiveFlow
@@ -1861,6 +1908,55 @@ export const PaymentPage = () => {
   const walletSubtitle = useLiveFlow
     ? `${formatCurrency(user?.walletBalance ?? 0)} available for checkout.`
     : paymentModeContent.WALLET.subtitle;
+
+  useEffect(() => {
+    if (!useLiveFlow || !selectedCart || !addressId) {
+      setPlacementAvailability(null);
+      setIsCheckingPlacementAvailability(false);
+      return;
+    }
+
+    let isMounted = true;
+    setIsCheckingPlacementAvailability(true);
+
+    void previewCustomerOrderPlacement({
+      cartId: selectedCart.id,
+      addressId,
+    })
+      .then((availability) => {
+        if (isMounted) {
+          setPlacementAvailability(availability);
+        }
+      })
+      .catch((error) => {
+        if (isMounted) {
+          const message = getApiErrorMessage(
+            error,
+            "Unable to check nearby delivery partner availability right now.",
+          );
+
+          setPlacementAvailability({
+            canPlaceOrder: false,
+            coverageType: "NONE",
+            matchedRadiusKm: null,
+            partnerCount: 0,
+            primaryRadiusKm: 5,
+            fallbackRadiusKm: 7,
+            message,
+          });
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsCheckingPlacementAvailability(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [addressId, selectedCart?.id, useLiveFlow]);
+
   const eligibleCoupons = useMemo(
     () =>
       selectedCart
@@ -2646,6 +2742,17 @@ export const PaymentPage = () => {
 
     setIsSubmitting(true);
     try {
+      const latestPlacementAvailability = await loadPlacementAvailability();
+
+      if (!latestPlacementAvailability?.canPlaceOrder) {
+        const message =
+          latestPlacementAvailability?.message ??
+          "Unable to place this order right now because no nearby delivery partner is available.";
+        setPaymentError(message);
+        toast.error(message);
+        return;
+      }
+
       const selectedSavedPaymentMethodId =
         activeMethod === "CARD" ? selectedCardMethod?.id : activeMethod === "UPI" ? selectedUpiMethod?.id : undefined;
       const order = await placeCustomerOrder({
@@ -2731,6 +2838,40 @@ export const PaymentPage = () => {
               {paymentError}
             </div>
           ) : null}
+          {useLiveFlow && selectedCart && addressId ? (
+            <div
+              className={`rounded-[1.75rem] border px-5 py-4 text-sm shadow-soft ${
+                isCheckingPlacementAvailability
+                  ? "border-accent/10 bg-white text-ink-soft"
+                  : placementAvailability?.canPlaceOrder
+                    ? "border-accent/10 bg-accent/[0.03] text-ink-soft"
+                    : "border-accent/10 bg-white text-accent-soft"
+              }`}
+            >
+              <p className="font-semibold text-ink">
+                {isCheckingPlacementAvailability
+                  ? "Checking nearby delivery partners..."
+                  : placementAvailability?.coverageType === "FALLBACK"
+                    ? "Nearby area order coverage confirmed"
+                    : placementAvailability?.canPlaceOrder
+                      ? "Nearby delivery partner coverage confirmed"
+                      : "Delivery partner currently unavailable"}
+              </p>
+              <p className="mt-1">
+                {isCheckingPlacementAvailability
+                  ? "We're validating active riders near the restaurant before the final payment step."
+                  : placementAvailability?.message ??
+                    "Nearby delivery partner availability will appear here once checkout details are ready."}
+              </p>
+              {!isCheckingPlacementAvailability && placementAvailability?.matchedRadiusKm ? (
+                <p className="mt-2 text-xs text-ink-muted">
+                  Matched radius {formatDistanceKm(placementAvailability.matchedRadiusKm)} • Priority
+                  window {formatDistanceKm(placementAvailability.primaryRadiusKm)} • Fallback window{" "}
+                  {formatDistanceKm(placementAvailability.fallbackRadiusKm)}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
             <div className="space-y-4">
               <div className="rounded-[1.75rem] border border-accent/10 bg-accent/[0.03] px-5 py-4 text-sm text-ink-soft">
@@ -2777,8 +2918,20 @@ export const PaymentPage = () => {
             </div>
           </div>
           <div className="flex justify-end">
-            <Button type="button" onClick={() => void handlePlaceOrder()} disabled={isSubmitting}>
-              {isSubmitting ? "Placing order..." : "Complete payment"}
+            <Button
+              type="button"
+              onClick={() => void handlePlaceOrder()}
+              disabled={
+                isSubmitting ||
+                isCheckingPlacementAvailability ||
+                placementAvailability?.canPlaceOrder === false
+              }
+            >
+              {isSubmitting
+                ? "Placing order..."
+                : isCheckingPlacementAvailability
+                  ? "Checking availability..."
+                  : "Complete payment"}
             </Button>
           </div>
         </SurfaceCard>
@@ -3195,17 +3348,23 @@ export const OrderTrackingPage = () => {
                     </div>
                     <StatusPill label={toLabel(order.status)} tone={getOrderStatusTone(order.status)} />
                   </div>
-                  {order.review ? (
-                    <p className="mt-3 text-sm text-ink-soft">
-                      Your review: {order.review.rating}/5
-                      {order.review.reviewText ? ` - ${order.review.reviewText}` : ""}
-                    </p>
-                  ) : canReviewOrder(order) ? (
-                    <p className="mt-3 text-sm text-ink-soft">
-                      Your food has been delivered. You can rate this order whenever you are ready.
-                    </p>
-                  ) : null}
-                </div>
+                {order.review ? (
+                  <p className="mt-3 text-sm text-ink-soft">
+                    Your review: {order.review.rating}/5
+                    {order.review.reviewText ? ` - ${order.review.reviewText}` : ""}
+                  </p>
+                ) : canReviewOrder(order) ? (
+                  <p className="mt-3 text-sm text-ink-soft">
+                    Your food has been delivered. You can rate this order whenever you are ready.
+                  </p>
+                ) : null}
+                {order.cancelReason ? (
+                  <p className="mt-3 text-sm text-ink-soft">
+                    Cancellation reason: {order.cancelReason}
+                    {order.refundStatus ? ` | Refund status: ${toLabel(order.refundStatus)}` : ""}
+                  </p>
+                ) : null}
+              </div>
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div className="rounded-[1.5rem] bg-cream px-4 py-4">
                     <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Total</p>
@@ -3755,6 +3914,12 @@ export const OrderDetailsPage = () => {
                 ) : canReviewOrder(order) ? (
                   <p>
                     <span className="font-semibold text-ink">Review:</span> Your delivered order is ready to be rated.
+                  </p>
+                ) : null}
+                {order.cancelReason ? (
+                  <p>
+                    <span className="font-semibold text-ink">Cancellation reason:</span> {order.cancelReason}
+                    {order.refundStatus ? ` | ${toLabel(order.refundStatus)}` : ""}
                   </p>
                 ) : null}
                 {order.specialInstructions ? (

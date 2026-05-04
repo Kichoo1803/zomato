@@ -459,6 +459,7 @@ export type CustomerOrder = {
   discountAmount: number;
   tipAmount: number;
   totalAmount: number;
+  assignmentRadiusKm?: number | null;
   routeDistanceKm?: number | null;
   travelDurationMinutes?: number | null;
   estimatedDeliveryMinutes?: number | null;
@@ -466,6 +467,9 @@ export type CustomerOrder = {
   weatherDelayMinutes: number;
   delayMinutes: number;
   specialInstructions?: string | null;
+  cancelReason?: string | null;
+  cancelledBy?: string | null;
+  refundStatus?: string | null;
   orderedAt: string;
   confirmedAt?: string | null;
   acceptedAt?: string | null;
@@ -571,6 +575,16 @@ export type CustomerOrder = {
     createdAt: string;
     updatedAt: string;
   } | null;
+};
+
+export type CustomerOrderPlacementAvailability = {
+  canPlaceOrder: boolean;
+  coverageType: "PRIMARY" | "FALLBACK" | "NONE";
+  matchedRadiusKm?: number | null;
+  partnerCount: number;
+  primaryRadiusKm: number;
+  fallbackRadiusKm: number;
+  message: string;
 };
 
 const PENDING_CUSTOMER_COUPON_STORAGE_PREFIX = "zomato-luxe-pending-coupon";
@@ -858,6 +872,18 @@ export const placeCustomerOrder = async (payload: {
   specialInstructions?: string;
 }) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ order: CustomerOrder }>>("/orders", payload)).order;
+
+export const previewCustomerOrderPlacement = async (payload: {
+  cartId: number;
+  addressId: number;
+}) =>
+  unwrapData(
+    await apiClient.post<
+      ApiEnvelope<{
+        availability: CustomerOrderPlacementAvailability;
+      }>
+    >("/orders/placement-preview", payload),
+  ).availability;
 
 export const getCustomerOrders = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ orders: CustomerOrder[] }>>("/orders")).orders;

@@ -31,6 +31,15 @@ export const placeOrder = asyncHandler(async (req, res) => {
   });
 });
 
+export const previewOrderPlacement = asyncHandler(async (req, res) => {
+  const availability = await ordersService.previewPlacement(req.user!, req.body);
+
+  return sendSuccess(res, {
+    message: "Order placement availability checked successfully",
+    data: { availability },
+  });
+});
+
 export const updateOrderStatus = asyncHandler(async (req, res) => {
   const order = await ordersService.updateStatus(req.user!, Number(req.params.orderId), req.body);
 
