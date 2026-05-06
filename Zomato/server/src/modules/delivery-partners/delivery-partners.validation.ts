@@ -92,8 +92,8 @@ export const updateAvailabilitySchema = {
 
 export const updateLocationSchema = {
   body: z.object({
-    latitude: z.number(),
-    longitude: z.number(),
+    latitude: z.coerce.number().gte(-90).lte(90),
+    longitude: z.coerce.number().gte(-180).lte(180),
   }),
 };
 

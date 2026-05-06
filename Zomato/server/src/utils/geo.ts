@@ -1,6 +1,6 @@
 type GeoPoint = {
-  latitude?: number | null;
-  longitude?: number | null;
+  latitude?: number | string | null;
+  longitude?: number | string | null;
 };
 
 export type RouteMetrics = {
@@ -13,26 +13,57 @@ const OSRM_ROUTE_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
 const NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search";
 const NOMINATIM_REVERSE_ENDPOINT = "https://nominatim.openstreetmap.org/reverse";
 
-const isValidCoordinate = (value?: number | null) =>
-  typeof value === "number" && Number.isFinite(value);
+const toCoordinateNumber = (value?: number | string | null) => {
+  if (value === null || value === undefined) {
+    return Number.NaN;
+  }
+
+  if (typeof value === "string" && !value.trim()) {
+    return Number.NaN;
+  }
+
+  return Number(value);
+};
+const isValidLatitude = (value: number) =>
+  Number.isFinite(value) && value >= -90 && value <= 90;
+const isValidLongitude = (value: number) =>
+  Number.isFinite(value) && value >= -180 && value <= 180;
 
 export const hasCoordinates = (
   point?: GeoPoint | null,
 ): point is { latitude: number; longitude: number } =>
-  Boolean(point && isValidCoordinate(point.latitude) && isValidCoordinate(point.longitude));
+  Boolean(
+    point &&
+      isValidLatitude(toCoordinateNumber(point.latitude)) &&
+      isValidLongitude(toCoordinateNumber(point.longitude)),
+  );
 
 export const calculateDistanceKm = (
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number,
+  lat1: number | string | null | undefined,
+  lon1: number | string | null | undefined,
+  lat2: number | string | null | undefined,
+  lon2: number | string | null | undefined,
 ) => {
+  const originLatitude = toCoordinateNumber(lat1);
+  const originLongitude = toCoordinateNumber(lon1);
+  const destinationLatitude = toCoordinateNumber(lat2);
+  const destinationLongitude = toCoordinateNumber(lon2);
+
+  if (
+    !isValidLatitude(originLatitude) ||
+    !isValidLongitude(originLongitude) ||
+    !isValidLatitude(destinationLatitude) ||
+    !isValidLongitude(destinationLongitude)
+  ) {
+    return Number.NaN;
+  }
+
   const toRadians = (value: number) => (value * Math.PI) / 180;
   const earthRadiusKm = 6371;
-  const dLat = toRadians(lat2 - lat1);
-  const dLng = toRadians(lon2 - lon1);
-  const originLat = toRadians(lat1);
-  const destinationLat = toRadians(lat2);
+  const dLat = toRadians(destinationLatitude - originLatitude);
+  const dLng = toRadians(destinationLongitude - originLongitude);
+  const originLat = toRadians(originLatitude);
+  const destinationLat = toRadians(destinationLatitude);
 
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +

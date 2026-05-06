@@ -136,6 +136,21 @@ const toLabel = (value: string) =>
     .replace(/_/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
 
+const formatCancelReason = (value?: string | null) => {
+  if (!value) {
+    return "No cancellation reason recorded.";
+  }
+
+  switch (value.trim().toUpperCase()) {
+    case "NO_DELIVERY_PARTNER_AVAILABLE":
+      return "No delivery partner available near this restaurant right now.";
+    case "NO_DELIVERY_PARTNER_ACCEPTED":
+      return "No delivery partner accepted the order.";
+    default:
+      return value;
+  }
+};
+
 const tipOptions = [0, 30, 50, 100];
 
 const sanitizeTipAmount = (value?: string | number | null) => {
@@ -993,23 +1008,31 @@ export const CartPage = () => {
   const { isAuthenticated, user } = useAuth();
   const [carts, setCarts] = useState<CustomerCart[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [pendingItemId, setPendingItemId] = useState<number | null>(null);
+  const [itemActionState, setItemActionState] = useState<{
+    action: "adding" | "removing";
+    source: "increment" | "decrement" | "remove";
+    itemId: number;
+  } | null>(null);
   const [pendingCartId, setPendingCartId] = useState<number | null>(null);
   const useLiveFlow = isLiveCustomerSession(isAuthenticated, user?.role);
   const demoOrder = orders[0];
 
-  const loadCarts = async () => {
+  const loadCarts = async ({ showLoading = true }: { showLoading?: boolean } = {}) => {
     if (!useLiveFlow) {
       return;
     }
 
-    setIsLoading(true);
+    if (showLoading) {
+      setIsLoading(true);
+    }
     try {
       setCarts(await getCustomerCarts());
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to load your cart."));
     } finally {
-      setIsLoading(false);
+      if (showLoading) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -1017,27 +1040,44 @@ export const CartPage = () => {
     void loadCarts();
   }, [useLiveFlow]);
 
-  const handleQuantityChange = async (cartItemId: number, quantity: number) => {
-    setPendingItemId(cartItemId);
+  const handleQuantityChange = async (
+    cartItemId: number,
+    currentQuantity: number,
+    quantity: number,
+  ) => {
+    if (quantity === currentQuantity) {
+      return;
+    }
+
+    const isAddAction = quantity > currentQuantity;
+    setItemActionState({
+      itemId: cartItemId,
+      action: isAddAction ? "adding" : "removing",
+      source: isAddAction ? "increment" : "decrement",
+    });
     try {
       await updateCustomerCartItem(cartItemId, { quantity });
-      await loadCarts();
+      await loadCarts({ showLoading: false });
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to update this cart item."));
     } finally {
-      setPendingItemId(null);
+      setItemActionState(null);
     }
   };
 
   const handleRemoveItem = async (cartItemId: number) => {
-    setPendingItemId(cartItemId);
+    setItemActionState({
+      itemId: cartItemId,
+      action: "removing",
+      source: "remove",
+    });
     try {
       await removeCustomerCartItem(cartItemId);
-      await loadCarts();
+      await loadCarts({ showLoading: false });
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to remove this cart item."));
     } finally {
-      setPendingItemId(null);
+      setItemActionState(null);
     }
   };
 
@@ -1045,7 +1085,7 @@ export const CartPage = () => {
     setPendingCartId(cartId);
     try {
       await clearCustomerCart(cartId);
-      await loadCarts();
+      await loadCarts({ showLoading: false });
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to clear this cart."));
     } finally {
@@ -1126,6 +1166,14 @@ export const CartPage = () => {
                 />
                 {cart.items.map((item) => {
                   const snapshot = item.snapshot ?? parseSnapshot(item.itemSnapshot);
+                  const isItemAdding =
+                    itemActionState?.itemId === item.id && itemActionState.action === "adding";
+                  const isItemRemoving =
+                    itemActionState?.itemId === item.id && itemActionState.action === "removing";
+                  const isIncrementing = isItemAdding && itemActionState?.source === "increment";
+                  const isDecrementing = isItemRemoving && itemActionState?.source === "decrement";
+                  const isRemovingItem = isItemRemoving && itemActionState?.source === "remove";
+                  const isItemBusy = isItemAdding || isItemRemoving;
 
                   return (
                     <SurfaceCard key={item.id} className="space-y-4">
@@ -1158,32 +1206,36 @@ export const CartPage = () => {
                       ) : null}
 
                       <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Button
                             type="button"
                             variant="secondary"
-                            onClick={() => void handleQuantityChange(item.id, Math.max(1, item.quantity - 1))}
-                            disabled={pendingItemId === item.id}
+                            onClick={() =>
+                              void handleQuantityChange(item.id, item.quantity, Math.max(1, item.quantity - 1))
+                            }
+                            disabled={isItemBusy}
+                            className={isDecrementing ? "min-w-[6.75rem]" : undefined}
                           >
-                            -
+                            {isDecrementing ? "Removing..." : "-"}
                           </Button>
                           <span className="text-sm font-semibold text-ink">Qty {item.quantity}</span>
                           <Button
                             type="button"
                             variant="secondary"
-                            onClick={() => void handleQuantityChange(item.id, item.quantity + 1)}
-                            disabled={pendingItemId === item.id}
+                            onClick={() => void handleQuantityChange(item.id, item.quantity, item.quantity + 1)}
+                            disabled={isItemBusy}
+                            className={isIncrementing ? "min-w-[6.25rem]" : undefined}
                           >
-                            +
+                            {isIncrementing ? "Adding..." : "+"}
                           </Button>
                         </div>
                         <Button
                           type="button"
                           variant="ghost"
                           onClick={() => void handleRemoveItem(item.id)}
-                          disabled={pendingItemId === item.id}
+                          disabled={isItemBusy}
                         >
-                          {pendingItemId === item.id ? "Removing..." : "Remove"}
+                          {isRemovingItem ? "Removing..." : "Remove"}
                         </Button>
                       </div>
                     </SurfaceCard>
@@ -1678,6 +1730,7 @@ export const PaymentPage = () => {
   const [cardSecurityCode, setCardSecurityCode] = useState("");
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [placementAvailability, setPlacementAvailability] = useState<CustomerOrderPlacementAvailability | null>(null);
+  const [placementAvailabilityError, setPlacementAvailabilityError] = useState<string | null>(null);
   const [couponCode, setCouponCode] = useState("");
   const [couponMessage, setCouponMessage] = useState<string | null>(null);
   const [couponMessageTone, setCouponMessageTone] = useState<"info" | "success" | "error">("info");
@@ -1847,6 +1900,7 @@ export const PaymentPage = () => {
   } = {}) => {
     if (!useLiveFlow || !selectedCart || !addressId) {
       setPlacementAvailability(null);
+      setPlacementAvailabilityError(null);
       return null;
     }
 
@@ -1854,12 +1908,15 @@ export const PaymentPage = () => {
       setIsCheckingPlacementAvailability(true);
     }
 
+    setPlacementAvailabilityError(null);
+
     try {
       const availability = await previewCustomerOrderPlacement({
         cartId: selectedCart.id,
         addressId,
       });
       setPlacementAvailability(availability);
+      setPlacementAvailabilityError(null);
       return availability;
     } catch (error) {
       const message = getApiErrorMessage(
@@ -1867,15 +1924,8 @@ export const PaymentPage = () => {
         "Unable to check nearby delivery partner availability right now.",
       );
 
-      setPlacementAvailability({
-        canPlaceOrder: false,
-        coverageType: "NONE",
-        matchedRadiusKm: null,
-        partnerCount: 0,
-        primaryRadiusKm: 5,
-        fallbackRadiusKm: 7,
-        message,
-      });
+      setPlacementAvailability(null);
+      setPlacementAvailabilityError(message);
       return null;
     } finally {
       if (!quietly) {
@@ -1912,6 +1962,7 @@ export const PaymentPage = () => {
   useEffect(() => {
     if (!useLiveFlow || !selectedCart || !addressId) {
       setPlacementAvailability(null);
+      setPlacementAvailabilityError(null);
       setIsCheckingPlacementAvailability(false);
       return;
     }
@@ -1926,6 +1977,7 @@ export const PaymentPage = () => {
       .then((availability) => {
         if (isMounted) {
           setPlacementAvailability(availability);
+          setPlacementAvailabilityError(null);
         }
       })
       .catch((error) => {
@@ -1935,15 +1987,8 @@ export const PaymentPage = () => {
             "Unable to check nearby delivery partner availability right now.",
           );
 
-          setPlacementAvailability({
-            canPlaceOrder: false,
-            coverageType: "NONE",
-            matchedRadiusKm: null,
-            partnerCount: 0,
-            primaryRadiusKm: 5,
-            fallbackRadiusKm: 7,
-            message,
-          });
+          setPlacementAvailability(null);
+          setPlacementAvailabilityError(message);
         }
       })
       .finally(() => {
@@ -2744,9 +2789,16 @@ export const PaymentPage = () => {
     try {
       const latestPlacementAvailability = await loadPlacementAvailability();
 
-      if (!latestPlacementAvailability?.canPlaceOrder) {
+      if (!latestPlacementAvailability) {
+        const message = "Unable to check nearby delivery partner availability right now.";
+        setPaymentError(message);
+        toast.error(message);
+        return;
+      }
+
+      if (!latestPlacementAvailability.canPlaceOrder) {
         const message =
-          latestPlacementAvailability?.message ??
+          latestPlacementAvailability.message ??
           "Unable to place this order right now because no nearby delivery partner is available.";
         setPaymentError(message);
         toast.error(message);
@@ -2845,12 +2897,16 @@ export const PaymentPage = () => {
                   ? "border-accent/10 bg-white text-ink-soft"
                   : placementAvailability?.canPlaceOrder
                     ? "border-accent/10 bg-accent/[0.03] text-ink-soft"
-                    : "border-accent/10 bg-white text-accent-soft"
+                    : placementAvailabilityError
+                      ? "border-accent/10 bg-white text-accent-soft"
+                      : "border-accent/10 bg-white text-accent-soft"
               }`}
             >
               <p className="font-semibold text-ink">
                 {isCheckingPlacementAvailability
                   ? "Checking nearby delivery partners..."
+                  : placementAvailabilityError
+                    ? "Delivery availability check failed"
                   : placementAvailability?.coverageType === "FALLBACK"
                     ? "Nearby area order coverage confirmed"
                     : placementAvailability?.canPlaceOrder
@@ -2860,6 +2916,8 @@ export const PaymentPage = () => {
               <p className="mt-1">
                 {isCheckingPlacementAvailability
                   ? "We're validating active riders near the restaurant before the final payment step."
+                  : placementAvailabilityError
+                    ? placementAvailabilityError
                   : placementAvailability?.message ??
                     "Nearby delivery partner availability will appear here once checkout details are ready."}
               </p>
@@ -2924,7 +2982,7 @@ export const PaymentPage = () => {
               disabled={
                 isSubmitting ||
                 isCheckingPlacementAvailability ||
-                placementAvailability?.canPlaceOrder === false
+                placementAvailability?.partnerCount === 0
               }
             >
               {isSubmitting
@@ -3360,7 +3418,7 @@ export const OrderTrackingPage = () => {
                 ) : null}
                 {order.cancelReason ? (
                   <p className="mt-3 text-sm text-ink-soft">
-                    Cancellation reason: {order.cancelReason}
+                    Cancellation reason: {formatCancelReason(order.cancelReason)}
                     {order.refundStatus ? ` | Refund status: ${toLabel(order.refundStatus)}` : ""}
                   </p>
                 ) : null}
@@ -3918,7 +3976,7 @@ export const OrderDetailsPage = () => {
                 ) : null}
                 {order.cancelReason ? (
                   <p>
-                    <span className="font-semibold text-ink">Cancellation reason:</span> {order.cancelReason}
+                    <span className="font-semibold text-ink">Cancellation reason:</span> {formatCancelReason(order.cancelReason)}
                     {order.refundStatus ? ` | ${toLabel(order.refundStatus)}` : ""}
                   </p>
                 ) : null}

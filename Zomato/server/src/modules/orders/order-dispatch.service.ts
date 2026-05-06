@@ -15,9 +15,11 @@ import {
   emitOrderStatusUpdate,
 } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
+import { calculateDistanceKm, hasCoordinates } from "../../utils/geo.js";
 import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
 import {
   ORDER_ASSIGNMENT_RADII_KM,
+  FALLBACK_ASSIGNMENT_RADIUS_KM,
   PRIMARY_ASSIGNMENT_RADIUS_KM,
   getEligibleDeliveryPartnersForRestaurant,
 } from "./order-assignment.service.js";
@@ -203,6 +205,39 @@ const buildItemsSummary = (items: DispatchOrder["items"]) =>
     .map((item) => `${item.quantity}x ${item.itemName}`)
     .join(", ");
 
+const calculateRestaurantDistanceKm = (
+  partner: {
+    currentLatitude?: number | null;
+    currentLongitude?: number | null;
+  },
+  restaurant: {
+    latitude?: number | null;
+    longitude?: number | null;
+  },
+) => {
+  const partnerCoordinates = {
+    latitude: partner.currentLatitude,
+    longitude: partner.currentLongitude,
+  };
+  const restaurantCoordinates = {
+    latitude: restaurant.latitude,
+    longitude: restaurant.longitude,
+  };
+
+  if (!hasCoordinates(partnerCoordinates) || !hasCoordinates(restaurantCoordinates)) {
+    return null;
+  }
+
+  const distanceKm = calculateDistanceKm(
+    restaurantCoordinates.latitude,
+    restaurantCoordinates.longitude,
+    partnerCoordinates.latitude,
+    partnerCoordinates.longitude,
+  );
+
+  return Number.isFinite(distanceKm) ? Number(distanceKm.toFixed(2)) : null;
+};
+
 const buildDispatchMeta = (
   order: DispatchOrder,
   payload: {
@@ -380,6 +415,7 @@ const getPreviouslyContactedPartnerIds = async (orderId: number) => {
 const cancelUnassignedOrderForDispatchFailure = async (
   orderId: number,
   payload: {
+    cancelReasonCode: string;
     cancelReason: string;
     refundedCustomerMessage: string;
     unpaidCustomerMessage: string;
@@ -456,7 +492,7 @@ const cancelUnassignedOrderForDispatchFailure = async (
       data: {
         status: OrderStatus.CANCELLED,
         cancelledAt: now,
-        cancelReason: payload.cancelReason,
+        cancelReason: payload.cancelReasonCode,
         cancelledBy: "SYSTEM",
         refundStatus: requiresRefund ? "REFUNDED" : "NOT_REQUIRED",
         ...(requiresRefund ? { paymentStatus: PaymentStatus.REFUNDED } : {}),
@@ -756,6 +792,12 @@ const syncOrderDispatch = async (orderId: number) => {
   }
 
   const cancellationResult = await cancelUnassignedOrderForDispatchFailure(orderId, {
+    cancelReasonCode:
+      latestBatch?.radiusKm != null ||
+      previouslyContactedPartnerIds.length ||
+      expiredOffers.length
+        ? "NO_DELIVERY_PARTNER_ACCEPTED"
+        : "NO_DELIVERY_PARTNER_AVAILABLE",
     cancelReason:
       latestBatch?.radiusKm != null ||
       previouslyContactedPartnerIds.length ||
@@ -1214,7 +1256,51 @@ export const orderDispatchService = {
       orderBy: [{ distanceKm: "asc" }, { offeredAt: "desc" }],
     });
 
-    return mapOfferRowsToOrders(offers);
+    return mapOfferRowsToOrders(offers)
+      .reduce<
+        Array<
+          ReturnType<typeof mapOfferRowsToOrders>[number] & {
+            restaurantDistanceKm: number;
+            deliveryCoverageType: "PRIMARY" | "FALLBACK";
+            deliveryOffer: NonNullable<
+              ReturnType<typeof mapOfferRowsToOrders>[number]["deliveryOffer"]
+            >;
+          }
+        >
+      >((visibleOrders, order) => {
+        const restaurantDistanceKm = calculateRestaurantDistanceKm(partner, order.restaurant);
+
+        if (
+          restaurantDistanceKm == null ||
+          restaurantDistanceKm > FALLBACK_ASSIGNMENT_RADIUS_KM ||
+          !order.deliveryOffer
+        ) {
+          return visibleOrders;
+        }
+
+        visibleOrders.push({
+          ...order,
+          restaurantDistanceKm,
+          deliveryCoverageType:
+            restaurantDistanceKm > PRIMARY_ASSIGNMENT_RADIUS_KM ? "FALLBACK" : "PRIMARY",
+          deliveryOffer: {
+            ...order.deliveryOffer,
+            distanceKm: restaurantDistanceKm,
+          },
+        });
+
+        return visibleOrders;
+      }, [])
+      .sort((left, right) => {
+        if (left.restaurantDistanceKm !== right.restaurantDistanceKm) {
+          return left.restaurantDistanceKm - right.restaurantDistanceKm;
+        }
+
+        return (
+          new Date(right.deliveryOffer?.offeredAt ?? 0).getTime() -
+          new Date(left.deliveryOffer?.offeredAt ?? 0).getTime()
+        );
+      });
   },
   async declineOffer(userId: number, orderId: number) {
     await declineOffer(userId, orderId);

@@ -159,6 +159,20 @@ export type DeliveryOrder = {
     expiresAt: string;
     status: string;
   } | null;
+  restaurantDistanceKm?: number | null;
+  deliveryCoverageType?: "PRIMARY" | "FALLBACK" | null;
+};
+
+export type DeliveryNearbyRestaurant = {
+  id: number;
+  name: string;
+  area?: string | null;
+  addressLine?: string | null;
+  city: string;
+  distanceKm: number;
+  isOpenNow?: boolean | null;
+  openingTime?: string | null;
+  closingTime?: string | null;
 };
 
 export const toDeliverySessionUser = (profile: DeliveryProfile): AuthUser =>
@@ -204,6 +218,13 @@ export const updateDeliveryLocation = async (payload: {
 export const getDeliveryRequests = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ requests: DeliveryOrder[] }>>("/delivery-partners/requests"))
     .requests;
+
+export const getDeliveryNearbyRestaurants = async () =>
+  unwrapData(
+    await apiClient.get<ApiEnvelope<{ restaurants: DeliveryNearbyRestaurant[] }>>(
+      "/delivery-partners/nearby-restaurants",
+    ),
+  ).restaurants;
 
 export const acceptDeliveryRequest = async (orderId: number) =>
   unwrapData(

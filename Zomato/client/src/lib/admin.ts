@@ -523,6 +523,34 @@ export type AdminOffer = {
   updatedAt: string;
 };
 
+export type AdminEvent = {
+  id: number;
+  title: string;
+  description: string;
+  restaurantId?: number | null;
+  regionId?: number | null;
+  imageUrl?: string | null;
+  startsAt: string;
+  endsAt: string;
+  discountLabel?: string | null;
+  status: "ACTIVE" | "INACTIVE" | "EXPIRED";
+  createdAt: string;
+  updatedAt: string;
+  appliesToAllRestaurants: boolean;
+  restaurant?: {
+    id: number;
+    name: string;
+    slug: string;
+  } | null;
+  region?: {
+    id: number;
+    name: string;
+    districtName: string;
+    stateName: string;
+    slug: string;
+  } | null;
+};
+
 export type AdminReview = {
   id: number;
   userId: number;
@@ -818,6 +846,18 @@ export const assignDeliveryPartnerToOrder = async (
 
 export const getOffers = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ offers: AdminOffer[] }>>("/offers/admin/all")).offers;
+
+export const getEvents = async () =>
+  unwrapData(await apiClient.get<ApiEnvelope<{ events: AdminEvent[] }>>("/events")).events;
+
+export const createEvent = async (payload: Record<string, unknown>) =>
+  unwrapData(await apiClient.post<ApiEnvelope<{ event: AdminEvent }>>("/admin/events", payload)).event;
+
+export const updateEvent = async (eventId: number, payload: Record<string, unknown>) =>
+  unwrapData(await apiClient.patch<ApiEnvelope<{ event: AdminEvent }>>(`/admin/events/${eventId}`, payload)).event;
+
+export const deleteEvent = async (eventId: number) =>
+  unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/admin/events/${eventId}`));
 
 export const createOffer = async (payload: Record<string, unknown>) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ offer: AdminOffer }>>("/offers", payload)).offer;

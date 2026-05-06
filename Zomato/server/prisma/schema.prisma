@@ -146,6 +146,7 @@ model Restaurant {
   combos           Combo[]
   itemAddons       ItemAddon[]
   offers           RestaurantOffer[]
+  events           Event[]
   operatingHours   RestaurantHour[]
   orders           Order[]
   owner            User                    @relation("RestaurantOwnerRestaurants", fields: [ownerId], references: [id], onDelete: Cascade)
@@ -356,6 +357,29 @@ model Offer {
 
   @@index([isActive, startDate, endDate])
   @@map("offers")
+}
+
+model Event {
+  mongoId       String     @id @default(auto()) @map("_id") @db.ObjectId
+  id            Int        @unique @default(0)
+  title         String
+  description   String
+  restaurantId  Int?       @map("restaurant_id")
+  regionId      Int?       @map("region_id")
+  imageUrl      String?    @map("image_url")
+  startsAt      DateTime   @map("starts_at")
+  endsAt        DateTime   @map("ends_at")
+  discountLabel String?    @map("discount_label")
+  status        String     @default("ACTIVE")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+  restaurant    Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  region        Region?    @relation(fields: [regionId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId, status, startsAt, endsAt])
+  @@index([regionId, status, startsAt, endsAt])
+  @@index([status, startsAt, endsAt])
+  @@map("events")
 }
 
 model RestaurantOffer {
@@ -728,6 +752,7 @@ model Region {
   operationsNotes  OperationsRegionNote[] @relation("RegionOperationsNotes")
   registrationApplications RegistrationApplication[]
   restaurants      Restaurant[]           @relation("RegionRestaurants")
+  events           Event[]
   users            User[]                 @relation("RegionUsers")
 
   @@index([stateName, districtName])

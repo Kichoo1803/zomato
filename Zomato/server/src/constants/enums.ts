@@ -49,6 +49,13 @@ export const OfferScope = {
 } as const;
 export type OfferScope = (typeof OfferScope)[keyof typeof OfferScope];
 
+export const EventStatus = {
+  ACTIVE: "ACTIVE",
+  INACTIVE: "INACTIVE",
+  EXPIRED: "EXPIRED",
+} as const;
+export type EventStatus = (typeof EventStatus)[keyof typeof EventStatus];
+
 export const OrderStatus = {
   PLACED: "PLACED",
   CONFIRMED: "CONFIRMED",

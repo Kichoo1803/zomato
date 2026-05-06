@@ -18,6 +18,7 @@ import {
   emitOrderStatusUpdate,
 } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
+import { calculateDistanceKm, hasCoordinates } from "../../utils/geo.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import { generateOrderNumber } from "../../utils/order-number.js";
 import { decimalToNumber, roundMoney } from "../../utils/pricing.js";
@@ -28,6 +29,7 @@ import {
 import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
 import { orderDispatchService } from "./order-dispatch.service.js";
 import {
+  FALLBACK_ASSIGNMENT_RADIUS_KM,
   NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
   previewOrderPlacementAvailability,
 } from "./order-assignment.service.js";
@@ -1366,6 +1368,38 @@ export const ordersService = {
         StatusCodes.CONFLICT,
         "This delivery request is no longer available to accept",
         "DELIVERY_REQUEST_UNAVAILABLE",
+      );
+    }
+
+    const restaurantCoordinates = {
+      latitude: order.restaurant.latitude,
+      longitude: order.restaurant.longitude,
+    };
+    const partnerCoordinates = {
+      latitude: deliveryPartner.currentLatitude,
+      longitude: deliveryPartner.currentLongitude,
+    };
+
+    if (!hasCoordinates(restaurantCoordinates) || !hasCoordinates(partnerCoordinates)) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "Refresh your live location before accepting a delivery request",
+        "DELIVERY_REQUEST_OUT_OF_RANGE",
+      );
+    }
+
+    const pickupDistanceKm = calculateDistanceKm(
+      restaurantCoordinates.latitude,
+      restaurantCoordinates.longitude,
+      partnerCoordinates.latitude,
+      partnerCoordinates.longitude,
+    );
+
+    if (!Number.isFinite(pickupDistanceKm) || pickupDistanceKm > FALLBACK_ASSIGNMENT_RADIUS_KM) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "This restaurant is no longer within your active delivery range",
+        "DELIVERY_REQUEST_OUT_OF_RANGE",
       );
     }
 

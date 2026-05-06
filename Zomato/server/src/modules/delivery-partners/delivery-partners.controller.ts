@@ -95,6 +95,15 @@ export const listNewRequests = asyncHandler(async (_req, res) => {
   });
 });
 
+export const listNearbyRestaurants = asyncHandler(async (req, res) => {
+  const restaurants = await deliveryPartnersService.listNearbyRestaurants(req.user!.id);
+
+  return sendSuccess(res, {
+    message: "Nearby restaurants fetched successfully",
+    data: { restaurants },
+  });
+});
+
 export const declineDeliveryRequest = asyncHandler(async (req, res) => {
   await deliveryPartnersService.declineRequest(req.user!.id, Number(req.params.orderId));
 

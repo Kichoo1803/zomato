@@ -14,28 +14,58 @@ const extractBearerToken = (authorizationHeader?: string) => {
 };
 
 export const requireAuth: RequestHandler = (req, _res, next) => {
+  try {
+    const didAttachUser = attachUserFromToken(req);
+
+    if (!didAttachUser) {
+      next(new AppError(StatusCodes.UNAUTHORIZED, "Authentication required", "AUTH_REQUIRED"));
+      return;
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+};
+
+const assignAuthenticatedUser = (
+  req: Parameters<RequestHandler>[0],
+  email: string,
+  role: Role,
+  userId: number,
+) => {
+  req.user = {
+    id: userId,
+    email,
+    role,
+  };
+};
+
+const attachUserFromToken = (req: Parameters<RequestHandler>[0]) => {
   const token = extractBearerToken(req.headers.authorization);
 
   if (!token) {
-    next(new AppError(StatusCodes.UNAUTHORIZED, "Authentication required", "AUTH_REQUIRED"));
-    return;
+    return false;
   }
 
   const payload = verifyAccessToken(token);
   const normalizedRole = normalizeRoleValue(payload.role);
 
   if (!normalizedRole) {
-    next(new AppError(StatusCodes.UNAUTHORIZED, "Invalid access token", "INVALID_ACCESS_TOKEN"));
-    return;
+    throw new AppError(StatusCodes.UNAUTHORIZED, "Invalid access token", "INVALID_ACCESS_TOKEN");
   }
 
-  req.user = {
-    id: Number(payload.sub),
-    email: payload.email,
-    role: normalizedRole,
-  };
+  assignAuthenticatedUser(req, payload.email, normalizedRole, Number(payload.sub));
+  return true;
+};
 
-  next();
+export const optionalAuth: RequestHandler = (req, _res, next) => {
+  try {
+    attachUserFromToken(req);
+    next();
+  } catch (error) {
+    next(error);
+  }
 };
 
 export const authorize = (...roles: Role[]): RequestHandler => {

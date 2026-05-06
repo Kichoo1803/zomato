@@ -406,6 +406,34 @@ export type CustomerOffer = {
   }>;
 };
 
+export type CustomerRestaurantEvent = {
+  id: number;
+  title: string;
+  description: string;
+  restaurantId?: number | null;
+  regionId?: number | null;
+  imageUrl?: string | null;
+  startsAt: string;
+  endsAt: string;
+  discountLabel?: string | null;
+  status: "ACTIVE" | "INACTIVE" | "EXPIRED";
+  createdAt: string;
+  updatedAt: string;
+  appliesToAllRestaurants: boolean;
+  restaurant?: {
+    id: number;
+    name: string;
+    slug: string;
+  } | null;
+  region?: {
+    id: number;
+    name: string;
+    districtName: string;
+    stateName: string;
+    slug: string;
+  } | null;
+};
+
 export type PendingCustomerCouponSelection = {
   code: string;
   cartId?: number | null;
@@ -697,6 +725,13 @@ export const getPublicRestaurantBySlug = async (
       params,
     }),
   ).restaurant;
+
+export const getRestaurantEvents = async (restaurantId: number) =>
+  unwrapData(
+    await publicApi.get<ApiEnvelope<{ events: CustomerRestaurantEvent[] }>>(
+      `/restaurants/${restaurantId}/events`,
+    ),
+  ).events;
 
 export const getPublicOffers = async () =>
   unwrapData(await publicApi.get<ApiEnvelope<{ offers: CustomerOffer[] }>>("/offers")).offers;

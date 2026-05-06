@@ -1,8 +1,10 @@
 import {
   DeliveryAvailabilityStatus,
   OrderStatus,
+  Role,
 } from "../../constants/enums.js";
 import { env } from "../../config/env.js";
+import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
 import { calculateDistanceKm, hasCoordinates } from "../../utils/geo.js";
 
@@ -65,50 +67,6 @@ const eligibleAvailabilityStatuses = new Set<string>([
   DeliveryAvailabilityStatus.ONLINE,
   "AVAILABLE",
 ]);
-
-const normalizeLocationValue = (value?: string | null) =>
-  value
-    ?.trim()
-    .toLowerCase()
-    .replace(/district|urban|rural/g, " ")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim() ?? "";
-
-const tokenizeLocation = (value?: string | null) =>
-  normalizeLocationValue(value)
-    .split(" ")
-    .map((token) => token.trim())
-    .filter(Boolean);
-
-const matchesServiceZone = (
-  partner: {
-    user: {
-      opsState?: string | null;
-      opsDistrict?: string | null;
-    };
-  },
-  restaurant: RestaurantAssignmentContext,
-) => {
-  const partnerState = normalizeLocationValue(partner.user.opsState);
-  const restaurantState = normalizeLocationValue(restaurant.state);
-
-  if (partnerState && restaurantState && partnerState !== restaurantState) {
-    return false;
-  }
-
-  const districtTokens = tokenizeLocation(partner.user.opsDistrict);
-  if (!districtTokens.length) {
-    return true;
-  }
-
-  const restaurantTokens = [
-    ...tokenizeLocation(restaurant.city),
-    ...tokenizeLocation(restaurant.area),
-  ];
-
-  return districtTokens.some((token) => restaurantTokens.includes(token));
-};
 
 const buildBoundingBox = (latitude: number, longitude: number, radiusKm: number) => {
   const latitudeDelta = radiusKm / 111;
@@ -186,10 +144,12 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
       },
       isVerified: true,
       currentLatitude: {
+        not: null,
         gte: boundingBox.minLatitude,
         lte: boundingBox.maxLatitude,
       },
       currentLongitude: {
+        not: null,
         gte: boundingBox.minLongitude,
         lte: boundingBox.maxLongitude,
       },
@@ -205,11 +165,7 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
         : {}),
       user: {
         isActive: true,
-        ...(restaurant.state
-          ? {
-              OR: [{ opsState: null }, { opsState: restaurant.state }],
-            }
-          : {}),
+        role: Role.DELIVERY_PARTNER,
       },
     },
     select: {
@@ -248,6 +204,29 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
         return null;
       }
 
+      const distanceKm = calculateDistanceKm(
+        restaurantCoordinates.latitude,
+        restaurantCoordinates.longitude,
+        partnerCoordinates.latitude,
+        partnerCoordinates.longitude,
+      );
+
+      if (!Number.isFinite(distanceKm)) {
+        return null;
+      }
+
+      if (env.isDevelopment) {
+        logger.info("Delivery partner distance evaluated for restaurant coverage", {
+          restaurantId: restaurant.id,
+          restaurantLatitude: restaurantCoordinates.latitude,
+          restaurantLongitude: restaurantCoordinates.longitude,
+          partnerId: partner.id,
+          partnerLatitude: partnerCoordinates.latitude,
+          partnerLongitude: partnerCoordinates.longitude,
+          calculatedDistanceKm: Number(distanceKm.toFixed(2)),
+        });
+      }
+
       return {
         id: partner.id,
         userId: partner.userId,
@@ -255,23 +234,12 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
         currentLongitude: partnerCoordinates.longitude,
         lastLocationUpdatedAt: partner.lastLocationUpdatedAt,
         activeOrderCount: activeOrderCountMap.get(partner.id) ?? 0,
-        distanceKm: Number(
-          calculateDistanceKm(
-            restaurantCoordinates.latitude,
-            restaurantCoordinates.longitude,
-            partnerCoordinates.latitude,
-            partnerCoordinates.longitude,
-          ).toFixed(2),
-        ),
+        distanceKm: Number(distanceKm.toFixed(2)),
         user: partner.user,
       } satisfies EligibleDeliveryPartner;
     })
     .filter((partner): partner is EligibleDeliveryPartner => Boolean(partner))
     .filter((partner) => {
-      if (!matchesServiceZone(partner, restaurant)) {
-        return false;
-      }
-
       if (partner.activeOrderCount > 0) {
         return false;
       }

@@ -11,6 +11,7 @@ export { AdminCombosPage } from "./admin-combos-page";
 export { AdminAddonsPage } from "./admin-addons-page";
 export { AdminOrdersPage } from "./admin-orders-page";
 export { AdminOffersPage } from "./admin-offers-page";
+export { AdminEventsPage } from "./admin-events-page";
 export { AdminPaymentsPage } from "./admin-payments-page";
 export { AdminReviewsPage } from "./admin-reviews-page";
 export { AdminCategoriesPage } from "./admin-categories-page";

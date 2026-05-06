@@ -9,6 +9,7 @@ import { cartsRouter } from "../modules/carts/carts.routes.js";
 import { categoriesRouter } from "../modules/categories/categories.routes.js";
 import { combosRouter } from "../modules/combos/combos.routes.js";
 import { deliveryPartnersRouter } from "../modules/delivery-partners/delivery-partners.routes.js";
+import { adminEventsRouter, eventsRouter } from "../modules/events/events.routes.js";
 import { favoritesRouter } from "../modules/favorites/favorites.routes.js";
 import { geoRouter } from "../modules/geo/geo.routes.js";
 import { menuItemsRouter } from "../modules/menu-items/menu-items.routes.js";
@@ -101,6 +102,8 @@ apiRouter.get("/health/full", async (_req, res) => {
 apiRouter.use("/auth", authRouter);
 apiRouter.use("/geo", geoRouter);
 apiRouter.use("/addresses", addressesRouter);
+apiRouter.use(eventsRouter);
+apiRouter.use("/admin/events", adminEventsRouter);
 apiRouter.use("/restaurants", restaurantsRouter);
 apiRouter.use("/categories", categoriesRouter);
 apiRouter.use("/menu-items", menuItemsRouter);

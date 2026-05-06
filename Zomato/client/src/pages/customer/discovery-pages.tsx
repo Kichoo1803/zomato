@@ -41,6 +41,7 @@ import {
   getPublicOffers,
   getPublicRestaurantCatalogue,
   getPublicRestaurantBySlug,
+  getRestaurantEvents,
   readPendingCustomerCouponSelection,
   removeCustomerFavorite,
   removeCustomerCartOffer,
@@ -53,6 +54,7 @@ import {
   type CustomerPaymentMethod,
   type CustomerOffer,
   type CustomerRestaurantDetail,
+  type CustomerRestaurantEvent,
   type CustomerRestaurantSearchMatch,
   type CustomerRestaurantSummary,
 } from "@/lib/customer";
@@ -104,6 +106,22 @@ const formatCurrency = (value: number) =>
     currency: "INR",
     maximumFractionDigits: 0,
   }).format(value);
+
+const formatDateTimeValue = (value?: string | null) =>
+  value
+    ? new Intl.DateTimeFormat("en-IN", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(value))
+    : "Unavailable";
+
+const formatDateTimeRange = (startsAt?: string | null, endsAt?: string | null) => {
+  if (!startsAt && !endsAt) {
+    return "Unavailable";
+  }
+
+  return `${formatDateTimeValue(startsAt)} - ${formatDateTimeValue(endsAt)}`;
+};
 
 const formatPriceForOne = (costForTwo: number) => formatCurrency(Math.max(1, Math.round(costForTwo / 2)));
 
@@ -1761,6 +1779,10 @@ export const RestaurantDetailsPage = () => {
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
   const [selection, setSelection] = useState<CatalogItemSelection | null>(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
+  const [restaurantEvents, setRestaurantEvents] = useState<CustomerRestaurantEvent[]>([]);
+  const [isLoadingEvents, setIsLoadingEvents] = useState(false);
+  const [eventsErrorMessage, setEventsErrorMessage] = useState<string>();
+  const [selectedTab, setSelectedTab] = useState<"MENU" | "EVENTS" | "REVIEWS">("MENU");
   const {
     canManageSavedLocation,
     errorMessage,
@@ -1787,6 +1809,10 @@ export const RestaurantDetailsPage = () => {
 
     navigate("/restaurants");
   };
+
+  useEffect(() => {
+    setSelectedTab("MENU");
+  }, [slug]);
 
   useEffect(() => {
     if (!slug) {
@@ -1845,6 +1871,43 @@ export const RestaurantDetailsPage = () => {
       isMounted = false;
     };
   }, [isBootstrappingLocation, selectedLocation, slug]);
+
+  useEffect(() => {
+    if (!liveRestaurant?.id) {
+      setRestaurantEvents([]);
+      setEventsErrorMessage(undefined);
+      setIsLoadingEvents(false);
+      return;
+    }
+
+    let isMounted = true;
+    setIsLoadingEvents(true);
+    setEventsErrorMessage(undefined);
+
+    void getRestaurantEvents(liveRestaurant.id)
+      .then((events) => {
+        if (isMounted) {
+          setRestaurantEvents(events);
+        }
+      })
+      .catch((error) => {
+        if (isMounted) {
+          setRestaurantEvents([]);
+          setEventsErrorMessage(
+            getApiErrorMessage(error, "We couldn't load this restaurant's events right now."),
+          );
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoadingEvents(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [liveRestaurant?.id]);
 
   const handleAddToCart = async (payload: {
     restaurantId: number;
@@ -1907,6 +1970,11 @@ export const RestaurantDetailsPage = () => {
     const liveLocationSummary =
       formatLocationText(liveRestaurant.area, liveRestaurant.city, liveRestaurant.state) || liveRestaurant.city;
     const liveAddressSummary = formatLocationText(liveRestaurant.addressLine, liveRestaurant.pincode);
+    const detailTabs = [
+      { value: "MENU", label: "Menu" },
+      { value: "EVENTS", label: "Events" },
+      { value: "REVIEWS", label: "Reviews" },
+    ];
 
     return (
       <>
@@ -2000,88 +2068,177 @@ export const RestaurantDetailsPage = () => {
             </SurfaceCard>
           </div>
 
-          {liveRestaurant.combos.length ? (
+          <Tabs items={detailTabs} value={selectedTab} onChange={(value) => setSelectedTab(value as "MENU" | "EVENTS" | "REVIEWS")} />
+
+          {selectedTab === "MENU" ? (
             <>
+              {liveRestaurant.combos.length ? (
+                <>
+                  <SectionHeading
+                    eyebrow="Combos"
+                    title="Curated meal combos"
+                    description="Meal bundles, offer pricing, and richer upsells that fit the current premium card language."
+                  />
+
+                  <div className="grid gap-5">
+                    {liveRestaurant.combos.map((combo) => (
+                      <FoodItemCard
+                        key={combo.id}
+                        name={combo.name}
+                        description={`${combo.description ?? "Meal combo"} Includes ${combo.items.map((item) => `${item.quantity}x ${item.menuItem.name}`).join(", ")}.`}
+                        price={formatCurrency(combo.offerPrice ?? combo.basePrice)}
+                        badge={combo.categoryTag ?? "Combo"}
+                        image={combo.image ?? liveRestaurant.coverImage ?? "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1200&q=80"}
+                        buttonLabel="Add combo"
+                        onAdd={() =>
+                          handleStartCartSelection({
+                            type: "COMBO",
+                            restaurantId: liveRestaurant.id,
+                            item: combo,
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : null}
+
               <SectionHeading
-                eyebrow="Combos"
-                title="Curated meal combos"
-                description="Meal bundles, offer pricing, and richer upsells that fit the current premium card language."
+                eyebrow="Menu"
+                title="Signature dishes"
+                description="Live menu items, existing add-ons, and combo-ready ordering through the current card system."
               />
 
-              <div className="grid gap-5">
-                {liveRestaurant.combos.map((combo) => (
-                  <FoodItemCard
-                    key={combo.id}
-                    name={combo.name}
-                    description={`${combo.description ?? "Meal combo"} Includes ${combo.items.map((item) => `${item.quantity}x ${item.menuItem.name}`).join(", ")}.`}
-                    price={formatCurrency(combo.offerPrice ?? combo.basePrice)}
-                    badge={combo.categoryTag ?? "Combo"}
-                    image={combo.image ?? liveRestaurant.coverImage ?? "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1200&q=80"}
-                    buttonLabel="Add combo"
-                    onAdd={() =>
-                      handleStartCartSelection({
-                        type: "COMBO",
-                        restaurantId: liveRestaurant.id,
-                        item: combo,
-                      })
-                    }
-                  />
+              <div className="space-y-6">
+                {liveRestaurant.menuCategories.map((category) => (
+                  <div key={category.id} className="space-y-4">
+                    <h3 className="font-display text-4xl font-semibold text-ink">{category.name}</h3>
+                    <div className="grid gap-5">
+                      {category.menuItems.map((item) => (
+                        <FoodItemCard
+                          key={item.id}
+                          name={item.name}
+                          description={item.description ?? "Freshly prepared and ready for delivery."}
+                          price={formatCurrency(item.discountPrice ?? item.price)}
+                          badge={item.isRecommended ? "Recommended" : item.foodType}
+                          image={item.image ?? liveRestaurant.coverImage ?? "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1200&q=80"}
+                          onAdd={() =>
+                            handleStartCartSelection({
+                              type: "MENU_ITEM",
+                              restaurantId: liveRestaurant.id,
+                              item,
+                            })
+                          }
+                        />
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </>
           ) : null}
 
-          <SectionHeading
-            eyebrow="Menu"
-            title="Signature dishes"
-            description="Live menu items, existing add-ons, and combo-ready ordering through the current card system."
-          />
+          {selectedTab === "EVENTS" ? (
+            <>
+              <SectionHeading
+                eyebrow="Events"
+                title="Restaurant experiences and limited-time moments."
+                description="Restaurant-specific experiences, regional moments, and platform-wide specials that apply here."
+              />
 
-          <div className="space-y-6">
-            {liveRestaurant.menuCategories.map((category) => (
-              <div key={category.id} className="space-y-4">
-                <h3 className="font-display text-4xl font-semibold text-ink">{category.name}</h3>
+              {isLoadingEvents ? (
+                <SurfaceCard>
+                  <p className="text-sm leading-7 text-ink-soft">Loading events for this restaurant.</p>
+                </SurfaceCard>
+              ) : eventsErrorMessage ? (
+                <SurfaceCard>
+                  <p className="text-sm leading-7 text-ink-soft">{eventsErrorMessage}</p>
+                </SurfaceCard>
+              ) : restaurantEvents.length ? (
                 <div className="grid gap-5">
-                  {category.menuItems.map((item) => (
-                    <FoodItemCard
-                      key={item.id}
-                      name={item.name}
-                      description={item.description ?? "Freshly prepared and ready for delivery."}
-                      price={formatCurrency(item.discountPrice ?? item.price)}
-                      badge={item.isRecommended ? "Recommended" : item.foodType}
-                      image={item.image ?? liveRestaurant.coverImage ?? "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1200&q=80"}
-                      onAdd={() =>
-                        handleStartCartSelection({
-                          type: "MENU_ITEM",
-                          restaurantId: liveRestaurant.id,
-                          item,
-                        })
-                      }
-                    />
+                  {restaurantEvents.map((event) => (
+                    <SurfaceCard key={event.id} className="overflow-hidden p-0">
+                      {event.imageUrl ? (
+                        <img
+                          src={event.imageUrl}
+                          alt={event.title}
+                          className="h-56 w-full object-cover"
+                        />
+                      ) : null}
+                      <div className="space-y-5 p-6">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <h3 className="font-display text-3xl font-semibold text-ink">{event.title}</h3>
+                            <p className="mt-2 text-sm leading-7 text-ink-soft">{event.description}</p>
+                          </div>
+                          <StatusPill label="Active" tone="success" />
+                        </div>
+
+                        <div className="grid gap-4 sm:grid-cols-2">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Date and time</p>
+                            <p className="mt-2 text-sm text-ink-soft">
+                              {formatDateTimeRange(event.startsAt, event.endsAt)}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Restaurant</p>
+                            <p className="mt-2 text-sm text-ink-soft">
+                              {event.restaurant?.name ?? liveRestaurant.name}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Offer</p>
+                            <p className="mt-2 text-sm text-ink-soft">
+                              {event.discountLabel ?? "No discount attached"}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Scope</p>
+                            <p className="mt-2 text-sm text-ink-soft">
+                              {event.appliesToAllRestaurants
+                                ? "All restaurants"
+                                : event.region
+                                  ? `${event.region.name}, ${event.region.stateName}`
+                                  : "Restaurant specific"}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </SurfaceCard>
                   ))}
                 </div>
-              </div>
-            ))}
-          </div>
+              ) : (
+                <EmptyState
+                  title="No active events"
+                  description="No events available for this restaurant right now."
+                />
+              )}
+            </>
+          ) : null}
 
-          <SectionHeading
-            eyebrow="Guest sentiment"
-            title="Recent reviews"
-            description="Live review data from recent orders and completed dining experiences."
-          />
-
-          <div className="grid gap-5 lg:grid-cols-2">
-            {reviewCards.length ? (
-              reviewCards.map((review) => (
-                <ReviewCard key={`${review.author}-${review.date}`} {...review} />
-              ))
-            ) : (
-              <EmptyState
-                title="No reviews yet"
-                description="The first few customer reviews will appear here once orders are completed."
+          {selectedTab === "REVIEWS" ? (
+            <>
+              <SectionHeading
+                eyebrow="Guest sentiment"
+                title="Recent reviews"
+                description="Live review data from recent orders and completed dining experiences."
               />
-            )}
-          </div>
+
+              <div className="grid gap-5 lg:grid-cols-2">
+                {reviewCards.length ? (
+                  reviewCards.map((review) => (
+                    <ReviewCard key={`${review.author}-${review.date}`} {...review} />
+                  ))
+                ) : (
+                  <EmptyState
+                    title="No reviews yet"
+                    description="The first few customer reviews will appear here once orders are completed."
+                  />
+                )}
+              </div>
+            </>
+          ) : null}
         </PageShell>
 
         <LocationSelectionModal

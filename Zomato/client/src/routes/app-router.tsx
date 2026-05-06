@@ -33,6 +33,7 @@ import {
   AdminDashboardPage,
   AdminDeliveryPartnersPage,
   AdminDishesPage,
+  AdminEventsPage,
   AdminLiveMapPage,
   AdminNotificationsPage,
   AdminOffersPage,
@@ -213,6 +214,7 @@ export const AppRouter = () => {
             <Route path="/admin/addons" element={<AdminAddonsPage />} />
             <Route path="/admin/orders" element={<AdminOrdersPage />} />
             <Route path="/admin/offers" element={<AdminOffersPage />} />
+            <Route path="/admin/events" element={<AdminEventsPage />} />
             <Route path="/admin/categories" element={<AdminCategoriesPage />} />
             <Route path="/admin/notifications" element={<AdminNotificationsPage />} />
             <Route path="/admin/payments" element={<AdminPaymentsPage />} />

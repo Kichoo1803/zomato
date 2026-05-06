@@ -10,6 +10,7 @@ import {
   getDeliveryProfile,
   listActiveDeliveries,
   listDeliveryHistory,
+  listNearbyRestaurants,
   listDeliveryPartners,
   listNewRequests,
   releaseAssignedOrder,
@@ -63,6 +64,7 @@ deliveryPartnersRouter.delete(
 deliveryPartnersRouter.use(requireAuth, authorize(Role.DELIVERY_PARTNER, Role.ADMIN));
 deliveryPartnersRouter.get("/me", getDeliveryProfile);
 deliveryPartnersRouter.patch("/me", validate(updateMyDeliveryProfileSchema), updateMyDeliveryProfile);
+deliveryPartnersRouter.get("/nearby-restaurants", listNearbyRestaurants);
 deliveryPartnersRouter.get("/requests", listNewRequests);
 deliveryPartnersRouter.patch(
   "/requests/:orderId/accept",

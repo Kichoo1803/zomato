@@ -20,6 +20,7 @@ import {
   acceptDeliveryRequest as acceptDeliveryRequestApi,
   getDeliveryActiveOrders,
   getDeliveryHistory,
+  getDeliveryNearbyRestaurants,
   getDeliveryProfile,
   getDeliveryRequests,
   releaseAssignedDeliveryOrder,
@@ -29,6 +30,7 @@ import {
   updateDeliveryLocation,
   updateDeliveryOrderStatus,
   updateDeliveryProfile,
+  type DeliveryNearbyRestaurant,
   type DeliveryOrder,
   type DeliveryProfile,
 } from "@/lib/delivery";
@@ -130,10 +132,10 @@ const DeliveryRequestCard = ({
 }) => {
   const actionState = getDeliveryRequestAction(order, profile);
   const pickupDistance = order.deliveryOffer?.distanceKm ?? order.routeDistanceKm;
+  const restaurantDistanceKm = order.restaurantDistanceKm ?? order.deliveryOffer?.distanceKm ?? pickupDistance;
   const isNearbyAreaOrder =
-    (order.deliveryOffer?.radiusKm ?? 0) > 5 ||
-    ((order.deliveryOffer?.distanceKm ?? 0) > 5 &&
-      (order.deliveryOffer?.distanceKm ?? 0) <= 7);
+    order.deliveryCoverageType === "FALLBACK" ||
+    ((restaurantDistanceKm ?? 0) > 5 && (restaurantDistanceKm ?? 0) <= 7);
 
   return (
     <div id={`delivery-order-${order.id}`} className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4">
@@ -167,6 +169,8 @@ const DeliveryRequestCard = ({
         <p><span className="font-semibold text-ink">Payment:</span> {toLabel(order.paymentMethod)} | {formatCurrency(order.totalAmount)}</p>
         <p><span className="font-semibold text-ink">Pickup:</span> {buildDeliveryAddressSummary([order.restaurant.addressLine, order.restaurant.area, order.restaurant.city]) || order.restaurant.name}</p>
         <p><span className="font-semibold text-ink">Drop-off:</span> {buildDeliveryAddressSummary([order.address.houseNo, order.address.street, order.address.area, order.address.city])}</p>
+        <p><span className="font-semibold text-ink">Restaurant area:</span> {order.restaurant.area?.trim() || order.restaurant.city}</p>
+        <p><span className="font-semibold text-ink">Restaurant distance:</span> {formatDistanceKm(restaurantDistanceKm)}</p>
       </div>
       {order.deliveryOffer ? (
         <div className="mt-4 rounded-[1.25rem] bg-cream px-4 py-3 text-sm leading-7 text-ink-soft">
@@ -179,7 +183,7 @@ const DeliveryRequestCard = ({
           <p className="mt-1">
             Restaurant area/name: {order.restaurant.area?.trim() || order.restaurant.name}
           </p>
-          <p>Distance from restaurant: {formatDistanceKm(order.deliveryOffer?.distanceKm ?? pickupDistance)}</p>
+          <p>Distance from restaurant: {formatDistanceKm(restaurantDistanceKm)}</p>
         </div>
       ) : null}
       {order.specialInstructions ? (
@@ -309,6 +313,77 @@ const DeliveryWorkspaceNotice = ({ message }: { message: string }) => (
   </div>
 );
 
+const NearbyRestaurantsCard = ({
+  restaurants,
+  profile,
+  title = "Nearby restaurants",
+  description = "Restaurants within 2 km of your current rider location.",
+}: {
+  restaurants: DeliveryNearbyRestaurant[];
+  profile?: DeliveryProfile | null;
+  title?: string;
+  description?: string;
+}) => {
+  const hasLiveLocation =
+    profile?.currentLatitude != null && profile.currentLongitude != null;
+
+  return (
+    <SurfaceCard className="space-y-4">
+      <SectionHeading title={title} description={description} />
+      {!hasLiveLocation ? (
+        <p className="text-sm leading-7 text-ink-soft">
+          Refresh location to load nearby restaurants around your current position.
+        </p>
+      ) : restaurants.length ? (
+        <div className="space-y-3">
+          {restaurants.map((restaurant) => (
+            <div
+              key={restaurant.id}
+              className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4"
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="space-y-1">
+                  <p className="font-semibold text-ink">{restaurant.name}</p>
+                  <p className="text-sm text-ink-soft">
+                    {[restaurant.area, restaurant.addressLine, restaurant.city]
+                      .filter(Boolean)
+                      .join(", ")}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusPill
+                    label={
+                      restaurant.isOpenNow == null
+                        ? "Status unavailable"
+                        : restaurant.isOpenNow
+                          ? "Open now"
+                          : "Closed now"
+                    }
+                    tone={
+                      restaurant.isOpenNow == null
+                        ? "info"
+                        : restaurant.isOpenNow
+                          ? "success"
+                          : "warning"
+                    }
+                  />
+                  <p className="text-sm font-semibold text-ink">
+                    {formatDistanceKm(restaurant.distanceKm)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm leading-7 text-ink-soft">
+          No restaurants are currently within 2 km of your live location.
+        </p>
+      )}
+    </SurfaceCard>
+  );
+};
+
 const getLocationUpdatedAt = (profile?: DeliveryProfile | null) =>
   profile?.lastLocationUpdatedAt ??
   (profile?.currentLatitude != null && profile.currentLongitude != null ? profile.updatedAt : null);
@@ -317,6 +392,7 @@ const useDeliveryWorkspace = () => {
   const { isAuthenticated, user } = useAuth();
   const useLiveFlow = isLiveDeliverySession(isAuthenticated, user?.role);
   const [profile, setProfile] = useState<DeliveryProfile | null>(null);
+  const [nearbyRestaurants, setNearbyRestaurants] = useState<DeliveryNearbyRestaurant[]>([]);
   const [requests, setRequests] = useState<DeliveryOrder[]>([]);
   const [activeOrders, setActiveOrders] = useState<DeliveryOrder[]>([]);
   const [history, setHistory] = useState<DeliveryOrder[]>([]);
@@ -365,6 +441,7 @@ const useDeliveryWorkspace = () => {
     } catch (error) {
       if (getApiErrorCode(error) === "DELIVERY_PROFILE_NOT_FOUND") {
         setProfile(null);
+        setNearbyRestaurants([]);
         setRequests([]);
         setActiveOrders([]);
         setHistory([]);
@@ -386,11 +463,18 @@ const useDeliveryWorkspace = () => {
       return;
     }
 
-    const [requestRows, activeRows, historyRows] = await Promise.allSettled([
+    const [nearbyRestaurantRows, requestRows, activeRows, historyRows] = await Promise.allSettled([
+      getDeliveryNearbyRestaurants(),
       getDeliveryRequests(),
       getDeliveryActiveOrders(),
       getDeliveryHistory(),
     ]);
+
+    if (nearbyRestaurantRows.status === "fulfilled") {
+      setNearbyRestaurants(nearbyRestaurantRows.value);
+    } else if (getApiErrorCode(nearbyRestaurantRows.reason) === "DELIVERY_PROFILE_NOT_FOUND") {
+      setNearbyRestaurants([]);
+    }
 
     if (requestRows.status === "fulfilled") {
       setRequests(requestRows.value);
@@ -412,11 +496,13 @@ const useDeliveryWorkspace = () => {
 
     if (
       !quietly &&
+      nearbyRestaurantRows.status === "rejected" &&
       requestRows.status === "rejected" &&
       activeRows.status === "rejected" &&
       historyRows.status === "rejected"
     ) {
-      const firstError = requestRows.reason;
+      const firstError =
+        nearbyRestaurantRows.reason ?? requestRows.reason ?? activeRows.reason ?? historyRows.reason;
 
       if (getApiErrorCode(firstError) === "DELIVERY_PROFILE_NOT_FOUND") {
         showWorkspaceNotice(deliveryProfilePendingNotice);
@@ -625,6 +711,7 @@ const useDeliveryWorkspace = () => {
     pendingOrderId,
     loadData,
     refreshProfile,
+    nearbyRestaurants,
     refreshLocation,
     toggleAvailability,
     acceptOrder,
@@ -666,6 +753,7 @@ export const DeliveryDashboardPage = () => {
   const {
     useLiveFlow,
     profile,
+    nearbyRestaurants,
     requests,
     activeOrders,
     history,
@@ -793,6 +881,12 @@ export const DeliveryDashboardPage = () => {
           </div>
         </SurfaceCard>
       </div>
+
+      <NearbyRestaurantsCard
+        restaurants={nearbyRestaurants}
+        profile={profile}
+        description="Restaurants within 2 km of your current rider location update after each refresh."
+      />
     </div>
   );
 };
@@ -801,6 +895,7 @@ export const DeliveryActivePage = () => {
   const [searchParams] = useSearchParams();
   const {
     useLiveFlow,
+    nearbyRestaurants,
     requests,
     profile,
     activeOrders,
@@ -871,6 +966,12 @@ export const DeliveryActivePage = () => {
       />
 
       {workspaceNotice ? <DeliveryWorkspaceNotice message={workspaceNotice} /> : null}
+
+      <NearbyRestaurantsCard
+        restaurants={nearbyRestaurants}
+        profile={profile}
+        description="Refresh location to keep the 2 km nearby restaurant list aligned with your live position."
+      />
 
       {requests.length ? (
         <SurfaceCard className="space-y-4">
@@ -1158,6 +1259,7 @@ export const DeliveryProfilePage = () => {
     profile,
     isLoading,
     toggleAvailability,
+    nearbyRestaurants,
     refreshLocation,
     loadData,
     refreshProfile,
@@ -1385,6 +1487,11 @@ export const DeliveryProfilePage = () => {
                   : []
               }
               emptyMessage="Refresh location to pin your live rider position on the map."
+            />
+            <NearbyRestaurantsCard
+              restaurants={nearbyRestaurants}
+              profile={profile}
+              description="Restaurants within 2 km appear here after each live-location refresh."
             />
           </form>
         </SurfaceCard>
