@@ -11,6 +11,7 @@ import {
   SearchResultsPage,
 } from "@/pages/customer/discovery-pages";
 import {
+  MyEventsPage,
   NotificationsPage,
   ProfilePage,
   SavedAddressesPage,
@@ -121,6 +122,7 @@ export const AppRouter = () => {
             <Route path="/orders" element={<OrdersHistoryPage />} />
             <Route path="/orders/:orderId" element={<OrderDetailsPage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
+            <Route path="/my-events" element={<MyEventsPage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/addresses" element={<SavedAddressesPage />} />
             <Route path="/wallet" element={<WalletPage />} />

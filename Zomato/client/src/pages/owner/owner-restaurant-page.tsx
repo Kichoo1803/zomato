@@ -10,7 +10,13 @@ import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-sh
 import { Textarea } from "@/components/ui/textarea";
 import { getLookups } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
-import { getOwnerRestaurants, updateOwnerRestaurant, type OwnerRestaurant } from "@/lib/owner";
+import {
+  getOwnerEventInsights,
+  getOwnerRestaurants,
+  updateOwnerRestaurant,
+  type OwnerEventInsight,
+  type OwnerRestaurant,
+} from "@/lib/owner";
 import {
   ChipSelector,
   RefreshButton,
@@ -45,6 +51,7 @@ const emptyForm = {
 
 export const OwnerRestaurantPage = () => {
   const [restaurants, setRestaurants] = useState<OwnerRestaurant[]>([]);
+  const [eventInsights, setEventInsights] = useState<OwnerEventInsight[]>([]);
   const [restaurantCategories, setRestaurantCategories] = useState<Array<{ id: number; name: string }>>([]);
   const [cuisines, setCuisines] = useState<Array<{ id: number; name: string }>>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -55,10 +62,15 @@ export const OwnerRestaurantPage = () => {
   const loadRestaurants = async () => {
     setIsLoading(true);
     try {
-      const [restaurantRows, lookups] = await Promise.all([getOwnerRestaurants(), getLookups()]);
+      const [restaurantRows, lookups, ownerEventRows] = await Promise.all([
+        getOwnerRestaurants(),
+        getLookups(),
+        getOwnerEventInsights().catch(() => [] as OwnerEventInsight[]),
+      ]);
       setRestaurants(restaurantRows);
       setRestaurantCategories(lookups.restaurantCategories);
       setCuisines(lookups.cuisines);
+      setEventInsights(ownerEventRows);
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to load your restaurants."));
     } finally {
@@ -168,11 +180,16 @@ export const OwnerRestaurantPage = () => {
 
       {restaurants.length ? (
         <div className="space-y-6">
-          {restaurants.map((restaurant) => (
-            <SurfaceCard key={restaurant.id} className="space-y-6 overflow-hidden">
-              {restaurant.coverImage ? (
-                <img src={restaurant.coverImage} alt={restaurant.name} className="h-56 w-full rounded-[1.75rem] object-cover" />
-              ) : null}
+          {restaurants.map((restaurant) => {
+            const restaurantEventInsights = eventInsights.filter(
+              (eventInsight) => eventInsight.restaurant.id === restaurant.id,
+            );
+
+            return (
+              <SurfaceCard key={restaurant.id} className="space-y-6 overflow-hidden">
+                {restaurant.coverImage ? (
+                  <img src={restaurant.coverImage} alt={restaurant.name} className="h-56 w-full rounded-[1.75rem] object-cover" />
+                ) : null}
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div>
                   <div className="flex flex-wrap items-center gap-3">
@@ -244,6 +261,77 @@ export const OwnerRestaurantPage = () => {
                       ))}
                     </div>
                   </div>
+
+                  <div className="rounded-[1.75rem] bg-cream px-5 py-5">
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Event attendance</p>
+                    <div className="mt-4 space-y-4">
+                      {restaurantEventInsights.length ? (
+                        restaurantEventInsights.map((eventInsight) => (
+                          <div
+                            key={`${eventInsight.event.id}-${eventInsight.restaurant.id}`}
+                            className="rounded-[1.25rem] border border-white/70 bg-white/80 px-4 py-4"
+                          >
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="font-semibold text-ink">{eventInsight.event.title}</p>
+                                <p className="mt-1 text-sm text-ink-soft">
+                                  {formatDateTime(eventInsight.event.startsAt)} to {formatDateTime(eventInsight.event.endsAt)}
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <StatusPill
+                                  label={`${eventInsight.restaurantAttendeeCount} at this restaurant`}
+                                  tone="info"
+                                />
+                                <StatusPill
+                                  label={`${eventInsight.event.attendeeCount} total`}
+                                  tone="neutral"
+                                />
+                                {eventInsight.event.isFullyBooked ? (
+                                  <StatusPill label="Event full" tone="warning" />
+                                ) : null}
+                              </div>
+                            </div>
+                            <p className="mt-3 text-sm leading-7 text-ink-soft">
+                              {eventInsight.event.description}
+                            </p>
+                            <p className="mt-3 text-sm text-ink-soft">
+                              {eventInsight.event.remainingSlots != null
+                                ? `${eventInsight.event.remainingSlots} slots remaining across this event.`
+                                : "This event is currently running without a fixed attendee cap."}
+                            </p>
+                            {eventInsight.joinedUsers.length ? (
+                              <div className="mt-4 space-y-3">
+                                {eventInsight.joinedUsers.map((joinedUser) => (
+                                  <div
+                                    key={joinedUser.id}
+                                    className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] bg-cream px-4 py-3"
+                                  >
+                                    <div>
+                                      <p className="font-semibold text-ink">{joinedUser.user.fullName}</p>
+                                      <p className="text-xs text-ink-muted">{joinedUser.user.email}</p>
+                                    </div>
+                                    <div className="text-right">
+                                      <StatusPill label={joinedUser.status} tone={getToneForStatus(joinedUser.status)} />
+                                      <p className="mt-2 text-xs text-ink-muted">{formatDateTime(joinedUser.joinedAt)}</p>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="mt-4 text-sm leading-7 text-ink-soft">
+                                No customers have joined this event for this restaurant yet.
+                              </p>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-sm leading-7 text-ink-soft">
+                          No active event participation data is available for this restaurant yet.
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-4">
@@ -283,8 +371,9 @@ export const OwnerRestaurantPage = () => {
                   </div>
                 </div>
               </div>
-            </SurfaceCard>
-          ))}
+              </SurfaceCard>
+            );
+          })}
         </div>
       ) : (
         <EmptyState title="No restaurants linked yet" description="This owner account does not have any restaurants assigned at the moment." />

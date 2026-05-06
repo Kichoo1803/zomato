@@ -35,6 +35,7 @@ model User {
   carts                   Cart[]
   deliveryProfile         DeliveryPartner?
   favorites               FavoriteRestaurant[]
+  eventAttendances        EventAttendance[]
   notifications           Notification[]
   operationsNotesAuthored OperationsRegionNote[] @relation("OperationsNoteAuthor")
   orders                  Order[]                @relation("CustomerOrders")
@@ -147,6 +148,7 @@ model Restaurant {
   itemAddons       ItemAddon[]
   offers           RestaurantOffer[]
   events           Event[]
+  eventAttendances EventAttendance[]
   operatingHours   RestaurantHour[]
   orders           Order[]
   owner            User                    @relation("RestaurantOwnerRestaurants", fields: [ownerId], references: [id], onDelete: Cascade)
@@ -360,26 +362,49 @@ model Offer {
 }
 
 model Event {
-  mongoId       String     @id @default(auto()) @map("_id") @db.ObjectId
-  id            Int        @unique @default(0)
+  mongoId       String            @id @default(auto()) @map("_id") @db.ObjectId
+  id            Int               @unique @default(0)
   title         String
   description   String
-  restaurantId  Int?       @map("restaurant_id")
-  regionId      Int?       @map("region_id")
-  imageUrl      String?    @map("image_url")
-  startsAt      DateTime   @map("starts_at")
-  endsAt        DateTime   @map("ends_at")
-  discountLabel String?    @map("discount_label")
-  status        String     @default("ACTIVE")
-  createdAt     DateTime   @default(now()) @map("created_at")
-  updatedAt     DateTime   @updatedAt @map("updated_at")
-  restaurant    Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  region        Region?    @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  restaurantId  Int?              @map("restaurant_id")
+  regionId      Int?              @map("region_id")
+  imageUrl      String?           @map("image_url")
+  startsAt      DateTime          @map("starts_at")
+  endsAt        DateTime          @map("ends_at")
+  discountLabel String?           @map("discount_label")
+  maxAttendees  Int?              @map("max_attendees")
+  status        String            @default("ACTIVE")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  attendances   EventAttendance[]
+  restaurant    Restaurant?       @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  region        Region?           @relation(fields: [regionId], references: [id], onDelete: SetNull)
 
   @@index([restaurantId, status, startsAt, endsAt])
   @@index([regionId, status, startsAt, endsAt])
   @@index([status, startsAt, endsAt])
   @@map("events")
+}
+
+model EventAttendance {
+  mongoId      String     @id @default(auto()) @map("_id") @db.ObjectId
+  id           Int        @unique @default(0)
+  userId       Int        @map("user_id")
+  eventId      Int        @map("event_id")
+  restaurantId Int        @map("restaurant_id")
+  joinedAt     DateTime   @default(now()) @map("joined_at")
+  status       String     @default("JOINED")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  event        Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, eventId])
+  @@index([eventId, status, joinedAt])
+  @@index([restaurantId, status, joinedAt])
+  @@index([userId, status, joinedAt])
+  @@map("event_attendances")
 }
 
 model RestaurantOffer {

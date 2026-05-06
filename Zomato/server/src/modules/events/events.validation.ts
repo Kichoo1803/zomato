@@ -35,6 +35,7 @@ const eventBodyBaseSchema = z.object({
   startsAt: z.coerce.date(),
   endsAt: z.coerce.date(),
   discountLabel: z.union([z.string().trim().max(120), z.null()]).optional(),
+  maxAttendees: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
   status: z.enum(eventStatusValues).default(EventStatus.ACTIVE),
 });
 
@@ -95,3 +96,14 @@ export const eventIdParamSchema = {
     eventId: z.coerce.number().int().positive(),
   }),
 };
+
+export const joinEventSchema = {
+  params: z.object({
+    eventId: z.coerce.number().int().positive(),
+  }),
+  body: z.object({
+    restaurantId: z.coerce.number().int().positive(),
+  }),
+};
+
+export const cancelEventSchema = eventIdParamSchema;

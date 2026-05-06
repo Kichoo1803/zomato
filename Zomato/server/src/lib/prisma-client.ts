@@ -46,7 +46,7 @@ const NULLABLE_FIELDS_BY_MODEL = {
   Combo: ["description", "image", "offerPrice", "categoryTag"],
   ItemAddon: ["menuItemId", "comboId", "description"],
   Offer: ["code", "description", "maxDiscount", "usageLimit", "perUserLimit", "startDate", "endDate"],
-  Event: ["restaurantId", "regionId", "imageUrl", "discountLabel"],
+  Event: ["restaurantId", "regionId", "imageUrl", "discountLabel", "maxAttendees"],
   Cart: ["offerId"],
   CartItem: ["menuItemId", "comboId", "itemSnapshot", "specialInstructions"],
   Order: [

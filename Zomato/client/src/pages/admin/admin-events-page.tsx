@@ -7,6 +7,7 @@ import {
   ConfirmDangerModal,
 } from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
@@ -16,11 +17,13 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   createEvent,
   deleteEvent,
+  getEventAttendees,
   getEvents,
   getRegionsAdmin,
   getRestaurants,
   updateEvent,
   type AdminEvent,
+  type AdminEventAttendeeReport,
   type AdminRegion,
   type AdminRestaurant,
 } from "@/lib/admin";
@@ -50,6 +53,7 @@ type EventFormState = {
   startsAt: string;
   endsAt: string;
   discountLabel: string;
+  maxAttendees: string;
   status: EventStatusValue;
 };
 
@@ -65,6 +69,7 @@ const emptyForm: EventFormState = {
   startsAt: "",
   endsAt: "",
   discountLabel: "",
+  maxAttendees: "",
   status: "ACTIVE",
 };
 
@@ -116,6 +121,9 @@ export const AdminEventsPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [togglingEventId, setTogglingEventId] = useState<number | null>(null);
+  const [selectedAttendeeEvent, setSelectedAttendeeEvent] = useState<AdminEvent | null>(null);
+  const [attendeeReport, setAttendeeReport] = useState<AdminEventAttendeeReport | null>(null);
+  const [isLoadingAttendeeReport, setIsLoadingAttendeeReport] = useState(false);
   const [form, setForm] = useState<EventFormState>(emptyForm);
 
   const loadData = async () => {
@@ -158,6 +166,7 @@ export const AdminEventsPage = () => {
       startsAt: toDateTimeLocalValue(event.startsAt),
       endsAt: toDateTimeLocalValue(event.endsAt),
       discountLabel: event.discountLabel ?? "",
+      maxAttendees: event.maxAttendees != null ? String(event.maxAttendees) : "",
       status: getFormStatusValue(event),
     });
     setIsModalOpen(true);
@@ -202,6 +211,7 @@ export const AdminEventsPage = () => {
         startsAt: new Date(form.startsAt).toISOString(),
         endsAt: new Date(form.endsAt).toISOString(),
         discountLabel: form.discountLabel.trim() || null,
+        maxAttendees: form.maxAttendees.trim() ? Number(form.maxAttendees) : null,
         status: form.status,
         ...(form.assignmentType === "RESTAURANT"
           ? {
@@ -233,6 +243,20 @@ export const AdminEventsPage = () => {
       toast.error(getApiErrorMessage(error, "Unable to save this event."));
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const openAttendeesModal = async (event: AdminEvent) => {
+    setSelectedAttendeeEvent(event);
+    setAttendeeReport(null);
+    setIsLoadingAttendeeReport(true);
+
+    try {
+      setAttendeeReport(await getEventAttendees(event.id));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to load event attendees right now."));
+    } finally {
+      setIsLoadingAttendeeReport(false);
     }
   };
 
@@ -367,6 +391,21 @@ export const AdminEventsPage = () => {
                 ),
               },
               {
+                key: "attendance",
+                label: "Attendance",
+                render: (event) => (
+                  <div className="space-y-2">
+                    <p className="font-semibold text-ink">{event.attendeeCount} joined</p>
+                    <p className="text-xs text-ink-muted">
+                      {event.maxAttendees != null
+                        ? `${event.remainingSlots ?? 0} of ${event.maxAttendees} spots left`
+                        : "Unlimited capacity"}
+                    </p>
+                    {event.isFullyBooked ? <StatusPill label="Event full" tone="warning" /> : null}
+                  </div>
+                ),
+              },
+              {
                 key: "status",
                 label: "State",
                 render: (event) => (
@@ -381,6 +420,14 @@ export const AdminEventsPage = () => {
                 label: "Actions",
                 render: (event) => (
                   <div className="space-y-3">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => void openAttendeesModal(event)}
+                    >
+                      View attendees
+                    </Button>
                     {event.status !== "EXPIRED" ? (
                       <Button
                         type="button"
@@ -492,6 +539,14 @@ export const AdminEventsPage = () => {
               onChange={(event) => setForm({ ...form, discountLabel: event.target.value })}
               placeholder="Weekend 20% off"
             />
+            <Input
+              label="Max attendees"
+              type="number"
+              min="1"
+              value={form.maxAttendees}
+              onChange={(event) => setForm({ ...form, maxAttendees: event.target.value })}
+              placeholder="Optional"
+            />
             <Select
               label="Status"
               value={form.status}
@@ -530,6 +585,121 @@ export const AdminEventsPage = () => {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        open={Boolean(selectedAttendeeEvent)}
+        onClose={() => {
+          if (!isLoadingAttendeeReport) {
+            setSelectedAttendeeEvent(null);
+            setAttendeeReport(null);
+          }
+        }}
+        title={selectedAttendeeEvent ? `${selectedAttendeeEvent.title} attendees` : "Event attendees"}
+        className="max-w-5xl"
+      >
+        {isLoadingAttendeeReport ? (
+          <div className="rounded-[1.5rem] bg-cream px-5 py-5 text-sm leading-7 text-ink-soft">
+            Loading event attendance analytics.
+          </div>
+        ) : attendeeReport ? (
+          <div className="space-y-5">
+            <div className="grid gap-4 md:grid-cols-5">
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Joined</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.joinedCount}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Attended</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.attendedCount}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Cancelled</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.cancelledCount}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Capacity</p>
+                <p className="mt-2 text-sm font-semibold text-ink">
+                  {attendeeReport.summary.maxAttendees != null
+                    ? `${attendeeReport.summary.attendeeCount} / ${attendeeReport.summary.maxAttendees}`
+                    : "Unlimited"}
+                </p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Availability</p>
+                <p className="mt-2 text-sm font-semibold text-ink">
+                  {attendeeReport.summary.isFullyBooked
+                    ? "Event full"
+                    : attendeeReport.summary.remainingSlots != null
+                      ? `${attendeeReport.summary.remainingSlots} left`
+                      : "Open"}
+                </p>
+              </div>
+            </div>
+
+            {attendeeReport.restaurantBreakdown.length ? (
+              <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-5 py-5">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Restaurant breakdown</p>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  {attendeeReport.restaurantBreakdown.map((item) => (
+                    <div key={item.restaurant.id} className="rounded-[1.25rem] bg-white px-4 py-4">
+                      <p className="font-semibold text-ink">{item.restaurant.name}</p>
+                      <p className="mt-2 text-sm text-ink-soft">{item.attendeeCount} attendee(s)</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {attendeeReport.attendees.length ? (
+              <AdminDataTable
+                rows={attendeeReport.attendees}
+                getRowKey={(attendee) => attendee.id}
+                emptyTitle="No attendees yet"
+                emptyDescription="Attendees will appear here after customers join the event."
+                columns={[
+                  {
+                    key: "guest",
+                    label: "Guest",
+                    render: (attendee) => (
+                      <div>
+                        <p className="font-semibold text-ink">{attendee.user.fullName}</p>
+                        <p className="text-xs text-ink-muted">{attendee.user.email}</p>
+                      </div>
+                    ),
+                  },
+                  {
+                    key: "restaurant",
+                    label: "Restaurant",
+                    render: (attendee) => attendee.restaurant.name,
+                  },
+                  {
+                    key: "joinedAt",
+                    label: "Joined",
+                    render: (attendee) => formatDateTime(attendee.joinedAt),
+                  },
+                  {
+                    key: "status",
+                    label: "Status",
+                    render: (attendee) => (
+                      <StatusPill label={toLabel(attendee.status)} tone={getToneForStatus(attendee.status)} />
+                    ),
+                  },
+                ]}
+              />
+            ) : (
+              <EmptyState
+                title="No attendees yet"
+                description="Customers who join this event will appear here automatically."
+              />
+            )}
+          </div>
+        ) : (
+          <EmptyState
+            title="Unable to load attendees"
+            description="Try reopening this event analytics panel in a moment."
+          />
+        )}
       </Modal>
 
       <ConfirmDangerModal

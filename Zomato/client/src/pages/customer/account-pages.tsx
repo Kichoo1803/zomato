@@ -1,6 +1,16 @@
 import { useEffect, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { CreditCard, Edit3, LocateFixed, MapPin, MapPinned, Sparkles, Trash2, Wallet } from "lucide-react";
+import {
+  CalendarDays,
+  CreditCard,
+  Edit3,
+  LocateFixed,
+  MapPin,
+  MapPinned,
+  Sparkles,
+  Trash2,
+  Wallet,
+} from "lucide-react";
 import { useForm } from "react-hook-form";
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -34,10 +44,12 @@ import {
   type CustomerActiveLocation,
 } from "@/lib/customer-location";
 import {
+  cancelCustomerEvent,
   createCustomerAddress,
   deleteCustomerPaymentMethod,
   deleteCustomerAddress,
   createCustomerPaymentMethod,
+  getCustomerMyEvents,
   getCustomerAddresses,
   getCustomerPaymentMethods,
   geocodeCustomerLocation,
@@ -45,6 +57,7 @@ import {
   setDefaultCustomerSavedPaymentMethod,
   type CustomerAddress,
   type CustomerAddressPayload,
+  type CustomerMyEvent,
   type CustomerPaymentMethod,
   type CustomerPaymentMethodPayload,
   updateCustomerAddress,
@@ -118,6 +131,34 @@ const formatMembershipDate = (value?: string | null) =>
         dateStyle: "medium",
       }).format(new Date(value))
     : "Not scheduled";
+
+const formatEventDateTime = (value?: string | null) =>
+  value
+    ? new Intl.DateTimeFormat("en-IN", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(value))
+    : "Unavailable";
+
+const formatEventAttendanceStatus = (status?: string | null) =>
+  status
+    ? status
+        .toLowerCase()
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase())
+    : "Unavailable";
+
+const getEventAttendanceTone = (status?: string | null) => {
+  switch (status) {
+    case "ATTENDED":
+      return "success" as const;
+    case "CANCELLED":
+      return "warning" as const;
+    case "JOINED":
+    default:
+      return "info" as const;
+  }
+};
 
 const ADDRESS_TYPE_OPTIONS = [
   { value: "HOME", label: "Home" },
@@ -1571,6 +1612,12 @@ export const ProfilePage = () => {
                   Favorites
                 </Link>
                 <Link
+                  to="/my-events"
+                  className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-5 py-3 text-sm font-semibold text-ink shadow-soft"
+                >
+                  My events
+                </Link>
+                <Link
                   to="/membership"
                   className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-5 py-3 text-sm font-semibold text-ink shadow-soft"
                 >
@@ -1599,6 +1646,192 @@ export const ProfilePage = () => {
         onSubmit={handleProfileSubmit}
       />
     </>
+  );
+};
+
+export const MyEventsPage = () => {
+  const [events, setEvents] = useState<CustomerMyEvent[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [cancelingEventId, setCancelingEventId] = useState<number | null>(null);
+
+  const loadEvents = async ({ quietly = false }: { quietly?: boolean } = {}) => {
+    if (!quietly) {
+      setIsLoading(true);
+    }
+
+    try {
+      setEvents(await getCustomerMyEvents());
+    } catch (error) {
+      setEvents([]);
+      toast.error(getApiErrorMessage(error, "Unable to load your joined events right now."));
+    } finally {
+      if (!quietly) {
+        setIsLoading(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    void loadEvents();
+  }, []);
+
+  const upcomingEvents = events.filter((event) => event.status === "JOINED");
+  const pastEvents = events.filter((event) => event.status === "ATTENDED");
+
+  const handleCancelEvent = async (eventItem: CustomerMyEvent) => {
+    setCancelingEventId(eventItem.eventId);
+
+    try {
+      await cancelCustomerEvent(eventItem.eventId);
+      setEvents((currentEvents) =>
+        currentEvents.filter((currentEvent) => currentEvent.eventId !== eventItem.eventId),
+      );
+      toast.success("Event reservation cancelled successfully.");
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to cancel this event reservation right now."));
+    } finally {
+      setCancelingEventId(null);
+    }
+  };
+
+  const renderEventCard = (eventItem: CustomerMyEvent, mode: "upcoming" | "past") => (
+    <SurfaceCard
+      key={eventItem.id}
+      className={cn(
+        "space-y-5",
+        mode === "upcoming" && "border border-accent/10 bg-accent/[0.03]",
+      )}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+              <CalendarDays className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">{eventItem.restaurant.name}</p>
+              <h2 className="font-display text-3xl font-semibold text-ink">{eventItem.event.title}</h2>
+            </div>
+          </div>
+          <p className="text-sm leading-7 text-ink-soft">{eventItem.event.description}</p>
+        </div>
+        <StatusPill
+          label={formatEventAttendanceStatus(eventItem.status)}
+          tone={getEventAttendanceTone(eventItem.status)}
+        />
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div>
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Start</p>
+          <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.event.startsAt)}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">End</p>
+          <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.event.endsAt)}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Joined</p>
+          <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.joinedAt)}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Offer</p>
+          <p className="mt-2 text-sm text-ink-soft">
+            {eventItem.event.discountLabel ?? "No offer attached"}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Attendees</p>
+          <p className="mt-2 text-sm text-ink-soft">{eventItem.event.attendeeCount} joined</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-accent/10 pt-4">
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-ink">{eventItem.restaurant.name}</p>
+          <p className="text-sm text-ink-soft">
+            {eventItem.event.remainingSlots != null
+              ? `${eventItem.event.remainingSlots} spots remaining`
+              : "Unlimited event capacity"}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Link
+            to={`/restaurants/${eventItem.restaurant.slug}`}
+            className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
+          >
+            Open restaurant
+          </Link>
+          {mode === "upcoming" ? (
+            <Button
+              type="button"
+              variant="secondary"
+              className="px-4 py-2 text-xs"
+              onClick={() => void handleCancelEvent(eventItem)}
+              disabled={cancelingEventId === eventItem.eventId}
+            >
+              {cancelingEventId === eventItem.eventId ? "Cancelling..." : "Cancel join"}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </SurfaceCard>
+  );
+
+  return (
+    <PageShell
+      eyebrow="My events"
+      title="Joined restaurant experiences, all in one place."
+      description="Upcoming event reservations and past attended experiences stay grouped beside the rest of your customer account surfaces."
+      actions={
+        <div className="flex flex-wrap gap-3">
+          <Link to="/restaurants" className={linkButtonClassName}>
+            Browse restaurants
+          </Link>
+          <Button type="button" variant="secondary" onClick={() => void loadEvents()} disabled={isLoading}>
+            Refresh
+          </Button>
+        </div>
+      }
+    >
+      {isLoading ? (
+        <SurfaceCard>
+          <p className="text-sm leading-7 text-ink-soft">Loading your joined events.</p>
+        </SurfaceCard>
+      ) : (
+        <div className="space-y-8">
+          <div className="space-y-4">
+            <SectionHeading
+              title="Upcoming joined events"
+              description="Reserved spots for live music nights, buffets, chef specials, and other upcoming dining moments."
+            />
+            {upcomingEvents.length ? (
+              <div className="grid gap-5">{upcomingEvents.map((eventItem) => renderEventCard(eventItem, "upcoming"))}</div>
+            ) : (
+              <EmptyState
+                title="No upcoming joined events"
+                description="Attend an event from any restaurant page to see your upcoming reservations here."
+              />
+            )}
+          </div>
+
+          <div className="space-y-4">
+            <SectionHeading
+              title="Past attended events"
+              description="Your recent event history stays visible here after each event ends."
+            />
+            {pastEvents.length ? (
+              <div className="grid gap-5">{pastEvents.map((eventItem) => renderEventCard(eventItem, "past"))}</div>
+            ) : (
+              <EmptyState
+                title="No past attended events yet"
+                description="Past event experiences will appear here automatically once your joined events are completed."
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </PageShell>
   );
 };
 

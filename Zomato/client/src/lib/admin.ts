@@ -533,10 +533,14 @@ export type AdminEvent = {
   startsAt: string;
   endsAt: string;
   discountLabel?: string | null;
+  maxAttendees?: number | null;
   status: "ACTIVE" | "INACTIVE" | "EXPIRED";
   createdAt: string;
   updatedAt: string;
   appliesToAllRestaurants: boolean;
+  attendeeCount: number;
+  remainingSlots?: number | null;
+  isFullyBooked: boolean;
   restaurant?: {
     id: number;
     name: string;
@@ -549,6 +553,49 @@ export type AdminEvent = {
     stateName: string;
     slug: string;
   } | null;
+};
+
+export type AdminEventAttendee = {
+  id: number;
+  userId: number;
+  eventId: number;
+  restaurantId: number;
+  joinedAt: string;
+  status: "JOINED" | "CANCELLED" | "ATTENDED";
+  restaurant: {
+    id: number;
+    name: string;
+    slug: string;
+  };
+  user: {
+    id: number;
+    fullName: string;
+    email: string;
+    phone?: string | null;
+    profileImage?: string | null;
+  };
+};
+
+export type AdminEventAttendeeReport = {
+  event: AdminEvent;
+  summary: {
+    attendeeCount: number;
+    joinedCount: number;
+    attendedCount: number;
+    cancelledCount: number;
+    remainingSlots?: number | null;
+    isFullyBooked: boolean;
+    maxAttendees?: number | null;
+  };
+  restaurantBreakdown: Array<{
+    restaurant: {
+      id: number;
+      name: string;
+      slug: string;
+    };
+    attendeeCount: number;
+  }>;
+  attendees: AdminEventAttendee[];
 };
 
 export type AdminReview = {
@@ -849,6 +896,11 @@ export const getOffers = async () =>
 
 export const getEvents = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ events: AdminEvent[] }>>("/events")).events;
+
+export const getEventAttendees = async (eventId: number) =>
+  unwrapData(
+    await apiClient.get<ApiEnvelope<AdminEventAttendeeReport>>(`/admin/events/${eventId}/attendees`),
+  );
 
 export const createEvent = async (payload: Record<string, unknown>) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ event: AdminEvent }>>("/admin/events", payload)).event;

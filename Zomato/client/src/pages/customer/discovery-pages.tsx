@@ -42,6 +42,7 @@ import {
   getPublicRestaurantCatalogue,
   getPublicRestaurantBySlug,
   getRestaurantEvents,
+  joinCustomerEvent,
   readPendingCustomerCouponSelection,
   removeCustomerFavorite,
   removeCustomerCartOffer,
@@ -1794,6 +1795,7 @@ export const RestaurantDetailsPage = () => {
   const [restaurantEvents, setRestaurantEvents] = useState<CustomerRestaurantEvent[]>([]);
   const [isLoadingEvents, setIsLoadingEvents] = useState(false);
   const [eventsErrorMessage, setEventsErrorMessage] = useState<string>();
+  const [joiningEventId, setJoiningEventId] = useState<number | null>(null);
   const [selectedTab, setSelectedTab] = useState<"MENU" | "EVENTS" | "REVIEWS">("MENU");
   const {
     canManageSavedLocation,
@@ -1961,6 +1963,42 @@ export const RestaurantDetailsPage = () => {
     }
 
     setSelection(nextSelection);
+  };
+
+  const handleJoinEvent = async (eventId: number) => {
+    if (!liveRestaurant) {
+      return;
+    }
+
+    if (
+      !requireCustomerAccess({
+        guestMessage: "Please login to attend this event.",
+        wrongRoleMessage: "Sign in with a customer account to attend restaurant events.",
+      })
+    ) {
+      return;
+    }
+
+    setJoiningEventId(eventId);
+    try {
+      const result = await joinCustomerEvent(eventId, liveRestaurant.id);
+      setRestaurantEvents((currentEvents) =>
+        currentEvents.map((event) => (event.id === eventId ? { ...event, ...result.event } : event)),
+      );
+      toast.success("Event joined successfully.");
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to join this event right now."));
+
+      void getRestaurantEvents(liveRestaurant.id)
+        .then((events) => {
+          setRestaurantEvents(events);
+        })
+        .catch(() => {
+          // Keep the existing cards visible if the follow-up refresh also fails.
+        });
+    } finally {
+      setJoiningEventId(null);
+    }
   };
 
   if (!slug) {
@@ -2175,7 +2213,10 @@ export const RestaurantDetailsPage = () => {
               ) : restaurantEvents.length ? (
                 <div className="grid gap-5">
                   {restaurantEvents.map((event) => (
-                    <SurfaceCard key={event.id} className="overflow-hidden p-0">
+                    <SurfaceCard
+                      key={event.id}
+                      className={`overflow-hidden p-0 ${event.isJoined ? "border border-accent/10 bg-accent/[0.03]" : ""}`}
+                    >
                       {event.imageUrl ? (
                         <img
                           src={event.imageUrl}
@@ -2198,7 +2239,7 @@ export const RestaurantDetailsPage = () => {
                           />
                         </div>
 
-                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
                           <div>
                             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Start</p>
                             <p className="mt-2 text-sm text-ink-soft">{formatDateTimeValue(event.startsAt)}</p>
@@ -2217,6 +2258,53 @@ export const RestaurantDetailsPage = () => {
                             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Status</p>
                             <p className="mt-2 text-sm text-ink-soft">{formatEventStatusLabel(event.status)}</p>
                           </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Attendees</p>
+                            <p className="mt-2 text-sm text-ink-soft">{event.attendeeCount} joined</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Available slots</p>
+                            <p className="mt-2 text-sm text-ink-soft">
+                              {event.remainingSlots != null ? event.remainingSlots : "Unlimited"}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-accent/10 pt-5">
+                          <div className="space-y-1">
+                            <p className="text-sm font-semibold text-ink">
+                              {event.isJoined
+                                ? "You are already on this guest list."
+                                : event.isFullyBooked
+                                  ? "This event is fully booked right now."
+                                  : "Reserve your spot for this dining experience."}
+                            </p>
+                            <p className="text-sm text-ink-soft">
+                              {event.maxAttendees != null
+                                ? `${event.attendeeCount} of ${event.maxAttendees} spots claimed`
+                                : "This event does not have a fixed attendee cap."}
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            className="min-w-[148px]"
+                            variant={event.isJoined ? "secondary" : "primary"}
+                            disabled={
+                              joiningEventId === event.id ||
+                              event.isJoined ||
+                              event.isFullyBooked ||
+                              event.status !== "ACTIVE"
+                            }
+                            onClick={() => void handleJoinEvent(event.id)}
+                          >
+                            {joiningEventId === event.id
+                              ? "Joining..."
+                              : event.isJoined
+                                ? "Joined"
+                                : event.isFullyBooked
+                                  ? "Event Full"
+                                  : "Attend Event"}
+                          </Button>
                         </div>
                       </div>
                     </SurfaceCard>

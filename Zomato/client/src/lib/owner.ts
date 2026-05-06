@@ -260,6 +260,59 @@ export type OwnerOffer = {
   }>;
 };
 
+export type OwnerEventInsight = {
+  event: {
+    id: number;
+    title: string;
+    description: string;
+    restaurantId?: number | null;
+    regionId?: number | null;
+    imageUrl?: string | null;
+    startsAt: string;
+    endsAt: string;
+    discountLabel?: string | null;
+    maxAttendees?: number | null;
+    status: "ACTIVE" | "INACTIVE" | "EXPIRED";
+    createdAt: string;
+    updatedAt: string;
+    appliesToAllRestaurants: boolean;
+    attendeeCount: number;
+    remainingSlots?: number | null;
+    isFullyBooked: boolean;
+    restaurant?: {
+      id: number;
+      name: string;
+      slug: string;
+    } | null;
+    region?: {
+      id: number;
+      name: string;
+      districtName: string;
+      stateName: string;
+      slug: string;
+    } | null;
+  };
+  restaurant: {
+    id: number;
+    name: string;
+    slug: string;
+  };
+  restaurantAttendeeCount: number;
+  joinedUsers: Array<{
+    id: number;
+    userId: number;
+    joinedAt: string;
+    status: "JOINED" | "CANCELLED" | "ATTENDED";
+    user: {
+      id: number;
+      fullName: string;
+      email: string;
+      phone?: string | null;
+      profileImage?: string | null;
+    };
+  }>;
+};
+
 const unwrapData = <T>(response: AxiosResponse<ApiEnvelope<T>>) => response.data.data;
 
 export { toSessionUser };
@@ -354,6 +407,9 @@ export const deleteOwnerCombo = async (comboId: number) =>
 
 export const getOwnerOffers = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ offers: OwnerOffer[] }>>("/offers/owner/mine")).offers;
+
+export const getOwnerEventInsights = async () =>
+  unwrapData(await apiClient.get<ApiEnvelope<{ events: OwnerEventInsight[] }>>("/owner/events")).events;
 
 export const createOwnerOffer = async (payload: Record<string, unknown>) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ offer: OwnerOffer }>>("/offers/owner", payload)).offer;

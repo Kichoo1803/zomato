@@ -14,7 +14,7 @@ export const listEvents = asyncHandler(async (req, res) => {
   const events =
     req.user?.role === Role.ADMIN
       ? await eventsService.listAdmin(query)
-      : await eventsService.listPublic(query);
+      : await eventsService.listPublic(query, req.user?.id);
 
   return sendSuccess(res, {
     message: "Events fetched successfully",
@@ -23,7 +23,7 @@ export const listEvents = asyncHandler(async (req, res) => {
 });
 
 export const listRestaurantEvents = asyncHandler(async (req, res) => {
-  const events = await eventsService.listForRestaurantPublic(Number(req.params.restaurantId));
+  const events = await eventsService.listForRestaurantPublic(Number(req.params.restaurantId), req.user?.id);
 
   return sendSuccess(res, {
     message: "Restaurant events fetched successfully",
@@ -55,5 +55,55 @@ export const deleteEvent = asyncHandler(async (req, res) => {
 
   return sendSuccess(res, {
     message: "Event deleted successfully",
+  });
+});
+
+export const joinEvent = asyncHandler(async (req, res) => {
+  const result = await eventsService.join(
+    req.user!.id,
+    Number(req.params.eventId),
+    Number(req.body.restaurantId),
+  );
+
+  return sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: "Event joined successfully",
+    data: result,
+  });
+});
+
+export const cancelEvent = asyncHandler(async (req, res) => {
+  const result = await eventsService.cancel(req.user!.id, Number(req.params.eventId));
+
+  return sendSuccess(res, {
+    message: "Event attendance cancelled successfully",
+    data: result,
+  });
+});
+
+export const listMyEvents = asyncHandler(async (req, res) => {
+  const events = await eventsService.listMyEvents(req.user!.id);
+
+  return sendSuccess(res, {
+    message: "Your events fetched successfully",
+    data: { events },
+  });
+});
+
+export const listEventAttendees = asyncHandler(async (req, res) => {
+  const attendeeData = await eventsService.listAttendeesForAdmin(Number(req.params.eventId));
+
+  return sendSuccess(res, {
+    message: "Event attendees fetched successfully",
+    data: attendeeData,
+  });
+});
+
+export const listOwnerEvents = asyncHandler(async (req, res) => {
+  const events = await eventsService.listOwnerParticipation(req.user!.id);
+
+  return sendSuccess(res, {
+    message: "Owner event participation fetched successfully",
+    data: { events },
   });
 });

@@ -56,6 +56,14 @@ export const EventStatus = {
 } as const;
 export type EventStatus = (typeof EventStatus)[keyof typeof EventStatus];
 
+export const EventAttendanceStatus = {
+  JOINED: "JOINED",
+  CANCELLED: "CANCELLED",
+  ATTENDED: "ATTENDED",
+} as const;
+export type EventAttendanceStatus =
+  (typeof EventAttendanceStatus)[keyof typeof EventAttendanceStatus];
+
 export const OrderStatus = {
   PLACED: "PLACED",
   CONFIRMED: "CONFIRMED",

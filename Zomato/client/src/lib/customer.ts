@@ -416,10 +416,17 @@ export type CustomerRestaurantEvent = {
   startsAt: string;
   endsAt: string;
   discountLabel?: string | null;
+  maxAttendees?: number | null;
   status: "ACTIVE" | "INACTIVE" | "EXPIRED";
   createdAt: string;
   updatedAt: string;
   appliesToAllRestaurants: boolean;
+  attendeeCount: number;
+  remainingSlots?: number | null;
+  isFullyBooked: boolean;
+  attendanceStatus?: "JOINED" | "CANCELLED" | "ATTENDED" | null;
+  isJoined: boolean;
+  joinedAt?: string | null;
   restaurant?: {
     id: number;
     name: string;
@@ -432,6 +439,21 @@ export type CustomerRestaurantEvent = {
     stateName: string;
     slug: string;
   } | null;
+};
+
+export type CustomerMyEvent = {
+  id: number;
+  userId: number;
+  eventId: number;
+  restaurantId: number;
+  joinedAt: string;
+  status: "JOINED" | "CANCELLED" | "ATTENDED";
+  restaurant: {
+    id: number;
+    name: string;
+    slug: string;
+  };
+  event: CustomerRestaurantEvent;
 };
 
 export type PendingCustomerCouponSelection = {
@@ -728,10 +750,35 @@ export const getPublicRestaurantBySlug = async (
 
 export const getRestaurantEvents = async (restaurantId: number) =>
   unwrapData(
-    await publicApi.get<ApiEnvelope<{ events: CustomerRestaurantEvent[] }>>(
+    await apiClient.get<ApiEnvelope<{ events: CustomerRestaurantEvent[] }>>(
       `/restaurants/${restaurantId}/events`,
     ),
   ).events;
+
+export const joinCustomerEvent = async (eventId: number, restaurantId: number) =>
+  unwrapData(
+    await apiClient.post<
+      ApiEnvelope<{
+        attendance: CustomerMyEvent;
+        event: CustomerRestaurantEvent;
+      }>
+    >(`/events/${eventId}/join`, {
+      restaurantId,
+    }),
+  );
+
+export const cancelCustomerEvent = async (eventId: number) =>
+  unwrapData(
+    await apiClient.delete<
+      ApiEnvelope<{
+        attendance: CustomerMyEvent;
+        event: CustomerRestaurantEvent;
+      }>
+    >(`/events/${eventId}/cancel`),
+  );
+
+export const getCustomerMyEvents = async () =>
+  unwrapData(await apiClient.get<ApiEnvelope<{ events: CustomerMyEvent[] }>>("/users/me/events")).events;
 
 export const getPublicOffers = async () =>
   unwrapData(await publicApi.get<ApiEnvelope<{ offers: CustomerOffer[] }>>("/offers")).offers;

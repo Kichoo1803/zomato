@@ -23,6 +23,7 @@ export type AppNotification = {
 
 export type AppNotificationMeta = {
   eventKey?: string;
+  eventId?: number;
   orderId?: number;
   orderNumber?: string;
   status?: string;
@@ -163,6 +164,10 @@ export const getNotificationActionLabel = (
 
   if (meta?.eventKey?.includes("review")) {
     return "Open reviews";
+  }
+
+  if (meta?.path === "/my-events" || meta?.eventKey?.startsWith("event:")) {
+    return "View events";
   }
 
   if (notification.type === "OFFER") {
