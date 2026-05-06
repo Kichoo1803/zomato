@@ -129,7 +129,7 @@ const RootLayoutContent = () => {
   }, [isLiveCustomerSession, location.pathname, user?.id]);
 
   return (
-    <div className="min-h-screen">
+    <div className="flex min-h-screen flex-col">
       <Navbar
         cartItemCount={cartItemCount}
         cartTotal={cartTotal}
@@ -138,7 +138,7 @@ const RootLayoutContent = () => {
         savedAddressCount={savedAddresses.length}
         selectedLocation={selectedLocation}
       />
-      <main className="min-h-[calc(100vh-80px)] pb-28 md:pb-0">
+      <main className="flex-1 pb-28 md:pb-0">
         <Outlet />
       </main>
       <Footer

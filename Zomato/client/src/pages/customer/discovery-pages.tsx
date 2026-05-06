@@ -115,12 +115,24 @@ const formatDateTimeValue = (value?: string | null) =>
       }).format(new Date(value))
     : "Unavailable";
 
-const formatDateTimeRange = (startsAt?: string | null, endsAt?: string | null) => {
-  if (!startsAt && !endsAt) {
-    return "Unavailable";
+const formatEventStatusLabel = (status?: string | null) =>
+  status
+    ? status
+        .toLowerCase()
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase())
+    : "Unavailable";
+
+const getEventStatusTone = (status?: string | null) => {
+  if (status === "ACTIVE") {
+    return "success" as const;
   }
 
-  return `${formatDateTimeValue(startsAt)} - ${formatDateTimeValue(endsAt)}`;
+  if (status === "EXPIRED") {
+    return "warning" as const;
+  }
+
+  return "neutral" as const;
 };
 
 const formatPriceForOne = (costForTwo: number) => formatCurrency(Math.max(1, Math.round(costForTwo / 2)));
@@ -2068,7 +2080,13 @@ export const RestaurantDetailsPage = () => {
             </SurfaceCard>
           </div>
 
-          <Tabs items={detailTabs} value={selectedTab} onChange={(value) => setSelectedTab(value as "MENU" | "EVENTS" | "REVIEWS")} />
+          <SurfaceCard className="px-4 py-4 sm:px-5">
+            <Tabs
+              items={detailTabs}
+              value={selectedTab}
+              onChange={(value) => setSelectedTab(value as "MENU" | "EVENTS" | "REVIEWS")}
+            />
+          </SurfaceCard>
 
           {selectedTab === "MENU" ? (
             <>
@@ -2142,8 +2160,8 @@ export const RestaurantDetailsPage = () => {
             <>
               <SectionHeading
                 eyebrow="Events"
-                title="Restaurant experiences and limited-time moments."
-                description="Restaurant-specific experiences, regional moments, and platform-wide specials that apply here."
+                title="Current events at this restaurant."
+                description="Active specials, live experiences, and limited-time menus available for this restaurant right now."
               />
 
               {isLoadingEvents ? (
@@ -2167,41 +2185,37 @@ export const RestaurantDetailsPage = () => {
                       ) : null}
                       <div className="space-y-5 p-6">
                         <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <h3 className="font-display text-3xl font-semibold text-ink">{event.title}</h3>
-                            <p className="mt-2 text-sm leading-7 text-ink-soft">{event.description}</p>
-                          </div>
-                          <StatusPill label="Active" tone="success" />
-                        </div>
-
-                        <div className="grid gap-4 sm:grid-cols-2">
-                          <div>
-                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Date and time</p>
-                            <p className="mt-2 text-sm text-ink-soft">
-                              {formatDateTimeRange(event.startsAt, event.endsAt)}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Restaurant</p>
-                            <p className="mt-2 text-sm text-ink-soft">
+                          <div className="space-y-2">
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">
                               {event.restaurant?.name ?? liveRestaurant.name}
                             </p>
+                            <h3 className="font-display text-3xl font-semibold text-ink">{event.title}</h3>
+                            <p className="text-sm leading-7 text-ink-soft">{event.description}</p>
+                          </div>
+                          <StatusPill
+                            label={formatEventStatusLabel(event.status)}
+                            tone={getEventStatusTone(event.status)}
+                          />
+                        </div>
+
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Start</p>
+                            <p className="mt-2 text-sm text-ink-soft">{formatDateTimeValue(event.startsAt)}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">End</p>
+                            <p className="mt-2 text-sm text-ink-soft">{formatDateTimeValue(event.endsAt)}</p>
                           </div>
                           <div>
                             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Offer</p>
                             <p className="mt-2 text-sm text-ink-soft">
-                              {event.discountLabel ?? "No discount attached"}
+                              {event.discountLabel ?? "No offer attached"}
                             </p>
                           </div>
                           <div>
-                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Scope</p>
-                            <p className="mt-2 text-sm text-ink-soft">
-                              {event.appliesToAllRestaurants
-                                ? "All restaurants"
-                                : event.region
-                                  ? `${event.region.name}, ${event.region.stateName}`
-                                  : "Restaurant specific"}
-                            </p>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Status</p>
+                            <p className="mt-2 text-sm text-ink-soft">{formatEventStatusLabel(event.status)}</p>
                           </div>
                         </div>
                       </div>
@@ -2210,8 +2224,8 @@ export const RestaurantDetailsPage = () => {
                 </div>
               ) : (
                 <EmptyState
-                  title="No active events"
-                  description="No events available for this restaurant right now."
+                  title="No events available for this restaurant right now."
+                  description="Check back soon for new buffets, live music, limited-time menus, and special offers."
                 />
               )}
             </>
