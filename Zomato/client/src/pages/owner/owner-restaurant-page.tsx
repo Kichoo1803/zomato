@@ -13,6 +13,7 @@ import { getApiErrorMessage } from "@/lib/auth";
 import {
   getOwnerEventInsights,
   getOwnerRestaurants,
+  markOwnerEventBookingAttended,
   updateOwnerRestaurant,
   type OwnerEventInsight,
   type OwnerRestaurant,
@@ -24,6 +25,7 @@ import {
   formatCurrency,
   formatDateTime,
   getToneForStatus,
+  toLabel,
 } from "@/pages/admin/admin-shared";
 
 const emptyForm = {
@@ -57,6 +59,7 @@ export const OwnerRestaurantPage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [editingRestaurant, setEditingRestaurant] = useState<OwnerRestaurant | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [attendingBookingId, setAttendingBookingId] = useState<number | null>(null);
   const [form, setForm] = useState(emptyForm);
 
   const loadRestaurants = async () => {
@@ -81,6 +84,19 @@ export const OwnerRestaurantPage = () => {
   useEffect(() => {
     void loadRestaurants();
   }, []);
+
+  const handleMarkBookingAttended = async (bookingId: number) => {
+    setAttendingBookingId(bookingId);
+    try {
+      await markOwnerEventBookingAttended(bookingId);
+      toast.success("Booking marked as attended.");
+      await loadRestaurants();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to mark this booking as attended."));
+    } finally {
+      setAttendingBookingId(null);
+    }
+  };
 
   const openEditModal = (restaurant: OwnerRestaurant) => {
     setEditingRestaurant(restaurant);
@@ -263,7 +279,7 @@ export const OwnerRestaurantPage = () => {
                   </div>
 
                   <div className="rounded-[1.75rem] bg-cream px-5 py-5">
-                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Event attendance</p>
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Event bookings</p>
                     <div className="mt-4 space-y-4">
                       {restaurantEventInsights.length ? (
                         restaurantEventInsights.map((eventInsight) => (
@@ -280,16 +296,17 @@ export const OwnerRestaurantPage = () => {
                               </div>
                               <div className="flex flex-wrap gap-2">
                                 <StatusPill
-                                  label={`${eventInsight.restaurantAttendeeCount} at this restaurant`}
+                                  label={`${eventInsight.restaurantBookedSlots} at this restaurant`}
                                   tone="info"
                                 />
                                 <StatusPill
-                                  label={`${eventInsight.event.attendeeCount} total`}
+                                  label={`${eventInsight.event.bookedSlots} total`}
                                   tone="neutral"
                                 />
-                                {eventInsight.event.isFullyBooked ? (
-                                  <StatusPill label="Event full" tone="warning" />
-                                ) : null}
+                                <StatusPill
+                                  label={eventInsight.event.isSoldOut ? "Sold out" : toLabel(eventInsight.event.availabilityStatus)}
+                                  tone={eventInsight.event.isSoldOut ? "warning" : "info"}
+                                />
                               </div>
                             </div>
                             <p className="mt-3 text-sm leading-7 text-ink-soft">
@@ -298,36 +315,55 @@ export const OwnerRestaurantPage = () => {
                             <p className="mt-3 text-sm text-ink-soft">
                               {eventInsight.event.remainingSlots != null
                                 ? `${eventInsight.event.remainingSlots} slots remaining across this event.`
-                                : "This event is currently running without a fixed attendee cap."}
+                                : "This event is currently running without a fixed seat cap."}
                             </p>
-                            {eventInsight.joinedUsers.length ? (
+                            <p className="mt-2 text-sm text-ink-soft">
+                              {eventInsight.event.slotPrice > 0
+                                ? `${formatCurrency(eventInsight.restaurantRevenue)} revenue from this restaurant`
+                                : "Free event booking"}
+                            </p>
+                            {eventInsight.bookings.length ? (
                               <div className="mt-4 space-y-3">
-                                {eventInsight.joinedUsers.map((joinedUser) => (
+                                {eventInsight.bookings.map((booking) => (
                                   <div
-                                    key={joinedUser.id}
+                                    key={booking.id}
                                     className="flex flex-wrap items-center justify-between gap-3 rounded-[1rem] bg-cream px-4 py-3"
                                   >
                                     <div>
-                                      <p className="font-semibold text-ink">{joinedUser.user.fullName}</p>
-                                      <p className="text-xs text-ink-muted">{joinedUser.user.email}</p>
+                                      <p className="font-semibold text-ink">{booking.user.fullName}</p>
+                                      <p className="text-xs text-ink-muted">{booking.user.email}</p>
+                                      <p className="mt-1 text-xs text-ink-muted">
+                                        {booking.quantity} slot(s) | Code {booking.bookingCode}
+                                      </p>
                                     </div>
                                     <div className="text-right">
-                                      <StatusPill label={joinedUser.status} tone={getToneForStatus(joinedUser.status)} />
-                                      <p className="mt-2 text-xs text-ink-muted">{formatDateTime(joinedUser.joinedAt)}</p>
+                                      <StatusPill label={booking.status} tone={getToneForStatus(booking.status)} />
+                                      <p className="mt-2 text-xs text-ink-muted">{formatDateTime(booking.bookedAt)}</p>
+                                      {booking.status === "CONFIRMED" ? (
+                                        <Button
+                                          type="button"
+                                          variant="secondary"
+                                          className="mt-3 px-3 py-2 text-xs"
+                                          onClick={() => void handleMarkBookingAttended(booking.id)}
+                                          disabled={attendingBookingId === booking.id}
+                                        >
+                                          {attendingBookingId === booking.id ? "Saving..." : "Mark attended"}
+                                        </Button>
+                                      ) : null}
                                     </div>
                                   </div>
                                 ))}
                               </div>
                             ) : (
                               <p className="mt-4 text-sm leading-7 text-ink-soft">
-                                No customers have joined this event for this restaurant yet.
+                                No customers have booked this event for this restaurant yet.
                               </p>
                             )}
                           </div>
                         ))
                       ) : (
                         <p className="text-sm leading-7 text-ink-soft">
-                          No active event participation data is available for this restaurant yet.
+                          No active event booking data is available for this restaurant yet.
                         </p>
                       )}
                     </div>

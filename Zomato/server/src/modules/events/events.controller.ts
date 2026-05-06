@@ -58,6 +58,16 @@ export const deleteEvent = asyncHandler(async (req, res) => {
   });
 });
 
+export const bookEvent = asyncHandler(async (req, res) => {
+  const result = await eventsService.book(req.user!.id, Number(req.params.eventId), req.body);
+
+  return sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: "Event booking confirmed successfully",
+    data: result,
+  });
+});
+
 export const joinEvent = asyncHandler(async (req, res) => {
   const result = await eventsService.join(
     req.user!.id,
@@ -67,7 +77,16 @@ export const joinEvent = asyncHandler(async (req, res) => {
 
   return sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
-    message: "Event joined successfully",
+    message: "Event booking confirmed successfully",
+    data: result,
+  });
+});
+
+export const cancelEventBooking = asyncHandler(async (req, res) => {
+  const result = await eventsService.cancelBooking(req.user!.id, Number(req.params.bookingId));
+
+  return sendSuccess(res, {
+    message: "Event booking cancelled successfully",
     data: result,
   });
 });
@@ -76,7 +95,7 @@ export const cancelEvent = asyncHandler(async (req, res) => {
   const result = await eventsService.cancel(req.user!.id, Number(req.params.eventId));
 
   return sendSuccess(res, {
-    message: "Event attendance cancelled successfully",
+    message: "Event booking cancelled successfully",
     data: result,
   });
 });
@@ -85,7 +104,7 @@ export const listMyEvents = asyncHandler(async (req, res) => {
   const events = await eventsService.listMyEvents(req.user!.id);
 
   return sendSuccess(res, {
-    message: "Your events fetched successfully",
+    message: "Your event bookings fetched successfully",
     data: { events },
   });
 });
@@ -94,8 +113,20 @@ export const listEventAttendees = asyncHandler(async (req, res) => {
   const attendeeData = await eventsService.listAttendeesForAdmin(Number(req.params.eventId));
 
   return sendSuccess(res, {
-    message: "Event attendees fetched successfully",
+    message: "Event bookings fetched successfully",
     data: attendeeData,
+  });
+});
+
+export const markEventBookingAttended = asyncHandler(async (req, res) => {
+  const result = await eventsService.markBookingAttendedForAdmin(
+    Number(req.params.eventId),
+    Number(req.params.bookingId),
+  );
+
+  return sendSuccess(res, {
+    message: "Event booking marked as attended successfully",
+    data: result,
   });
 });
 
@@ -103,7 +134,19 @@ export const listOwnerEvents = asyncHandler(async (req, res) => {
   const events = await eventsService.listOwnerParticipation(req.user!.id);
 
   return sendSuccess(res, {
-    message: "Owner event participation fetched successfully",
+    message: "Owner event bookings fetched successfully",
     data: { events },
+  });
+});
+
+export const markOwnerEventBookingAttended = asyncHandler(async (req, res) => {
+  const result = await eventsService.markBookingAttendedForOwner(
+    req.user!.id,
+    Number(req.params.bookingId),
+  );
+
+  return sendSuccess(res, {
+    message: "Event booking marked as attended successfully",
+    data: result,
   });
 });

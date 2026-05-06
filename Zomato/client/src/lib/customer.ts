@@ -406,6 +406,21 @@ export type CustomerOffer = {
   }>;
 };
 
+export type CustomerEventBookingSummary = {
+  id: number;
+  eventId: number;
+  restaurantId: number;
+  quantity: number;
+  totalAmount: number;
+  bookingCode: string;
+  status: "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED";
+  bookedAt: string;
+  cancelledAt?: string | null;
+  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING";
+  paymentMethod?: "CARD" | "UPI" | null;
+  paymentMethodId?: number | null;
+};
+
 export type CustomerRestaurantEvent = {
   id: number;
   title: string;
@@ -415,16 +430,32 @@ export type CustomerRestaurantEvent = {
   imageUrl?: string | null;
   startsAt: string;
   endsAt: string;
+  bookingStartTime?: string | null;
+  bookingEndTime?: string | null;
   discountLabel?: string | null;
-  maxAttendees?: number | null;
+  totalSlots?: number | null;
+  bookedSlots: number;
+  slotPrice: number;
+  maxTicketsPerUser?: number | null;
   status: "ACTIVE" | "INACTIVE" | "EXPIRED";
   createdAt: string;
   updatedAt: string;
   appliesToAllRestaurants: boolean;
-  attendeeCount: number;
   remainingSlots?: number | null;
+  isSoldOut: boolean;
   isFullyBooked: boolean;
-  attendanceStatus?: "JOINED" | "CANCELLED" | "ATTENDED" | null;
+  isBookingClosed: boolean;
+  isEventEnded: boolean;
+  availabilityStatus: "AVAILABLE" | "SOLD_OUT" | "BOOKING_CLOSED" | "EVENT_ENDED" | "INACTIVE";
+  isBookable: boolean;
+  bookingsCount: number;
+  revenue: number;
+  userBooking?: CustomerEventBookingSummary | null;
+  hasUserBooking: boolean;
+
+  // Compatibility aliases used by older event card code.
+  maxAttendees?: number | null;
+  attendeeCount: number;
   isJoined: boolean;
   joinedAt?: string | null;
   restaurant?: {
@@ -446,8 +477,19 @@ export type CustomerMyEvent = {
   userId: number;
   eventId: number;
   restaurantId: number;
-  joinedAt: string;
-  status: "JOINED" | "CANCELLED" | "ATTENDED";
+  quantity: number;
+  totalAmount: number;
+  bookingCode: string;
+  status: "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED";
+  bookedAt: string;
+  cancelledAt?: string | null;
+  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING";
+  paymentMethod?: "CARD" | "UPI" | null;
+  paymentMethodId?: number | null;
+  canCancel: boolean;
+  isUpcoming: boolean;
+  isPastEvent: boolean;
+  hasActiveBooking: boolean;
   restaurant: {
     id: number;
     name: string;
@@ -755,11 +797,26 @@ export const getRestaurantEvents = async (restaurantId: number) =>
     ),
   ).events;
 
+export const bookCustomerEvent = async (eventId: number, payload: {
+  restaurantId: number;
+  quantity: number;
+  paymentMethod?: "CARD" | "UPI";
+  paymentMethodId?: number;
+}) =>
+  unwrapData(
+    await apiClient.post<
+      ApiEnvelope<{
+        booking: CustomerMyEvent;
+        event: CustomerRestaurantEvent;
+      }>
+    >(`/events/${eventId}/book`, payload),
+  );
+
 export const joinCustomerEvent = async (eventId: number, restaurantId: number) =>
   unwrapData(
     await apiClient.post<
       ApiEnvelope<{
-        attendance: CustomerMyEvent;
+        booking: CustomerMyEvent;
         event: CustomerRestaurantEvent;
       }>
     >(`/events/${eventId}/join`, {
@@ -767,11 +824,21 @@ export const joinCustomerEvent = async (eventId: number, restaurantId: number) =
     }),
   );
 
+export const cancelCustomerEventBooking = async (bookingId: number) =>
+  unwrapData(
+    await apiClient.delete<
+      ApiEnvelope<{
+        booking: CustomerMyEvent;
+        event: CustomerRestaurantEvent;
+      }>
+    >(`/event-bookings/${bookingId}/cancel`),
+  );
+
 export const cancelCustomerEvent = async (eventId: number) =>
   unwrapData(
     await apiClient.delete<
       ApiEnvelope<{
-        attendance: CustomerMyEvent;
+        booking: CustomerMyEvent;
         event: CustomerRestaurantEvent;
       }>
     >(`/events/${eventId}/cancel`),

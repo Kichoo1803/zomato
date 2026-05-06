@@ -44,7 +44,7 @@ import {
   type CustomerActiveLocation,
 } from "@/lib/customer-location";
 import {
-  cancelCustomerEvent,
+  cancelCustomerEventBooking,
   createCustomerAddress,
   deleteCustomerPaymentMethod,
   deleteCustomerAddress,
@@ -132,6 +132,13 @@ const formatMembershipDate = (value?: string | null) =>
       }).format(new Date(value))
     : "Not scheduled";
 
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(value);
+
 const formatEventDateTime = (value?: string | null) =>
   value
     ? new Intl.DateTimeFormat("en-IN", {
@@ -140,7 +147,7 @@ const formatEventDateTime = (value?: string | null) =>
       }).format(new Date(value))
     : "Unavailable";
 
-const formatEventAttendanceStatus = (status?: string | null) =>
+const formatEventBookingStatus = (status?: string | null) =>
   status
     ? status
         .toLowerCase()
@@ -148,13 +155,14 @@ const formatEventAttendanceStatus = (status?: string | null) =>
         .replace(/\b\w/g, (character) => character.toUpperCase())
     : "Unavailable";
 
-const getEventAttendanceTone = (status?: string | null) => {
+const getEventBookingTone = (status?: string | null) => {
   switch (status) {
     case "ATTENDED":
       return "success" as const;
+    case "REFUNDED":
     case "CANCELLED":
       return "warning" as const;
-    case "JOINED":
+    case "CONFIRMED":
     default:
       return "info" as const;
   }
@@ -1652,7 +1660,7 @@ export const ProfilePage = () => {
 export const MyEventsPage = () => {
   const [events, setEvents] = useState<CustomerMyEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [cancelingEventId, setCancelingEventId] = useState<number | null>(null);
+  const [cancelingBookingId, setCancelingBookingId] = useState<number | null>(null);
 
   const loadEvents = async ({ quietly = false }: { quietly?: boolean } = {}) => {
     if (!quietly) {
@@ -1663,7 +1671,7 @@ export const MyEventsPage = () => {
       setEvents(await getCustomerMyEvents());
     } catch (error) {
       setEvents([]);
-      toast.error(getApiErrorMessage(error, "Unable to load your joined events right now."));
+      toast.error(getApiErrorMessage(error, "Unable to load your event bookings right now."));
     } finally {
       if (!quietly) {
         setIsLoading(false);
@@ -1675,22 +1683,22 @@ export const MyEventsPage = () => {
     void loadEvents();
   }, []);
 
-  const upcomingEvents = events.filter((event) => event.status === "JOINED");
-  const pastEvents = events.filter((event) => event.status === "ATTENDED");
+  const upcomingEvents = events.filter((event) => event.isUpcoming);
+  const pastEvents = events.filter((event) => !event.isUpcoming);
 
   const handleCancelEvent = async (eventItem: CustomerMyEvent) => {
-    setCancelingEventId(eventItem.eventId);
+    setCancelingBookingId(eventItem.id);
 
     try {
-      await cancelCustomerEvent(eventItem.eventId);
+      await cancelCustomerEventBooking(eventItem.id);
       setEvents((currentEvents) =>
-        currentEvents.filter((currentEvent) => currentEvent.eventId !== eventItem.eventId),
+        currentEvents.filter((currentEvent) => currentEvent.id !== eventItem.id),
       );
-      toast.success("Event reservation cancelled successfully.");
+      toast.success("Event booking cancelled successfully.");
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to cancel this event reservation right now."));
+      toast.error(getApiErrorMessage(error, "Unable to cancel this event booking right now."));
     } finally {
-      setCancelingEventId(null);
+      setCancelingBookingId(null);
     }
   };
 
@@ -1716,12 +1724,12 @@ export const MyEventsPage = () => {
           <p className="text-sm leading-7 text-ink-soft">{eventItem.event.description}</p>
         </div>
         <StatusPill
-          label={formatEventAttendanceStatus(eventItem.status)}
-          tone={getEventAttendanceTone(eventItem.status)}
+          label={formatEventBookingStatus(eventItem.status)}
+          tone={getEventBookingTone(eventItem.status)}
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
         <div>
           <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Start</p>
           <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.event.startsAt)}</p>
@@ -1731,8 +1739,8 @@ export const MyEventsPage = () => {
           <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.event.endsAt)}</p>
         </div>
         <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Joined</p>
-          <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.joinedAt)}</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Booked</p>
+          <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.bookedAt)}</p>
         </div>
         <div>
           <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Offer</p>
@@ -1741,8 +1749,12 @@ export const MyEventsPage = () => {
           </p>
         </div>
         <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Attendees</p>
-          <p className="mt-2 text-sm text-ink-soft">{eventItem.event.attendeeCount} joined</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Slots booked</p>
+          <p className="mt-2 text-sm text-ink-soft">{eventItem.quantity}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Booking code</p>
+          <p className="mt-2 text-sm text-ink-soft">{eventItem.bookingCode}</p>
         </div>
       </div>
 
@@ -1750,9 +1762,9 @@ export const MyEventsPage = () => {
         <div className="space-y-1">
           <p className="text-sm font-semibold text-ink">{eventItem.restaurant.name}</p>
           <p className="text-sm text-ink-soft">
-            {eventItem.event.remainingSlots != null
-              ? `${eventItem.event.remainingSlots} spots remaining`
-              : "Unlimited event capacity"}
+            {eventItem.paymentStatus === "PAID"
+              ? `Paid ${formatCurrency(eventItem.totalAmount)}`
+              : "Free event booking"}
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
@@ -1762,15 +1774,15 @@ export const MyEventsPage = () => {
           >
             Open restaurant
           </Link>
-          {mode === "upcoming" ? (
+          {mode === "upcoming" && eventItem.canCancel ? (
             <Button
               type="button"
               variant="secondary"
               className="px-4 py-2 text-xs"
               onClick={() => void handleCancelEvent(eventItem)}
-              disabled={cancelingEventId === eventItem.eventId}
+              disabled={cancelingBookingId === eventItem.id}
             >
-              {cancelingEventId === eventItem.eventId ? "Cancelling..." : "Cancel join"}
+              {cancelingBookingId === eventItem.id ? "Cancelling..." : "Cancel booking"}
             </Button>
           ) : null}
         </div>
@@ -1781,8 +1793,8 @@ export const MyEventsPage = () => {
   return (
     <PageShell
       eyebrow="My events"
-      title="Joined restaurant experiences, all in one place."
-      description="Upcoming event reservations and past attended experiences stay grouped beside the rest of your customer account surfaces."
+      title="Your restaurant event bookings, all in one place."
+      description="Upcoming reservations, booking codes, and completed event experiences stay grouped beside the rest of your customer account surfaces."
       actions={
         <div className="flex flex-wrap gap-3">
           <Link to="/restaurants" className={linkButtonClassName}>
@@ -1796,36 +1808,36 @@ export const MyEventsPage = () => {
     >
       {isLoading ? (
         <SurfaceCard>
-          <p className="text-sm leading-7 text-ink-soft">Loading your joined events.</p>
+          <p className="text-sm leading-7 text-ink-soft">Loading your event bookings.</p>
         </SurfaceCard>
       ) : (
         <div className="space-y-8">
           <div className="space-y-4">
             <SectionHeading
-              title="Upcoming joined events"
-              description="Reserved spots for live music nights, buffets, chef specials, and other upcoming dining moments."
+              title="Upcoming booked events"
+              description="Reserved slots for live music nights, buffets, chef specials, and other upcoming dining moments."
             />
             {upcomingEvents.length ? (
               <div className="grid gap-5">{upcomingEvents.map((eventItem) => renderEventCard(eventItem, "upcoming"))}</div>
             ) : (
               <EmptyState
-                title="No upcoming joined events"
-                description="Attend an event from any restaurant page to see your upcoming reservations here."
+                title="No upcoming event bookings"
+                description="Book an event from any restaurant page to see your upcoming reservations here."
               />
             )}
           </div>
 
           <div className="space-y-4">
             <SectionHeading
-              title="Past attended events"
-              description="Your recent event history stays visible here after each event ends."
+              title="Past event activity"
+              description="Completed or previously booked event activity stays visible here after each event ends."
             />
             {pastEvents.length ? (
               <div className="grid gap-5">{pastEvents.map((eventItem) => renderEventCard(eventItem, "past"))}</div>
             ) : (
               <EmptyState
-                title="No past attended events yet"
-                description="Past event experiences will appear here automatically once your joined events are completed."
+                title="No past event activity yet"
+                description="Past event experiences will appear here automatically after your booked events conclude."
               />
             )}
           </div>

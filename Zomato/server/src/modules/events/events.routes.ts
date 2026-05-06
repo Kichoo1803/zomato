@@ -3,7 +3,9 @@ import { Router } from "express";
 import { authorize, optionalAuth, requireAuth } from "../../middlewares/auth.middleware.js";
 import { validate } from "../../middlewares/validate.middleware.js";
 import {
+  bookEvent,
   cancelEvent,
+  cancelEventBooking,
   createEvent,
   deleteEvent,
   joinEvent,
@@ -12,14 +14,20 @@ import {
   listMyEvents,
   listOwnerEvents,
   listRestaurantEvents,
+  markEventBookingAttended,
+  markOwnerEventBookingAttended,
   updateEvent,
 } from "./events.controller.js";
 import {
+  bookEventSchema,
+  cancelBookingSchema,
   cancelEventSchema,
   createEventSchema,
   eventIdParamSchema,
   joinEventSchema,
   listEventsSchema,
+  markBookingAttendedSchema,
+  ownerBookingIdParamSchema,
   restaurantEventsParamSchema,
   updateEventSchema,
 } from "./events.validation.js";
@@ -37,11 +45,25 @@ eventsRouter.get(
   listRestaurantEvents,
 );
 eventsRouter.post(
+  "/events/:eventId/book",
+  requireAuth,
+  authorize(Role.CUSTOMER),
+  validate(bookEventSchema),
+  bookEvent,
+);
+eventsRouter.post(
   "/events/:eventId/join",
   requireAuth,
   authorize(Role.CUSTOMER),
   validate(joinEventSchema),
   joinEvent,
+);
+eventsRouter.delete(
+  "/event-bookings/:bookingId/cancel",
+  requireAuth,
+  authorize(Role.CUSTOMER),
+  validate(cancelBookingSchema),
+  cancelEventBooking,
 );
 eventsRouter.delete(
   "/events/:eventId/cancel",
@@ -73,5 +95,19 @@ adminEventsRouter.delete(
   validate(eventIdParamSchema),
   deleteEvent,
 );
+adminEventsRouter.patch(
+  "/:eventId/bookings/:bookingId/attend",
+  requireAuth,
+  authorize(Role.ADMIN),
+  validate(markBookingAttendedSchema),
+  markEventBookingAttended,
+);
 
 ownerEventsRouter.get("/", requireAuth, authorize(Role.RESTAURANT_OWNER), listOwnerEvents);
+ownerEventsRouter.patch(
+  "/bookings/:bookingId/attend",
+  requireAuth,
+  authorize(Role.RESTAURANT_OWNER),
+  validate(ownerBookingIdParamSchema),
+  markOwnerEventBookingAttended,
+);

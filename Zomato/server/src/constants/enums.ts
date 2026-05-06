@@ -64,6 +64,15 @@ export const EventAttendanceStatus = {
 export type EventAttendanceStatus =
   (typeof EventAttendanceStatus)[keyof typeof EventAttendanceStatus];
 
+export const EventBookingStatus = {
+  CONFIRMED: "CONFIRMED",
+  CANCELLED: "CANCELLED",
+  REFUNDED: "REFUNDED",
+  ATTENDED: "ATTENDED",
+} as const;
+export type EventBookingStatus =
+  (typeof EventBookingStatus)[keyof typeof EventBookingStatus];
+
 export const OrderStatus = {
   PLACED: "PLACED",
   CONFIRMED: "CONFIRMED",
@@ -84,6 +93,7 @@ export const OrderStatus = {
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 
 export const PaymentStatus = {
+  FREE: "FREE",
   PENDING: "PENDING",
   PAID: "PAID",
   FAILED: "FAILED",

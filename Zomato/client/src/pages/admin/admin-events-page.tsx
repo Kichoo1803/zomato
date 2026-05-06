@@ -21,6 +21,7 @@ import {
   getEvents,
   getRegionsAdmin,
   getRestaurants,
+  markEventBookingAttended,
   updateEvent,
   type AdminEvent,
   type AdminEventAttendeeReport,
@@ -41,7 +42,7 @@ import {
 } from "./admin-shared";
 
 type AssignmentType = "ALL" | "RESTAURANT" | "REGION";
-type EventStatusValue = AdminEvent["status"];
+type EventStatusValue = "ACTIVE" | "INACTIVE";
 
 type EventFormState = {
   title: string;
@@ -50,14 +51,20 @@ type EventFormState = {
   restaurantId: string;
   regionId: string;
   imageUrl: string;
-  startsAt: string;
-  endsAt: string;
+  eventDate: string;
+  eventStartTime: string;
+  eventEndTime: string;
+  bookingStartTime: string;
+  bookingEndTime: string;
   discountLabel: string;
-  maxAttendees: string;
+  totalSlots: string;
+  slotPrice: string;
+  maxTicketsPerUser: string;
   status: EventStatusValue;
 };
 
-const EVENT_STATUS_OPTIONS: EventStatusValue[] = ["ACTIVE", "INACTIVE", "EXPIRED"];
+const EVENT_STATUS_OPTIONS = ["ACTIVE", "INACTIVE", "EXPIRED"] as const;
+const EVENT_FORM_STATUS_OPTIONS: EventStatusValue[] = ["ACTIVE", "INACTIVE"];
 
 const emptyForm: EventFormState = {
   title: "",
@@ -66,12 +73,24 @@ const emptyForm: EventFormState = {
   restaurantId: "",
   regionId: "",
   imageUrl: "",
-  startsAt: "",
-  endsAt: "",
+  eventDate: "",
+  eventStartTime: "",
+  eventEndTime: "",
+  bookingStartTime: "",
+  bookingEndTime: "",
   discountLabel: "",
-  maxAttendees: "",
+  totalSlots: "",
+  slotPrice: "",
+  maxTicketsPerUser: "",
   status: "ACTIVE",
 };
+
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+  }).format(value);
 
 const toDateTimeLocalValue = (value?: string | null) => {
   if (!value) {
@@ -83,6 +102,26 @@ const toDateTimeLocalValue = (value?: string | null) => {
   return new Date(date.getTime() - timezoneOffsetMs).toISOString().slice(0, 16);
 };
 
+const toDateValue = (value?: string | null) => {
+  if (!value) {
+    return "";
+  }
+
+  return new Date(value).toISOString().slice(0, 10);
+};
+
+const toTimeValue = (value?: string | null) => {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+};
+
+const combineDateAndTime = (dateValue: string, timeValue: string) =>
+  new Date(`${dateValue}T${timeValue}:00`).toISOString();
+
 const getAssignmentType = (event: AdminEvent): AssignmentType =>
   event.restaurantId ? "RESTAURANT" : event.regionId ? "REGION" : "ALL";
 
@@ -92,19 +131,14 @@ const getAssignmentLabel = (event: AdminEvent) => {
   }
 
   if (event.region) {
-    return `${event.region.name} • ${event.region.stateName}`;
+    return `${event.region.name} | ${event.region.stateName}`;
   }
 
   return "All restaurants";
 };
 
-const getFormStatusValue = (event: AdminEvent): EventStatusValue => {
-  if (event.status === "EXPIRED" && new Date(event.endsAt).getTime() < Date.now()) {
-    return "ACTIVE";
-  }
-
-  return event.status;
-};
+const getFormStatusValue = (event: AdminEvent): EventStatusValue =>
+  event.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";
 
 export const AdminEventsPage = () => {
   const [events, setEvents] = useState<AdminEvent[]>([]);
@@ -124,6 +158,7 @@ export const AdminEventsPage = () => {
   const [selectedAttendeeEvent, setSelectedAttendeeEvent] = useState<AdminEvent | null>(null);
   const [attendeeReport, setAttendeeReport] = useState<AdminEventAttendeeReport | null>(null);
   const [isLoadingAttendeeReport, setIsLoadingAttendeeReport] = useState(false);
+  const [attendingBookingId, setAttendingBookingId] = useState<number | null>(null);
   const [form, setForm] = useState<EventFormState>(emptyForm);
 
   const loadData = async () => {
@@ -163,10 +198,15 @@ export const AdminEventsPage = () => {
       restaurantId: event.restaurantId ? String(event.restaurantId) : "",
       regionId: event.regionId ? String(event.regionId) : "",
       imageUrl: event.imageUrl ?? "",
-      startsAt: toDateTimeLocalValue(event.startsAt),
-      endsAt: toDateTimeLocalValue(event.endsAt),
+      eventDate: toDateValue(event.startsAt),
+      eventStartTime: toTimeValue(event.startsAt),
+      eventEndTime: toTimeValue(event.endsAt),
+      bookingStartTime: toDateTimeLocalValue(event.bookingStartTime),
+      bookingEndTime: toDateTimeLocalValue(event.bookingEndTime),
       discountLabel: event.discountLabel ?? "",
-      maxAttendees: event.maxAttendees != null ? String(event.maxAttendees) : "",
+      totalSlots: event.totalSlots != null ? String(event.totalSlots) : "",
+      slotPrice: event.slotPrice > 0 ? String(event.slotPrice) : "",
+      maxTicketsPerUser: event.maxTicketsPerUser != null ? String(event.maxTicketsPerUser) : "",
       status: getFormStatusValue(event),
     });
     setIsModalOpen(true);
@@ -202,16 +242,25 @@ export const AdminEventsPage = () => {
       return;
     }
 
+    if (!form.eventDate || !form.eventStartTime || !form.eventEndTime) {
+      toast.error("Add the event date, start time, and end time.");
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const payload = {
         title: form.title.trim(),
         description: form.description.trim(),
         imageUrl: form.imageUrl.trim() || null,
-        startsAt: new Date(form.startsAt).toISOString(),
-        endsAt: new Date(form.endsAt).toISOString(),
+        startsAt: combineDateAndTime(form.eventDate, form.eventStartTime),
+        endsAt: combineDateAndTime(form.eventDate, form.eventEndTime),
+        bookingStartTime: form.bookingStartTime ? new Date(form.bookingStartTime).toISOString() : null,
+        bookingEndTime: form.bookingEndTime ? new Date(form.bookingEndTime).toISOString() : null,
         discountLabel: form.discountLabel.trim() || null,
-        maxAttendees: form.maxAttendees.trim() ? Number(form.maxAttendees) : null,
+        totalSlots: form.totalSlots.trim() ? Number(form.totalSlots) : null,
+        slotPrice: form.slotPrice.trim() ? Number(form.slotPrice) : null,
+        maxTicketsPerUser: form.maxTicketsPerUser.trim() ? Number(form.maxTicketsPerUser) : null,
         status: form.status,
         ...(form.assignmentType === "RESTAURANT"
           ? {
@@ -254,7 +303,7 @@ export const AdminEventsPage = () => {
     try {
       setAttendeeReport(await getEventAttendees(event.id));
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to load event attendees right now."));
+      toast.error(getApiErrorMessage(error, "Unable to load event bookings right now."));
     } finally {
       setIsLoadingAttendeeReport(false);
     }
@@ -293,12 +342,28 @@ export const AdminEventsPage = () => {
     }
   };
 
+  const handleMarkAttended = async (eventId: number, bookingId: number) => {
+    setAttendingBookingId(bookingId);
+    try {
+      await markEventBookingAttended(eventId, bookingId);
+      toast.success("Booking marked as attended.");
+      await Promise.all([
+        loadData(),
+        selectedAttendeeEvent?.id === eventId ? openAttendeesModal(selectedAttendeeEvent) : Promise.resolve(),
+      ]);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to mark this booking as attended."));
+    } finally {
+      setAttendingBookingId(null);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <SectionHeading
         eyebrow="Restaurant events"
-        title="Campaign moments and local experiences."
-        description="Create, adjust, and retire restaurant, region, or platform-wide events without disturbing the existing admin surfaces."
+        title="Slot-based event campaigns and premium experiences."
+        description="Create events with seat limits, booking windows, pricing, and check-in visibility without disturbing the rest of the admin dashboard."
         action={
           <div className="flex gap-3">
             <RefreshButton onClick={() => void loadData()} />
@@ -382,7 +447,7 @@ export const AdminEventsPage = () => {
               },
               {
                 key: "schedule",
-                label: "Schedule",
+                label: "Event time",
                 render: (event) => (
                   <div>
                     <p className="text-sm text-ink-soft">{formatDateTime(event.startsAt)}</p>
@@ -391,17 +456,20 @@ export const AdminEventsPage = () => {
                 ),
               },
               {
-                key: "attendance",
-                label: "Attendance",
+                key: "capacity",
+                label: "Slots and revenue",
                 render: (event) => (
                   <div className="space-y-2">
-                    <p className="font-semibold text-ink">{event.attendeeCount} joined</p>
-                    <p className="text-xs text-ink-muted">
-                      {event.maxAttendees != null
-                        ? `${event.remainingSlots ?? 0} of ${event.maxAttendees} spots left`
-                        : "Unlimited capacity"}
+                    <p className="font-semibold text-ink">
+                      {event.bookedSlots} booked
+                      {event.totalSlots != null ? ` / ${event.totalSlots}` : ""}
                     </p>
-                    {event.isFullyBooked ? <StatusPill label="Event full" tone="warning" /> : null}
+                    <p className="text-xs text-ink-muted">
+                      {event.remainingSlots != null ? `${event.remainingSlots} left` : "Unlimited seats"}
+                    </p>
+                    <p className="text-xs text-ink-muted">
+                      {event.slotPrice > 0 ? `Revenue ${formatCurrency(event.revenue)}` : "Free event"}
+                    </p>
                   </div>
                 ),
               },
@@ -411,7 +479,10 @@ export const AdminEventsPage = () => {
                 render: (event) => (
                   <div className="space-y-2">
                     <StatusPill label={toLabel(event.status)} tone={getToneForStatus(event.status)} />
-                    {event.imageUrl ? <StatusPill label="Image attached" tone="info" /> : null}
+                    <StatusPill
+                      label={toLabel(event.availabilityStatus)}
+                      tone={event.isSoldOut || event.isEventEnded ? "warning" : "info"}
+                    />
                   </div>
                 ),
               },
@@ -426,7 +497,7 @@ export const AdminEventsPage = () => {
                       className="px-3 py-2 text-xs"
                       onClick={() => void openAttendeesModal(event)}
                     >
-                      View attendees
+                      View bookings
                     </Button>
                     {event.status !== "EXPIRED" ? (
                       <Button
@@ -463,7 +534,7 @@ export const AdminEventsPage = () => {
         open={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title={editingEvent ? "Edit event" : "Add event"}
-        className="max-w-4xl"
+        className="max-w-5xl"
       >
         <form className="space-y-4" onSubmit={handleSubmit}>
           <div className="grid gap-4 md:grid-cols-2">
@@ -490,18 +561,37 @@ export const AdminEventsPage = () => {
               <option value="REGION">Specific region</option>
             </Select>
             <Input
-              label="Start date and time"
-              type="datetime-local"
-              value={form.startsAt}
-              onChange={(event) => setForm({ ...form, startsAt: event.target.value })}
+              label="Event date"
+              type="date"
+              value={form.eventDate}
+              onChange={(event) => setForm({ ...form, eventDate: event.target.value })}
               required
             />
             <Input
-              label="End date and time"
-              type="datetime-local"
-              value={form.endsAt}
-              onChange={(event) => setForm({ ...form, endsAt: event.target.value })}
+              label="Event start time"
+              type="time"
+              value={form.eventStartTime}
+              onChange={(event) => setForm({ ...form, eventStartTime: event.target.value })}
               required
+            />
+            <Input
+              label="Event end time"
+              type="time"
+              value={form.eventEndTime}
+              onChange={(event) => setForm({ ...form, eventEndTime: event.target.value })}
+              required
+            />
+            <Input
+              label="Booking start"
+              type="datetime-local"
+              value={form.bookingStartTime}
+              onChange={(event) => setForm({ ...form, bookingStartTime: event.target.value })}
+            />
+            <Input
+              label="Booking end"
+              type="datetime-local"
+              value={form.bookingEndTime}
+              onChange={(event) => setForm({ ...form, bookingEndTime: event.target.value })}
             />
             {form.assignmentType === "RESTAURANT" ? (
               <Select
@@ -528,7 +618,7 @@ export const AdminEventsPage = () => {
                 <option value="">Select region</option>
                 {regions.map((region) => (
                   <option key={region.id} value={region.id}>
-                    {region.name} • {region.stateName}
+                    {region.name} | {region.stateName}
                   </option>
                 ))}
               </Select>
@@ -540,11 +630,28 @@ export const AdminEventsPage = () => {
               placeholder="Weekend 20% off"
             />
             <Input
-              label="Max attendees"
+              label="Total slots"
               type="number"
               min="1"
-              value={form.maxAttendees}
-              onChange={(event) => setForm({ ...form, maxAttendees: event.target.value })}
+              value={form.totalSlots}
+              onChange={(event) => setForm({ ...form, totalSlots: event.target.value })}
+              placeholder="Optional"
+            />
+            <Input
+              label="Slot price"
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.slotPrice}
+              onChange={(event) => setForm({ ...form, slotPrice: event.target.value })}
+              placeholder="0 for free events"
+            />
+            <Input
+              label="Max tickets per user"
+              type="number"
+              min="1"
+              value={form.maxTicketsPerUser}
+              onChange={(event) => setForm({ ...form, maxTicketsPerUser: event.target.value })}
               placeholder="Optional"
             />
             <Select
@@ -552,7 +659,7 @@ export const AdminEventsPage = () => {
               value={form.status}
               onChange={(event) => setForm({ ...form, status: event.target.value as EventStatusValue })}
             >
-              {EVENT_STATUS_OPTIONS.map((status) => (
+              {EVENT_FORM_STATUS_OPTIONS.map((status) => (
                 <option key={status} value={status}>
                   {toLabel(status)}
                 </option>
@@ -590,24 +697,24 @@ export const AdminEventsPage = () => {
       <Modal
         open={Boolean(selectedAttendeeEvent)}
         onClose={() => {
-          if (!isLoadingAttendeeReport) {
+          if (!isLoadingAttendeeReport && !attendingBookingId) {
             setSelectedAttendeeEvent(null);
             setAttendeeReport(null);
           }
         }}
-        title={selectedAttendeeEvent ? `${selectedAttendeeEvent.title} attendees` : "Event attendees"}
-        className="max-w-5xl"
+        title={selectedAttendeeEvent ? `${selectedAttendeeEvent.title} bookings` : "Event bookings"}
+        className="max-w-6xl"
       >
         {isLoadingAttendeeReport ? (
           <div className="rounded-[1.5rem] bg-cream px-5 py-5 text-sm leading-7 text-ink-soft">
-            Loading event attendance analytics.
+            Loading event booking analytics.
           </div>
         ) : attendeeReport ? (
           <div className="space-y-5">
-            <div className="grid gap-4 md:grid-cols-5">
+            <div className="grid gap-4 md:grid-cols-6">
               <div className="rounded-[1.5rem] bg-cream px-4 py-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Joined</p>
-                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.joinedCount}</p>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Confirmed</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.confirmedCount}</p>
               </div>
               <div className="rounded-[1.5rem] bg-cream px-4 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Attended</p>
@@ -618,22 +725,20 @@ export const AdminEventsPage = () => {
                 <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.cancelledCount}</p>
               </div>
               <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refunded</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.refundedCount}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Capacity</p>
                 <p className="mt-2 text-sm font-semibold text-ink">
-                  {attendeeReport.summary.maxAttendees != null
-                    ? `${attendeeReport.summary.attendeeCount} / ${attendeeReport.summary.maxAttendees}`
-                    : "Unlimited"}
+                  {attendeeReport.summary.totalSlots != null
+                    ? `${attendeeReport.summary.bookedSlots} / ${attendeeReport.summary.totalSlots}`
+                    : `${attendeeReport.summary.bookedSlots} booked`}
                 </p>
               </div>
               <div className="rounded-[1.5rem] bg-cream px-4 py-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Availability</p>
-                <p className="mt-2 text-sm font-semibold text-ink">
-                  {attendeeReport.summary.isFullyBooked
-                    ? "Event full"
-                    : attendeeReport.summary.remainingSlots != null
-                      ? `${attendeeReport.summary.remainingSlots} left`
-                      : "Open"}
-                </p>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Revenue</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{formatCurrency(attendeeReport.summary.revenue)}</p>
               </div>
             </div>
 
@@ -644,59 +749,96 @@ export const AdminEventsPage = () => {
                   {attendeeReport.restaurantBreakdown.map((item) => (
                     <div key={item.restaurant.id} className="rounded-[1.25rem] bg-white px-4 py-4">
                       <p className="font-semibold text-ink">{item.restaurant.name}</p>
-                      <p className="mt-2 text-sm text-ink-soft">{item.attendeeCount} attendee(s)</p>
+                      <p className="mt-2 text-sm text-ink-soft">
+                        {item.bookedSlots} slot(s) across {item.bookingsCount} booking(s)
+                      </p>
+                      <p className="mt-1 text-xs text-ink-muted">{formatCurrency(item.revenue)} revenue</p>
                     </div>
                   ))}
                 </div>
               </div>
             ) : null}
 
-            {attendeeReport.attendees.length ? (
+            {attendeeReport.bookings.length ? (
               <AdminDataTable
-                rows={attendeeReport.attendees}
-                getRowKey={(attendee) => attendee.id}
-                emptyTitle="No attendees yet"
-                emptyDescription="Attendees will appear here after customers join the event."
+                rows={attendeeReport.bookings}
+                getRowKey={(booking) => booking.id}
+                emptyTitle="No bookings yet"
+                emptyDescription="Bookings will appear here after customers reserve slots."
                 columns={[
                   {
                     key: "guest",
                     label: "Guest",
-                    render: (attendee) => (
+                    render: (booking) => (
                       <div>
-                        <p className="font-semibold text-ink">{attendee.user.fullName}</p>
-                        <p className="text-xs text-ink-muted">{attendee.user.email}</p>
+                        <p className="font-semibold text-ink">{booking.user.fullName}</p>
+                        <p className="text-xs text-ink-muted">{booking.user.email}</p>
                       </div>
                     ),
                   },
                   {
                     key: "restaurant",
                     label: "Restaurant",
-                    render: (attendee) => attendee.restaurant.name,
+                    render: (booking) => booking.restaurant.name,
                   },
                   {
-                    key: "joinedAt",
-                    label: "Joined",
-                    render: (attendee) => formatDateTime(attendee.joinedAt),
+                    key: "slots",
+                    label: "Slots",
+                    render: (booking) => booking.quantity,
+                  },
+                  {
+                    key: "bookingCode",
+                    label: "Booking code",
+                    render: (booking) => booking.bookingCode,
+                  },
+                  {
+                    key: "bookedAt",
+                    label: "Booked",
+                    render: (booking) => formatDateTime(booking.bookedAt),
                   },
                   {
                     key: "status",
                     label: "Status",
-                    render: (attendee) => (
-                      <StatusPill label={toLabel(attendee.status)} tone={getToneForStatus(attendee.status)} />
+                    render: (booking) => (
+                      <div className="space-y-2">
+                        <StatusPill label={toLabel(booking.status)} tone={getToneForStatus(booking.status)} />
+                        <StatusPill
+                          label={toLabel(booking.paymentStatus)}
+                          tone={booking.paymentStatus === "PAID" ? "success" : "neutral"}
+                        />
+                      </div>
                     ),
+                  },
+                  {
+                    key: "actions",
+                    label: "Actions",
+                    render: (booking) =>
+                      booking.status === "CONFIRMED" ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="px-3 py-2 text-xs"
+                          onClick={() => void handleMarkAttended(booking.eventId, booking.id)}
+                          disabled={attendingBookingId === booking.id}
+                        >
+                          {attendingBookingId === booking.id ? "Saving..." : "Mark attended"}
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-ink-muted">No actions</span>
+                      ),
                   },
                 ]}
               />
             ) : (
               <EmptyState
-                title="No attendees yet"
-                description="Customers who join this event will appear here automatically."
+                title="No bookings yet"
+                description="Customers who reserve this event will appear here automatically."
               />
             )}
           </div>
         ) : (
           <EmptyState
-            title="Unable to load attendees"
+            title="Unable to load bookings"
             description="Try reopening this event analytics panel in a moment."
           />
         )}

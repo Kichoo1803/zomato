@@ -1,7 +1,8 @@
-import { EventStatus } from "../../constants/enums.js";
+import { EventStatus, PaymentMethod } from "../../constants/enums.js";
 import { z } from "zod";
 
 const eventStatusValues = [EventStatus.ACTIVE, EventStatus.INACTIVE, EventStatus.EXPIRED] as const;
+const eventPaymentMethodValues = [PaymentMethod.CARD, PaymentMethod.UPI] as const;
 
 const eventTargetFields = {
   restaurantId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
@@ -27,6 +28,74 @@ const validateEventTarget = (
   }
 };
 
+const getResolvedTotalSlots = (value: {
+  totalSlots?: number | null;
+  maxAttendees?: number | null;
+}) => value.totalSlots ?? value.maxAttendees ?? null;
+
+const validateEventSchedule = (
+  value: {
+    startsAt?: Date;
+    endsAt?: Date;
+    bookingStartTime?: Date | null;
+    bookingEndTime?: Date | null;
+    totalSlots?: number | null;
+    maxAttendees?: number | null;
+    maxTicketsPerUser?: number | null;
+  },
+  ctx: z.RefinementCtx,
+) => {
+  if (value.startsAt && value.endsAt && value.endsAt <= value.startsAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["endsAt"],
+      message: "End time must be after the start time.",
+    });
+  }
+
+  if (
+    value.bookingStartTime &&
+    value.bookingEndTime &&
+    value.bookingEndTime <= value.bookingStartTime
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["bookingEndTime"],
+      message: "Booking end time must be after the booking start time.",
+    });
+  }
+
+  if (value.bookingStartTime && value.endsAt && value.bookingStartTime >= value.endsAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["bookingStartTime"],
+      message: "Booking must open before the event ends.",
+    });
+  }
+
+  if (value.bookingEndTime && value.endsAt && value.bookingEndTime > value.endsAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["bookingEndTime"],
+      message: "Booking cannot remain open after the event ends.",
+    });
+  }
+
+  const totalSlots = getResolvedTotalSlots(value);
+
+  if (
+    totalSlots != null &&
+    value.maxTicketsPerUser != null &&
+    value.maxTicketsPerUser > totalSlots
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["maxTicketsPerUser"],
+      message: "Per-user ticket limit cannot exceed the total slot count.",
+    });
+  }
+};
+
 const eventBodyBaseSchema = z.object({
   ...eventTargetFields,
   title: z.string().trim().min(2).max(120),
@@ -34,36 +103,25 @@ const eventBodyBaseSchema = z.object({
   imageUrl: z.union([z.string().trim().url(), z.null()]).optional(),
   startsAt: z.coerce.date(),
   endsAt: z.coerce.date(),
+  bookingStartTime: z.union([z.coerce.date(), z.null()]).optional(),
+  bookingEndTime: z.union([z.coerce.date(), z.null()]).optional(),
   discountLabel: z.union([z.string().trim().max(120), z.null()]).optional(),
+  totalSlots: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
   maxAttendees: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+  slotPrice: z.union([z.coerce.number().min(0), z.null()]).optional(),
+  maxTicketsPerUser: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
   status: z.enum(eventStatusValues).default(EventStatus.ACTIVE),
 });
 
 const createEventBodySchema = eventBodyBaseSchema.superRefine((value, ctx) => {
   validateEventTarget(value, ctx);
-
-  if (value.endsAt <= value.startsAt) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["endsAt"],
-      message: "End time must be after the start time.",
-    });
-  }
+  validateEventSchedule(value, ctx);
 });
 
-const updateEventBodySchema = eventBodyBaseSchema
-  .partial()
-  .superRefine((value, ctx) => {
-    validateEventTarget(value, ctx);
-
-    if (value.startsAt && value.endsAt && value.endsAt <= value.startsAt) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["endsAt"],
-        message: "End time must be after the start time.",
-      });
-    }
-  });
+const updateEventBodySchema = eventBodyBaseSchema.partial().superRefine((value, ctx) => {
+  validateEventTarget(value, ctx);
+  validateEventSchedule(value, ctx);
+});
 
 export const listEventsSchema = {
   query: z.object({
@@ -97,13 +155,49 @@ export const eventIdParamSchema = {
   }),
 };
 
+export const bookEventSchema = {
+  params: z.object({
+    eventId: z.coerce.number().int().positive(),
+  }),
+  body: z.object({
+    restaurantId: z.coerce.number().int().positive(),
+    quantity: z.coerce.number().int().positive().default(1),
+    paymentMethod: z.enum(eventPaymentMethodValues).optional(),
+    paymentMethodId: z.coerce.number().int().positive().optional(),
+    savedPaymentMethodId: z.coerce.number().int().positive().optional(),
+  }),
+};
+
 export const joinEventSchema = {
   params: z.object({
     eventId: z.coerce.number().int().positive(),
   }),
   body: z.object({
     restaurantId: z.coerce.number().int().positive(),
+    quantity: z.coerce.number().int().positive().optional(),
+    paymentMethod: z.enum(eventPaymentMethodValues).optional(),
+    paymentMethodId: z.coerce.number().int().positive().optional(),
+    savedPaymentMethodId: z.coerce.number().int().positive().optional(),
   }),
 };
 
 export const cancelEventSchema = eventIdParamSchema;
+
+export const cancelBookingSchema = {
+  params: z.object({
+    bookingId: z.coerce.number().int().positive(),
+  }),
+};
+
+export const markBookingAttendedSchema = {
+  params: z.object({
+    eventId: z.coerce.number().int().positive(),
+    bookingId: z.coerce.number().int().positive(),
+  }),
+};
+
+export const ownerBookingIdParamSchema = {
+  params: z.object({
+    bookingId: z.coerce.number().int().positive(),
+  }),
+};

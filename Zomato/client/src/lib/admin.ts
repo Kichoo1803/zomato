@@ -532,14 +532,28 @@ export type AdminEvent = {
   imageUrl?: string | null;
   startsAt: string;
   endsAt: string;
+  bookingStartTime?: string | null;
+  bookingEndTime?: string | null;
   discountLabel?: string | null;
-  maxAttendees?: number | null;
+  totalSlots?: number | null;
+  bookedSlots: number;
+  slotPrice: number;
+  maxTicketsPerUser?: number | null;
   status: "ACTIVE" | "INACTIVE" | "EXPIRED";
   createdAt: string;
   updatedAt: string;
   appliesToAllRestaurants: boolean;
-  attendeeCount: number;
   remainingSlots?: number | null;
+  bookingsCount: number;
+  revenue: number;
+  isSoldOut: boolean;
+  isBookingClosed: boolean;
+  isEventEnded: boolean;
+  availabilityStatus: "AVAILABLE" | "SOLD_OUT" | "BOOKING_CLOSED" | "EVENT_ENDED" | "INACTIVE";
+
+  // Compatibility aliases
+  maxAttendees?: number | null;
+  attendeeCount: number;
   isFullyBooked: boolean;
   restaurant?: {
     id: number;
@@ -560,8 +574,17 @@ export type AdminEventAttendee = {
   userId: number;
   eventId: number;
   restaurantId: number;
-  joinedAt: string;
-  status: "JOINED" | "CANCELLED" | "ATTENDED";
+  quantity: number;
+  totalAmount: number;
+  bookingCode: string;
+  bookedAt: string;
+  cancelledAt?: string | null;
+  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING";
+  status: "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED";
+  canCancel: boolean;
+  isUpcoming: boolean;
+  isPastEvent: boolean;
+  hasActiveBooking: boolean;
   restaurant: {
     id: number;
     name: string;
@@ -579,13 +602,18 @@ export type AdminEventAttendee = {
 export type AdminEventAttendeeReport = {
   event: AdminEvent;
   summary: {
-    attendeeCount: number;
-    joinedCount: number;
+    bookingsCount: number;
+    bookedSlots: number;
+    confirmedCount: number;
     attendedCount: number;
     cancelledCount: number;
+    refundedCount: number;
+    totalSlots?: number | null;
     remainingSlots?: number | null;
+    isSoldOut: boolean;
     isFullyBooked: boolean;
-    maxAttendees?: number | null;
+    isBookingClosed: boolean;
+    revenue: number;
   };
   restaurantBreakdown: Array<{
     restaurant: {
@@ -593,8 +621,11 @@ export type AdminEventAttendeeReport = {
       name: string;
       slug: string;
     };
-    attendeeCount: number;
+    bookingsCount: number;
+    bookedSlots: number;
+    revenue: number;
   }>;
+  bookings: AdminEventAttendee[];
   attendees: AdminEventAttendee[];
 };
 
@@ -901,6 +932,15 @@ export const getEventAttendees = async (eventId: number) =>
   unwrapData(
     await apiClient.get<ApiEnvelope<AdminEventAttendeeReport>>(`/admin/events/${eventId}/attendees`),
   );
+
+export const markEventBookingAttended = async (eventId: number, bookingId: number) =>
+  unwrapData(
+    await apiClient.patch<
+      ApiEnvelope<{
+        booking: AdminEventAttendee;
+      }>
+    >(`/admin/events/${eventId}/bookings/${bookingId}/attend`),
+  ).booking;
 
 export const createEvent = async (payload: Record<string, unknown>) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ event: AdminEvent }>>("/admin/events", payload)).event;

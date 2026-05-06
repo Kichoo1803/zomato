@@ -42,7 +42,7 @@ import {
   getPublicRestaurantCatalogue,
   getPublicRestaurantBySlug,
   getRestaurantEvents,
-  joinCustomerEvent,
+  bookCustomerEvent,
   readPendingCustomerCouponSelection,
   removeCustomerFavorite,
   removeCustomerCartOffer,
@@ -135,6 +135,29 @@ const getEventStatusTone = (status?: string | null) => {
 
   return "neutral" as const;
 };
+
+const formatEventAvailabilityLabel = (status?: string | null) =>
+  status
+    ? status
+        .toLowerCase()
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (character) => character.toUpperCase())
+    : "Unavailable";
+
+const getEventAvailabilityTone = (status?: string | null) => {
+  if (status === "AVAILABLE") {
+    return "success" as const;
+  }
+
+  if (status === "SOLD_OUT" || status === "EVENT_ENDED") {
+    return "warning" as const;
+  }
+
+  return "neutral" as const;
+};
+
+const formatEventPriceLabel = (value?: number | null) =>
+  value && value > 0 ? formatCurrency(value) : "Free";
 
 const formatPriceForOne = (costForTwo: number) => formatCurrency(Math.max(1, Math.round(costForTwo / 2)));
 
@@ -1795,7 +1818,12 @@ export const RestaurantDetailsPage = () => {
   const [restaurantEvents, setRestaurantEvents] = useState<CustomerRestaurantEvent[]>([]);
   const [isLoadingEvents, setIsLoadingEvents] = useState(false);
   const [eventsErrorMessage, setEventsErrorMessage] = useState<string>();
-  const [joiningEventId, setJoiningEventId] = useState<number | null>(null);
+  const [bookingEventId, setBookingEventId] = useState<number | null>(null);
+  const [selectedBookingEvent, setSelectedBookingEvent] = useState<CustomerRestaurantEvent | null>(null);
+  const [bookingQuantity, setBookingQuantity] = useState("1");
+  const [eventPaymentMethods, setEventPaymentMethods] = useState<CustomerPaymentMethod[]>([]);
+  const [isLoadingEventPaymentMethods, setIsLoadingEventPaymentMethods] = useState(false);
+  const [selectedEventPaymentMethodId, setSelectedEventPaymentMethodId] = useState<number | null>(null);
   const [selectedTab, setSelectedTab] = useState<"MENU" | "EVENTS" | "REVIEWS">("MENU");
   const {
     canManageSavedLocation,
@@ -1965,29 +1993,113 @@ export const RestaurantDetailsPage = () => {
     setSelection(nextSelection);
   };
 
-  const handleJoinEvent = async (eventId: number) => {
+  const closeBookingModal = () => {
+    if (bookingEventId != null) {
+      return;
+    }
+
+    setSelectedBookingEvent(null);
+    setBookingQuantity("1");
+    setEventPaymentMethods([]);
+    setSelectedEventPaymentMethodId(null);
+  };
+
+  const handleOpenBookingModal = async (event: CustomerRestaurantEvent) => {
     if (!liveRestaurant) {
       return;
     }
 
     if (
       !requireCustomerAccess({
-        guestMessage: "Please login to attend this event.",
-        wrongRoleMessage: "Sign in with a customer account to attend restaurant events.",
+        guestMessage: "Please login to book event slots.",
+        wrongRoleMessage: "Sign in with a customer account to book restaurant events.",
       })
     ) {
       return;
     }
 
-    setJoiningEventId(eventId);
+    setSelectedBookingEvent(event);
+    setBookingQuantity("1");
+    setSelectedEventPaymentMethodId(null);
+
+    if ((event.slotPrice ?? 0) <= 0) {
+      setEventPaymentMethods([]);
+      setIsLoadingEventPaymentMethods(false);
+      return;
+    }
+
+    setIsLoadingEventPaymentMethods(true);
     try {
-      const result = await joinCustomerEvent(eventId, liveRestaurant.id);
-      setRestaurantEvents((currentEvents) =>
-        currentEvents.map((event) => (event.id === eventId ? { ...event, ...result.event } : event)),
-      );
-      toast.success("Event joined successfully.");
+      const paymentMethods = await getCustomerPaymentMethods();
+      setEventPaymentMethods(paymentMethods);
+      setSelectedEventPaymentMethodId(paymentMethods[0]?.id ?? null);
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to join this event right now."));
+      toast.error(getApiErrorMessage(error, "Unable to load your payment methods right now."));
+      setEventPaymentMethods([]);
+      setSelectedEventPaymentMethodId(null);
+    } finally {
+      setIsLoadingEventPaymentMethods(false);
+    }
+  };
+
+  const handleBookEvent = async () => {
+    if (!liveRestaurant || !selectedBookingEvent) {
+      return;
+    }
+
+    const requestedQuantity = Number.parseInt(bookingQuantity, 10);
+    const maxBookableQuantity = Math.max(
+      1,
+      Math.min(
+        selectedBookingEvent.remainingSlots ?? requestedQuantity,
+        selectedBookingEvent.maxTicketsPerUser ?? requestedQuantity,
+      ),
+    );
+
+    if (!Number.isFinite(requestedQuantity) || requestedQuantity < 1) {
+      toast.error("Choose at least one slot for this event.");
+      return;
+    }
+
+    if (requestedQuantity > maxBookableQuantity) {
+      toast.error("Requested slots exceed the current event limit.");
+      return;
+    }
+
+    const selectedPaymentMethod =
+      selectedBookingEvent.slotPrice > 0
+        ? eventPaymentMethods.find((paymentMethod) => paymentMethod.id === selectedEventPaymentMethodId) ?? null
+        : null;
+
+    if (selectedBookingEvent.slotPrice > 0 && !selectedPaymentMethod) {
+      toast.error("Choose a saved card or UPI method before confirming this booking.");
+      return;
+    }
+
+    setBookingEventId(selectedBookingEvent.id);
+    try {
+      const result = await bookCustomerEvent(selectedBookingEvent.id, {
+        restaurantId: liveRestaurant.id,
+        quantity: requestedQuantity,
+        ...(selectedPaymentMethod
+          ? {
+              paymentMethod: selectedPaymentMethod.type,
+              paymentMethodId: selectedPaymentMethod.id,
+            }
+          : {}),
+      });
+      setRestaurantEvents((currentEvents) =>
+        currentEvents.map((event) =>
+          event.id === selectedBookingEvent.id ? { ...event, ...result.event } : event,
+        ),
+      );
+      toast.success(`Booking confirmed. Code: ${result.booking.bookingCode}`);
+      setSelectedBookingEvent(null);
+      setBookingQuantity("1");
+      setEventPaymentMethods([]);
+      setSelectedEventPaymentMethodId(null);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to confirm this booking right now."));
 
       void getRestaurantEvents(liveRestaurant.id)
         .then((events) => {
@@ -1997,7 +2109,7 @@ export const RestaurantDetailsPage = () => {
           // Keep the existing cards visible if the follow-up refresh also fails.
         });
     } finally {
-      setJoiningEventId(null);
+      setBookingEventId(null);
     }
   };
 
@@ -2025,6 +2137,24 @@ export const RestaurantDetailsPage = () => {
       { value: "EVENTS", label: "Events" },
       { value: "REVIEWS", label: "Reviews" },
     ];
+    const selectedBookingQuantityValue = Number.parseInt(bookingQuantity, 10);
+    const selectedBookingQuantityLimit = selectedBookingEvent
+      ? [selectedBookingEvent.remainingSlots, selectedBookingEvent.maxTicketsPerUser]
+          .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+          .reduce<number | null>((currentLimit, value) => {
+            if (currentLimit == null) {
+              return value;
+            }
+
+            return Math.min(currentLimit, value);
+          }, null)
+      : null;
+    const selectedBookingPaymentMethod =
+      eventPaymentMethods.find((paymentMethod) => paymentMethod.id === selectedEventPaymentMethodId) ?? null;
+    const selectedBookingTotalAmount =
+      selectedBookingEvent && Number.isFinite(selectedBookingQuantityValue) && selectedBookingQuantityValue > 0
+        ? (selectedBookingEvent.slotPrice ?? 0) * selectedBookingQuantityValue
+        : 0;
 
     return (
       <>
@@ -2198,8 +2328,8 @@ export const RestaurantDetailsPage = () => {
             <>
               <SectionHeading
                 eyebrow="Events"
-                title="Current events at this restaurant."
-                description="Active specials, live experiences, and limited-time menus available for this restaurant right now."
+                title="Bookable events at this restaurant."
+                description="Special dining nights, festival menus, and limited-seat experiences available for this restaurant right now."
               />
 
               {isLoadingEvents ? (
@@ -2215,7 +2345,7 @@ export const RestaurantDetailsPage = () => {
                   {restaurantEvents.map((event) => (
                     <SurfaceCard
                       key={event.id}
-                      className={`overflow-hidden p-0 ${event.isJoined ? "border border-accent/10 bg-accent/[0.03]" : ""}`}
+                      className={`overflow-hidden p-0 ${event.hasUserBooking ? "border border-accent/10 bg-accent/[0.03]" : ""}`}
                     >
                       {event.imageUrl ? (
                         <img
@@ -2233,13 +2363,19 @@ export const RestaurantDetailsPage = () => {
                             <h3 className="font-display text-3xl font-semibold text-ink">{event.title}</h3>
                             <p className="text-sm leading-7 text-ink-soft">{event.description}</p>
                           </div>
-                          <StatusPill
-                            label={formatEventStatusLabel(event.status)}
-                            tone={getEventStatusTone(event.status)}
-                          />
+                          <div className="flex flex-wrap gap-2">
+                            <StatusPill
+                              label={formatEventStatusLabel(event.status)}
+                              tone={getEventStatusTone(event.status)}
+                            />
+                            <StatusPill
+                              label={formatEventAvailabilityLabel(event.availabilityStatus)}
+                              tone={getEventAvailabilityTone(event.availabilityStatus)}
+                            />
+                          </div>
                         </div>
 
-                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-7">
                           <div>
                             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Start</p>
                             <p className="mt-2 text-sm text-ink-soft">{formatDateTimeValue(event.startsAt)}</p>
@@ -2255,12 +2391,16 @@ export const RestaurantDetailsPage = () => {
                             </p>
                           </div>
                           <div>
-                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Status</p>
-                            <p className="mt-2 text-sm text-ink-soft">{formatEventStatusLabel(event.status)}</p>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Booking window</p>
+                            <p className="mt-2 text-sm text-ink-soft">
+                              {formatDateTimeValue(event.bookingStartTime)} to {formatDateTimeValue(event.bookingEndTime)}
+                            </p>
                           </div>
                           <div>
-                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Attendees</p>
-                            <p className="mt-2 text-sm text-ink-soft">{event.attendeeCount} joined</p>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Total slots</p>
+                            <p className="mt-2 text-sm text-ink-soft">
+                              {event.totalSlots != null ? event.totalSlots : "Unlimited"}
+                            </p>
                           </div>
                           <div>
                             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Available slots</p>
@@ -2268,42 +2408,55 @@ export const RestaurantDetailsPage = () => {
                               {event.remainingSlots != null ? event.remainingSlots : "Unlimited"}
                             </p>
                           </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Slot price</p>
+                            <p className="mt-2 text-sm text-ink-soft">{formatEventPriceLabel(event.slotPrice)}</p>
+                          </div>
                         </div>
 
                         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-accent/10 pt-5">
                           <div className="space-y-1">
                             <p className="text-sm font-semibold text-ink">
-                              {event.isJoined
-                                ? "You are already on this guest list."
-                                : event.isFullyBooked
-                                  ? "This event is fully booked right now."
-                                  : "Reserve your spot for this dining experience."}
+                              {event.hasUserBooking
+                                ? `Booked ${event.userBooking?.quantity ?? 0} slot${event.userBooking?.quantity === 1 ? "" : "s"} for this event.`
+                                : event.availabilityStatus === "SOLD_OUT"
+                                  ? "This event is sold out right now."
+                                  : event.availabilityStatus === "BOOKING_CLOSED"
+                                    ? "Booking is closed for this event right now."
+                                    : event.availabilityStatus === "EVENT_ENDED"
+                                      ? "This event has already ended."
+                                      : "Reserve your event slots before this experience sells out."}
                             </p>
                             <p className="text-sm text-ink-soft">
-                              {event.maxAttendees != null
-                                ? `${event.attendeeCount} of ${event.maxAttendees} spots claimed`
-                                : "This event does not have a fixed attendee cap."}
+                              {event.hasUserBooking
+                                ? `Booking code ${event.userBooking?.bookingCode ?? "--"}${event.userBooking?.paymentStatus === "PAID" ? ` • Paid ${formatCurrency(event.userBooking.totalAmount)}` : ""}`
+                                : event.totalSlots != null
+                                  ? `${event.bookedSlots} of ${event.totalSlots} slots booked`
+                                  : "This event is running without a fixed seat cap."}
                             </p>
                           </div>
                           <Button
                             type="button"
                             className="min-w-[148px]"
-                            variant={event.isJoined ? "secondary" : "primary"}
+                            variant={event.hasUserBooking ? "secondary" : "primary"}
                             disabled={
-                              joiningEventId === event.id ||
-                              event.isJoined ||
-                              event.isFullyBooked ||
-                              event.status !== "ACTIVE"
+                              bookingEventId === event.id ||
+                              event.hasUserBooking ||
+                              !event.isBookable
                             }
-                            onClick={() => void handleJoinEvent(event.id)}
+                            onClick={() => void handleOpenBookingModal(event)}
                           >
-                            {joiningEventId === event.id
-                              ? "Joining..."
-                              : event.isJoined
-                                ? "Joined"
-                                : event.isFullyBooked
-                                  ? "Event Full"
-                                  : "Attend Event"}
+                            {bookingEventId === event.id
+                              ? "Booking..."
+                              : event.hasUserBooking
+                                ? "Booked"
+                                : event.availabilityStatus === "SOLD_OUT"
+                                  ? "Sold Out"
+                                  : event.availabilityStatus === "EVENT_ENDED"
+                                    ? "Event Ended"
+                                    : event.availabilityStatus === "BOOKING_CLOSED"
+                                      ? "Booking Closed"
+                                      : "Book Slot"}
                           </Button>
                         </div>
                       </div>
@@ -2342,6 +2495,167 @@ export const RestaurantDetailsPage = () => {
             </>
           ) : null}
         </PageShell>
+
+        <Modal
+          open={Boolean(selectedBookingEvent)}
+          onClose={closeBookingModal}
+          title={selectedBookingEvent ? `Book slots for ${selectedBookingEvent.title}` : "Book event"}
+          className="max-w-3xl"
+        >
+          {selectedBookingEvent ? (
+            <div className="space-y-5">
+              <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-5 py-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">
+                      {selectedBookingEvent.restaurant?.name ?? liveRestaurant.name}
+                    </p>
+                    <h3 className="mt-2 font-display text-3xl font-semibold text-ink">
+                      {selectedBookingEvent.title}
+                    </h3>
+                    <p className="mt-3 text-sm leading-7 text-ink-soft">
+                      {selectedBookingEvent.description}
+                    </p>
+                  </div>
+                  <StatusPill
+                    label={formatEventAvailabilityLabel(selectedBookingEvent.availabilityStatus)}
+                    tone={getEventAvailabilityTone(selectedBookingEvent.availabilityStatus)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-[1.5rem] bg-cream px-5 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Event timing</p>
+                  <p className="mt-2 text-sm text-ink-soft">
+                    {formatDateTimeValue(selectedBookingEvent.startsAt)} to {formatDateTimeValue(selectedBookingEvent.endsAt)}
+                  </p>
+                </div>
+                <div className="rounded-[1.5rem] bg-cream px-5 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Booking window</p>
+                  <p className="mt-2 text-sm text-ink-soft">
+                    {formatDateTimeValue(selectedBookingEvent.bookingStartTime)} to {formatDateTimeValue(selectedBookingEvent.bookingEndTime)}
+                  </p>
+                </div>
+                <div className="rounded-[1.5rem] bg-cream px-5 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Available slots</p>
+                  <p className="mt-2 text-sm text-ink-soft">
+                    {selectedBookingEvent.remainingSlots != null ? selectedBookingEvent.remainingSlots : "Unlimited"}
+                  </p>
+                </div>
+                <div className="rounded-[1.5rem] bg-cream px-5 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Slot price</p>
+                  <p className="mt-2 text-sm text-ink-soft">
+                    {formatEventPriceLabel(selectedBookingEvent.slotPrice)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <Input
+                  label="Number of slots"
+                  type="number"
+                  min="1"
+                  max={selectedBookingQuantityLimit != null ? String(selectedBookingQuantityLimit) : undefined}
+                  value={bookingQuantity}
+                  onChange={(event) => setBookingQuantity(event.target.value)}
+                />
+                <div className="rounded-[1.5rem] bg-cream px-5 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Amount to pay</p>
+                  <p className="mt-2 text-sm font-semibold text-ink">
+                    {selectedBookingEvent.slotPrice > 0
+                      ? formatCurrency(selectedBookingTotalAmount)
+                      : "Free event"}
+                  </p>
+                  <p className="mt-2 text-sm text-ink-soft">
+                    {selectedBookingEvent.maxTicketsPerUser != null
+                      ? `Maximum ${selectedBookingEvent.maxTicketsPerUser} slot${selectedBookingEvent.maxTicketsPerUser === 1 ? "" : "s"} per user.`
+                      : "Choose the number of slots you want to reserve."}
+                  </p>
+                </div>
+              </div>
+
+              {selectedBookingEvent.slotPrice > 0 ? (
+                <div className="space-y-4 rounded-[1.5rem] bg-cream px-5 py-5">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Payment method</p>
+                    <p className="mt-2 text-sm text-ink-soft">
+                      Select one of your saved cards or UPI IDs to confirm this paid event booking.
+                    </p>
+                  </div>
+
+                  {isLoadingEventPaymentMethods ? (
+                    <div className="rounded-[1.25rem] bg-white px-4 py-4 text-sm text-ink-soft">
+                      Loading saved payment methods.
+                    </div>
+                  ) : eventPaymentMethods.length ? (
+                    <>
+                      <Select
+                        label="Saved payment method"
+                        value={selectedEventPaymentMethodId ? String(selectedEventPaymentMethodId) : ""}
+                        onChange={(event) => setSelectedEventPaymentMethodId(Number(event.target.value))}
+                      >
+                        {eventPaymentMethods.map((paymentMethod) => (
+                          <option key={paymentMethod.id} value={paymentMethod.id}>
+                            {paymentMethod.type === "CARD"
+                              ? `${paymentMethod.label ?? "Card"} ending ${paymentMethod.maskedEnding ?? paymentMethod.cardLast4 ?? "0000"}`
+                              : paymentMethod.label?.trim()
+                                ? `${paymentMethod.label} - ${paymentMethod.upiId ?? ""}`
+                                : `UPI - ${paymentMethod.upiId ?? ""}`}
+                          </option>
+                        ))}
+                      </Select>
+                      {selectedBookingPaymentMethod ? (
+                        <p className="text-sm text-ink-soft">
+                          Paying with {selectedBookingPaymentMethod.type === "CARD" ? "card" : "UPI"} using{" "}
+                          {selectedBookingPaymentMethod.type === "CARD"
+                            ? `${selectedBookingPaymentMethod.label ?? "saved card"} ending ${selectedBookingPaymentMethod.maskedEnding ?? selectedBookingPaymentMethod.cardLast4 ?? "0000"}`
+                            : selectedBookingPaymentMethod.upiId ?? "saved UPI ID"}
+                          .
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-[1.25rem] bg-white px-4 py-4">
+                      <div>
+                        <p className="font-semibold text-ink">No saved payment method found</p>
+                        <p className="mt-2 text-sm text-ink-soft">
+                          Add a saved card or UPI ID in your wallet before booking this paid event.
+                        </p>
+                      </div>
+                      <Link
+                        to="/wallet"
+                        className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
+                      >
+                        Open wallet
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap justify-end gap-3">
+                <Button type="button" variant="secondary" onClick={closeBookingModal} disabled={bookingEventId != null}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void handleBookEvent()}
+                  disabled={
+                    bookingEventId != null ||
+                    !selectedBookingEvent.isBookable ||
+                    !Number.isFinite(selectedBookingQuantityValue) ||
+                    selectedBookingQuantityValue < 1 ||
+                    (selectedBookingQuantityLimit != null && selectedBookingQuantityValue > selectedBookingQuantityLimit) ||
+                    (selectedBookingEvent.slotPrice > 0 && (!eventPaymentMethods.length || !selectedBookingPaymentMethod))
+                  }
+                >
+                  {bookingEventId != null ? "Booking..." : "Confirm booking"}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </Modal>
 
         <LocationSelectionModal
           canManageSavedLocation={canManageSavedLocation}

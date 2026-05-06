@@ -270,14 +270,28 @@ export type OwnerEventInsight = {
     imageUrl?: string | null;
     startsAt: string;
     endsAt: string;
+    bookingStartTime?: string | null;
+    bookingEndTime?: string | null;
     discountLabel?: string | null;
-    maxAttendees?: number | null;
+    totalSlots?: number | null;
+    bookedSlots: number;
+    slotPrice: number;
+    maxTicketsPerUser?: number | null;
     status: "ACTIVE" | "INACTIVE" | "EXPIRED";
     createdAt: string;
     updatedAt: string;
     appliesToAllRestaurants: boolean;
-    attendeeCount: number;
     remainingSlots?: number | null;
+    bookingsCount: number;
+    revenue: number;
+    isSoldOut: boolean;
+    isBookingClosed: boolean;
+    isEventEnded: boolean;
+    availabilityStatus: "AVAILABLE" | "SOLD_OUT" | "BOOKING_CLOSED" | "EVENT_ENDED" | "INACTIVE";
+
+    // Compatibility aliases
+    maxAttendees?: number | null;
+    attendeeCount: number;
     isFullyBooked: boolean;
     restaurant?: {
       id: number;
@@ -297,12 +311,24 @@ export type OwnerEventInsight = {
     name: string;
     slug: string;
   };
-  restaurantAttendeeCount: number;
-  joinedUsers: Array<{
+  restaurantBookedSlots: number;
+  restaurantRevenue: number;
+  bookings: Array<{
     id: number;
     userId: number;
-    joinedAt: string;
-    status: "JOINED" | "CANCELLED" | "ATTENDED";
+    eventId: number;
+    restaurantId: number;
+    quantity: number;
+    totalAmount: number;
+    bookingCode: string;
+    bookedAt: string;
+    cancelledAt?: string | null;
+    paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING";
+    status: "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED";
+    canCancel: boolean;
+    isUpcoming: boolean;
+    isPastEvent: boolean;
+    hasActiveBooking: boolean;
     user: {
       id: number;
       fullName: string;
@@ -410,6 +436,15 @@ export const getOwnerOffers = async () =>
 
 export const getOwnerEventInsights = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ events: OwnerEventInsight[] }>>("/owner/events")).events;
+
+export const markOwnerEventBookingAttended = async (bookingId: number) =>
+  unwrapData(
+    await apiClient.patch<
+      ApiEnvelope<{
+        booking: OwnerEventInsight["bookings"][number];
+      }>
+    >(`/owner/events/bookings/${bookingId}/attend`),
+  ).booking;
 
 export const createOwnerOffer = async (payload: Record<string, unknown>) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ offer: OwnerOffer }>>("/offers/owner", payload)).offer;
