@@ -77,6 +77,7 @@ type OwnerEventFormState = {
   refundDeadline: string;
   refundPercentage: string;
   cancellationFee: string;
+  refundPolicyNote: string;
   status: OwnerEventStatusValue;
 };
 
@@ -100,6 +101,7 @@ const emptyEventForm: OwnerEventFormState = {
   refundDeadline: "",
   refundPercentage: "100",
   cancellationFee: "0",
+  refundPolicyNote: "",
   status: "ACTIVE",
 };
 
@@ -118,6 +120,21 @@ const combineDateAndTime = (dateValue: string, timeValue: string) =>
 
 const formatSuggestedValue = (value?: number | null, suffix = "") =>
   value != null ? `${value}${suffix}` : "Flexible";
+
+const canApproveRefund = (booking: OwnerEventInsight["bookings"][number]) =>
+  booking.status === "CANCELLED" &&
+  booking.paymentStatus !== "FREE" &&
+  booking.refundStatus === "PENDING";
+
+const canRejectRefund = (booking: OwnerEventInsight["bookings"][number]) =>
+  booking.status === "CANCELLED" &&
+  booking.paymentStatus !== "FREE" &&
+  booking.refundStatus === "PENDING";
+
+const canMarkRefunded = (booking: OwnerEventInsight["bookings"][number]) =>
+  booking.status === "CANCELLED" &&
+  booking.paymentStatus !== "FREE" &&
+  booking.refundStatus === "APPROVED";
 
 export const OwnerRestaurantPage = () => {
   const [restaurants, setRestaurants] = useState<OwnerRestaurant[]>([]);
@@ -194,7 +211,7 @@ export const OwnerRestaurantPage = () => {
           ? "Refund approved successfully."
           : action === "REJECT"
             ? "Refund rejected successfully."
-            : "Refund processed successfully.",
+            : "Refund marked as refunded successfully.",
       );
       await loadRestaurants();
     } catch (error) {
@@ -274,6 +291,7 @@ export const OwnerRestaurantPage = () => {
       refundDeadline: current.refundDeadline || derivedBookingEnd || "",
       refundPercentage: current.refundPercentage || "100",
       cancellationFee: current.cancellationFee || "0",
+      refundPolicyNote: current.refundPolicyNote || "",
       status: "ACTIVE",
     }));
     setIsTemplatePickerOpen(false);
@@ -343,6 +361,7 @@ export const OwnerRestaurantPage = () => {
             ? Number(eventForm.cancellationFee)
             : 0
           : 0,
+        refundPolicyNote: eventForm.refundPolicyNote.trim() || null,
         status: eventForm.status,
       });
       toast.success(
@@ -773,12 +792,10 @@ export const OwnerRestaurantPage = () => {
                                           {attendingBookingId === booking.id ? "Saving..." : "Mark attended"}
                                         </Button>
                                       ) : null}
-                                      {booking.status === "CANCELLED" &&
-                                      booking.refundStatus !== "NOT_ELIGIBLE" &&
-                                      booking.paymentStatus !== "FREE" ? (
+                                      {canApproveRefund(booking) || canRejectRefund(booking) || canMarkRefunded(booking) ? (
                                         <div className="mt-3 space-y-2">
                                           <Textarea
-                                            label="Refund note"
+                                            label="Refund note / reason"
                                             value={refundNotes[booking.id] ?? booking.refundReason ?? ""}
                                             onChange={(event) =>
                                               setRefundNotes((current) => ({
@@ -786,37 +803,46 @@ export const OwnerRestaurantPage = () => {
                                                 [booking.id]: event.target.value,
                                               }))
                                             }
-                                            placeholder="Add refund note"
+                                            placeholder="Add the approval, rejection, or refund note."
                                           />
                                           <div className="flex flex-wrap justify-end gap-2">
-                                            <Button
-                                              type="button"
-                                              variant="secondary"
-                                              className="px-3 py-2 text-xs"
-                                              onClick={() => void handleRefundAction(booking.id, "APPROVE")}
-                                              disabled={refundUpdatingBookingId === booking.id}
-                                            >
-                                              Approve refund
-                                            </Button>
-                                            <Button
-                                              type="button"
-                                              variant="secondary"
-                                              className="px-3 py-2 text-xs"
-                                              onClick={() => void handleRefundAction(booking.id, "REJECT")}
-                                              disabled={refundUpdatingBookingId === booking.id}
-                                            >
-                                              Reject refund
-                                            </Button>
-                                            <Button
-                                              type="button"
-                                              className="px-3 py-2 text-xs"
-                                              onClick={() => void handleRefundAction(booking.id, "PROCESS")}
-                                              disabled={refundUpdatingBookingId === booking.id}
-                                            >
-                                              {refundUpdatingBookingId === booking.id ? "Saving..." : "Mark processed"}
-                                            </Button>
+                                            {canApproveRefund(booking) ? (
+                                              <Button
+                                                type="button"
+                                                variant="secondary"
+                                                className="px-3 py-2 text-xs"
+                                                onClick={() => void handleRefundAction(booking.id, "APPROVE")}
+                                                disabled={refundUpdatingBookingId === booking.id}
+                                              >
+                                                Approve refund
+                                              </Button>
+                                            ) : null}
+                                            {canRejectRefund(booking) ? (
+                                              <Button
+                                                type="button"
+                                                variant="secondary"
+                                                className="px-3 py-2 text-xs"
+                                                onClick={() => void handleRefundAction(booking.id, "REJECT")}
+                                                disabled={refundUpdatingBookingId === booking.id}
+                                              >
+                                                Reject refund
+                                              </Button>
+                                            ) : null}
+                                            {canMarkRefunded(booking) ? (
+                                              <Button
+                                                type="button"
+                                                className="px-3 py-2 text-xs"
+                                                onClick={() => void handleRefundAction(booking.id, "PROCESS")}
+                                                disabled={refundUpdatingBookingId === booking.id}
+                                              >
+                                                {refundUpdatingBookingId === booking.id ? "Saving..." : "Mark refunded"}
+                                              </Button>
+                                            ) : null}
                                           </div>
                                         </div>
+                                      ) : null}
+                                      {booking.refundReason ? (
+                                        <p className="mt-2 text-xs text-ink-muted">Refund note: {booking.refundReason}</p>
                                       ) : null}
                                     </div>
                                   </div>
@@ -1075,40 +1101,58 @@ export const OwnerRestaurantPage = () => {
               onChange={(event) => setEventForm({ ...eventForm, maxTicketsPerUser: event.target.value })}
               placeholder="Optional"
             />
-            <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream px-4 py-3 text-sm font-semibold text-ink">
-              <span>Refund allowed</span>
-              <input
-                type="checkbox"
-                className="h-4 w-4 accent-[rgb(139,30,36)]"
-                checked={eventForm.refundAllowed}
-                onChange={(event) => setEventForm({ ...eventForm, refundAllowed: event.target.checked })}
-              />
-            </label>
-            <Input
-              label="Refund deadline"
-              type="datetime-local"
-              value={eventForm.refundDeadline}
-              onChange={(event) => setEventForm({ ...eventForm, refundDeadline: event.target.value })}
-              disabled={!eventForm.refundAllowed}
-            />
-            <Input
-              label="Refund percentage"
-              type="number"
-              min="0"
-              max="100"
-              value={eventForm.refundPercentage}
-              onChange={(event) => setEventForm({ ...eventForm, refundPercentage: event.target.value })}
-              disabled={!eventForm.refundAllowed}
-            />
-            <Input
-              label="Cancellation fee"
-              type="number"
-              min="0"
-              step="0.01"
-              value={eventForm.cancellationFee}
-              onChange={(event) => setEventForm({ ...eventForm, cancellationFee: event.target.value })}
-              disabled={!eventForm.refundAllowed}
-            />
+            <div className="md:col-span-2 rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-5 py-5">
+              <div className="mb-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund policy</p>
+                <p className="mt-2 text-sm text-ink-soft">
+                  Choose whether refunds are allowed, what amount applies, when eligibility ends, and any extra policy note guests should see.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream px-4 py-3 text-sm font-semibold text-ink">
+                  <span>Refund allowed</span>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-[rgb(139,30,36)]"
+                    checked={eventForm.refundAllowed}
+                    onChange={(event) => setEventForm({ ...eventForm, refundAllowed: event.target.checked })}
+                  />
+                </label>
+                <Input
+                  label="Refund deadline"
+                  type="datetime-local"
+                  value={eventForm.refundDeadline}
+                  onChange={(event) => setEventForm({ ...eventForm, refundDeadline: event.target.value })}
+                  disabled={!eventForm.refundAllowed}
+                />
+                <Input
+                  label="Refund percentage"
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={eventForm.refundPercentage}
+                  onChange={(event) => setEventForm({ ...eventForm, refundPercentage: event.target.value })}
+                  disabled={!eventForm.refundAllowed}
+                />
+                <Input
+                  label="Cancellation fee"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={eventForm.cancellationFee}
+                  onChange={(event) => setEventForm({ ...eventForm, cancellationFee: event.target.value })}
+                  disabled={!eventForm.refundAllowed}
+                />
+              </div>
+              <div className="mt-4">
+                <Textarea
+                  label="Refund policy note"
+                  value={eventForm.refundPolicyNote}
+                  onChange={(event) => setEventForm({ ...eventForm, refundPolicyNote: event.target.value })}
+                  placeholder="Add any extra refund conditions, review notes, or timing clarifications."
+                />
+              </div>
+            </div>
           </div>
 
           <Textarea

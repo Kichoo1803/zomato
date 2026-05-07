@@ -56,6 +56,7 @@ const eventSelect = {
   refundDeadline: true,
   refundPercentage: true,
   cancellationFee: true,
+  refundPolicyNote: true,
   status: true,
   createdAt: true,
   updatedAt: true,
@@ -127,6 +128,7 @@ const bookingSelect = {
   refundDeadline: true,
   refundPercentage: true,
   cancellationFee: true,
+  refundPolicyNote: true,
   refundAmount: true,
   refundStatus: true,
   refundReason: true,
@@ -155,6 +157,13 @@ type EventTemplateRecord = Prisma.EventTemplateGetPayload<{ select: typeof event
 type EventBookingRecord = Prisma.EventBookingGetPayload<{ select: typeof bookingSelect }>;
 type RestaurantContext = NonNullable<EventRecord["restaurant"]>;
 type SavedPaymentMethodLookupClient = Pick<Prisma.TransactionClient, "savedPaymentMethod">;
+type RefundPolicySnapshot = {
+  refundAllowed: boolean;
+  refundDeadline: Date | null;
+  refundPercentage: number;
+  cancellationFee: number;
+  refundPolicyNote: string | null;
+};
 
 type CurrentUserBookingSummary = {
   id: number;
@@ -178,6 +187,7 @@ type CurrentUserBookingSummary = {
   refundDeadline: Date | null;
   refundPercentage: number | null;
   cancellationFee: number | null;
+  refundPolicyNote: string | null;
   refundAmount: number | null;
   refundStatus: string | null;
   refundReason: string | null;
@@ -219,6 +229,11 @@ const bookingDatabaseBusyFragments = [
 
 const includesAnyFragment = (value: string, fragments: string[]) =>
   fragments.some((fragment) => value.includes(fragment));
+
+const normalizeRefundPolicyNote = (value?: string | null) => {
+  const trimmedValue = value?.trim();
+  return trimmedValue ? trimmedValue : null;
+};
 
 const isTransientBookingDatabaseError = (error: unknown) => {
   const message = getDatabaseErrorMessage(error).toLowerCase();
@@ -661,6 +676,7 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
       refundDeadline: true,
       refundPercentage: true,
       cancellationFee: true,
+      refundPolicyNote: true,
       refundAmount: true,
       refundStatus: true,
       refundReason: true,
@@ -863,44 +879,50 @@ const roundCurrency = (value: number) => Number(value.toFixed(2));
 const getEventRefundPolicy = (
   event: Pick<
     EventRecord,
-    "startsAt" | "refundAllowed" | "refundDeadline" | "refundPercentage" | "cancellationFee"
+    | "startsAt"
+    | "refundAllowed"
+    | "refundDeadline"
+    | "refundPercentage"
+    | "cancellationFee"
+    | "refundPolicyNote"
   >,
-) => ({
+) =>
+  ({
   refundAllowed: event.refundAllowed ?? true,
   refundDeadline: event.refundDeadline ?? event.startsAt,
   refundPercentage: roundCurrency(event.refundPercentage ?? 100),
   cancellationFee: roundCurrency(event.cancellationFee ?? 0),
-});
+  refundPolicyNote: normalizeRefundPolicyNote(event.refundPolicyNote),
+}) satisfies RefundPolicySnapshot;
 
 const getBookingRefundPolicy = (
   booking: Pick<
     EventBookingRecord | CurrentUserBookingSummary,
-    "refundAllowed" | "refundDeadline" | "refundPercentage" | "cancellationFee"
+    | "refundAllowed"
+    | "refundDeadline"
+    | "refundPercentage"
+    | "cancellationFee"
+    | "refundPolicyNote"
   >,
-  event: Pick<EventRecord, "startsAt" | "refundAllowed" | "refundDeadline" | "refundPercentage" | "cancellationFee">,
-) => ({
+  event: Pick<
+    EventRecord,
+    | "startsAt"
+    | "refundAllowed"
+    | "refundDeadline"
+    | "refundPercentage"
+    | "cancellationFee"
+    | "refundPolicyNote"
+  >,
+) =>
+  ({
   refundAllowed: booking.refundAllowed ?? event.refundAllowed ?? true,
   refundDeadline: booking.refundDeadline ?? event.refundDeadline ?? event.startsAt,
   refundPercentage: roundCurrency(booking.refundPercentage ?? event.refundPercentage ?? 100),
   cancellationFee: roundCurrency(booking.cancellationFee ?? event.cancellationFee ?? 0),
-});
-
-const getRefundPolicyNote = (policy: {
-  refundAllowed: boolean;
-  refundDeadline: Date | null;
-  refundPercentage: number;
-  cancellationFee: number;
-}) => {
-  if (!policy.refundAllowed) {
-    return "No refund applicable for this booking.";
-  }
-
-  return `Refunds up to ${policy.refundPercentage}% are allowed until ${
-    new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" }).format(
-      policy.refundDeadline ?? new Date(),
-    )
-  } with a ${policy.cancellationFee > 0 ? `cancellation fee of INR ${policy.cancellationFee}` : "zero cancellation fee"}.`;
-};
+  refundPolicyNote:
+    normalizeRefundPolicyNote(booking.refundPolicyNote) ??
+    normalizeRefundPolicyNote(event.refundPolicyNote),
+}) satisfies RefundPolicySnapshot;
 
 const calculateRefundForCancellation = (input: {
   totalAmount: number;
@@ -978,6 +1000,7 @@ const getBookingPricing = (
     | "refundDeadline"
     | "refundPercentage"
     | "cancellationFee"
+    | "refundPolicyNote"
   >,
   quantity: number,
 ) => {
@@ -1001,7 +1024,7 @@ const getBookingPricing = (
     refundDeadline: refundPolicy.refundDeadline,
     refundPercentage: refundPolicy.refundPercentage,
     cancellationFee: refundPolicy.cancellationFee,
-    refundPolicyNote: getRefundPolicyNote(refundPolicy),
+    refundPolicyNote: refundPolicy.refundPolicyNote,
     cancellationAllowedUntil: event.startsAt,
   };
 };
@@ -1365,6 +1388,23 @@ const notifyEventCancellation = async (
   );
 };
 
+const getLatestEventBooking = async (bookingId: number) => {
+  const latestBooking = await prisma.eventBooking.findUnique({
+    where: { id: bookingId },
+    select: bookingSelect,
+  });
+
+  if (!latestBooking) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "Event booking not found.",
+      "EVENT_BOOKING_NOT_FOUND",
+    );
+  }
+
+  return latestBooking;
+};
+
 const updateRefundStateForBooking = async (
   booking: EventBookingRecord,
   input: {
@@ -1404,11 +1444,32 @@ const updateRefundStateForBooking = async (
     );
   }
 
+  if (currentRefundStatus === RefundStatus.REJECTED) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Rejected refunds cannot be processed further.",
+      "EVENT_REFUND_ALREADY_REJECTED",
+    );
+  }
+
+  if (currentRefundStatus === RefundStatus.REFUNDED) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "This refund has already been processed.",
+      "EVENT_REFUND_ALREADY_PROCESSED",
+    );
+  }
+
+  if (currentRefundStatus === RefundStatus.FAILED) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "This refund already failed during processing and is locked from duplicate processing.",
+      "EVENT_REFUND_ALREADY_FAILED",
+    );
+  }
+
   if (input.action === "APPROVE") {
-    if (
-      currentRefundStatus !== RefundStatus.PENDING &&
-      currentRefundStatus !== RefundStatus.APPROVED
-    ) {
+    if (currentRefundStatus !== RefundStatus.PENDING) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
         "Only pending refunds can be approved.",
@@ -1416,8 +1477,12 @@ const updateRefundStateForBooking = async (
       );
     }
 
-    const updatedBooking = await prisma.eventBooking.update({
-      where: { id: booking.id },
+    const approvalResult = await prisma.eventBooking.updateMany({
+      where: {
+        id: booking.id,
+        status: EventBookingStatus.CANCELLED,
+        refundStatus: RefundStatus.PENDING,
+      },
       data: {
         refundStatus: RefundStatus.APPROVED,
         paymentStatus:
@@ -1427,8 +1492,17 @@ const updateRefundStateForBooking = async (
         refundReason: trimmedReason ?? booking.refundReason,
         refundProcessedAt: null,
       },
-      select: bookingSelect,
     });
+
+    if (!approvalResult.count) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "This refund request was already updated. Refresh to review the latest status.",
+        "EVENT_REFUND_STATUS_ALREADY_UPDATED",
+      );
+    }
+
+    const updatedBooking = await getLatestEventBooking(booking.id);
 
     await notifyRefundStatusChange(updatedBooking, {
       title: "Event refund approved",
@@ -1442,19 +1516,20 @@ const updateRefundStateForBooking = async (
   }
 
   if (input.action === "REJECT") {
-    if (
-      currentRefundStatus !== RefundStatus.PENDING &&
-      currentRefundStatus !== RefundStatus.APPROVED
-    ) {
+    if (currentRefundStatus !== RefundStatus.PENDING) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
-        "Only pending or approved refunds can be rejected.",
+        "Only pending refunds can be rejected.",
         "EVENT_REFUND_REJECT_INVALID_STATUS",
       );
     }
 
-    const updatedBooking = await prisma.eventBooking.update({
-      where: { id: booking.id },
+    const rejectionResult = await prisma.eventBooking.updateMany({
+      where: {
+        id: booking.id,
+        status: EventBookingStatus.CANCELLED,
+        refundStatus: RefundStatus.PENDING,
+      },
       data: {
         refundStatus: RefundStatus.REJECTED,
         paymentStatus:
@@ -1464,8 +1539,17 @@ const updateRefundStateForBooking = async (
         refundReason: trimmedReason ?? booking.refundReason ?? "Refund request was rejected.",
         refundProcessedAt: null,
       },
-      select: bookingSelect,
     });
+
+    if (!rejectionResult.count) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "This refund request was already updated. Refresh to review the latest status.",
+        "EVENT_REFUND_STATUS_ALREADY_UPDATED",
+      );
+    }
+
+    const updatedBooking = await getLatestEventBooking(booking.id);
 
     await notifyRefundStatusChange(updatedBooking, {
       title: "Event refund rejected",
@@ -1494,27 +1578,83 @@ const updateRefundStateForBooking = async (
     );
   }
 
-  const updatedBooking = await prisma.eventBooking.update({
-    where: { id: booking.id },
-    data: {
-      refundStatus: RefundStatus.REFUNDED,
-      paymentStatus:
-        (booking.refundAmount ?? 0) < booking.totalAmount
-          ? PaymentStatus.PARTIALLY_REFUNDED
-          : PaymentStatus.REFUNDED,
-      refundReason: trimmedReason ?? booking.refundReason,
-      refundProcessedAt: new Date(),
-    },
-    select: bookingSelect,
-  });
+  try {
+    const processedAt = new Date();
+    const processingResult = await prisma.eventBooking.updateMany({
+      where: {
+        id: booking.id,
+        status: EventBookingStatus.CANCELLED,
+        refundStatus: RefundStatus.APPROVED,
+      },
+      data: {
+        refundStatus: RefundStatus.REFUNDED,
+        paymentStatus:
+          (booking.refundAmount ?? 0) < booking.totalAmount
+            ? PaymentStatus.PARTIALLY_REFUNDED
+            : PaymentStatus.REFUNDED,
+        refundReason: trimmedReason ?? booking.refundReason,
+        refundProcessedAt: processedAt,
+      },
+    });
 
-  await notifyRefundStatusChange(updatedBooking, {
-    title: "Event refund processed",
-    message: `Refund for ${booking.event.title} was processed to the original payment method.`,
-    eventKeySuffix: "processed",
-  });
+    if (!processingResult.count) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "This refund was already processed or changed. Refresh to review the latest status.",
+        "EVENT_REFUND_STATUS_ALREADY_UPDATED",
+      );
+    }
 
-  return updatedBooking;
+    const updatedBooking = await getLatestEventBooking(booking.id);
+
+    await notifyRefundStatusChange(updatedBooking, {
+      title: "Event refund processed",
+      message: `Refund for ${booking.event.title} was processed to the original payment method.`,
+      eventKeySuffix: "processed",
+    });
+
+    return updatedBooking;
+  } catch (error) {
+    if (error instanceof AppError) {
+      throw error;
+    }
+
+    const failureReason =
+      trimmedReason ??
+      booking.refundReason ??
+      "Refund processing failed. Please review this booking before attempting another payout.";
+    const failureResult = await prisma.eventBooking.updateMany({
+      where: {
+        id: booking.id,
+        status: EventBookingStatus.CANCELLED,
+        refundStatus: RefundStatus.APPROVED,
+      },
+      data: {
+        refundStatus: RefundStatus.FAILED,
+        paymentStatus: PaymentStatus.PAID,
+        refundReason: failureReason,
+        refundProcessedAt: null,
+      },
+    });
+
+    if (failureResult.count) {
+      const failedBooking = await getLatestEventBooking(booking.id);
+
+      await notifyRefundStatusChange(failedBooking, {
+        title: "Event refund failed",
+        message: `Refund processing for ${booking.event.title} failed. ${
+          failedBooking.refundReason ?? "Please contact support for assistance."
+        }`,
+        eventKeySuffix: "failed",
+      });
+    }
+
+    throw new AppError(
+      StatusCodes.BAD_GATEWAY,
+      "Refund processing failed. The refund has been marked as failed for follow-up.",
+      "EVENT_REFUND_PROCESS_FAILED",
+    );
+  }
 };
 
 const normalizeBookingStatus = (status: string) =>
@@ -1538,6 +1678,50 @@ const getEffectiveBookingStatus = (
   return normalizedStatus;
 };
 
+const getDisplayedRefundState = (input: {
+  status: string;
+  paymentStatus: string;
+  totalAmount: number;
+  refundAmount?: number | null;
+  refundStatus?: string | null;
+  refundAllowed: boolean;
+  refundDeadline: Date | null;
+  refundPercentage: number;
+  cancellationFee: number;
+}) => {
+  const currentRefundStatus = getRefundStatusForBooking(input.paymentStatus, input.refundStatus);
+  const normalizedStatus = normalizeBookingStatus(input.status);
+
+  if (
+    currentRefundStatus !== RefundStatus.NOT_REQUESTED ||
+    normalizedStatus === EventBookingStatus.CANCELLED ||
+    input.paymentStatus !== PaymentStatus.PAID
+  ) {
+    return {
+      refundAmount: roundCurrency(input.refundAmount ?? 0),
+      refundEligible:
+        currentRefundStatus === RefundStatus.PENDING ||
+        currentRefundStatus === RefundStatus.APPROVED ||
+        currentRefundStatus === RefundStatus.REFUNDED ||
+        currentRefundStatus === RefundStatus.FAILED,
+    };
+  }
+
+  const preview = calculateRefundForCancellation({
+    totalAmount: input.totalAmount,
+    paymentStatus: input.paymentStatus,
+    refundAllowed: input.refundAllowed,
+    refundDeadline: input.refundDeadline,
+    refundPercentage: input.refundPercentage,
+    cancellationFee: input.cancellationFee,
+  });
+
+  return {
+    refundAmount: roundCurrency(preview.refundAmount),
+    refundEligible: preview.refundEligible,
+  };
+};
+
 const mapBookingSummary = (
   booking?: CurrentUserBookingSummary | EventBookingRecord | null,
 ) => {
@@ -1551,6 +1735,17 @@ const mapBookingSummary = (
     "event" in booking ? booking.event.slotPrice ?? null : booking.slotPrice ?? null,
   );
   const refundStatus = getRefundStatusForBooking(booking.paymentStatus, booking.refundStatus);
+  const refundView = getDisplayedRefundState({
+    status: booking.status,
+    paymentStatus: booking.paymentStatus,
+    totalAmount: normalizedAmounts.totalAmount,
+    refundAmount: normalizedAmounts.refundAmount,
+    refundStatus: booking.refundStatus,
+    refundAllowed: normalizedAmounts.refundAllowed ?? true,
+    refundDeadline: normalizedAmounts.refundDeadline ?? null,
+    refundPercentage: normalizedAmounts.refundPercentage ?? 100,
+    cancellationFee: normalizedAmounts.cancellationFee ?? 0,
+  });
 
   return {
     id: booking.id,
@@ -1575,17 +1770,13 @@ const mapBookingSummary = (
     refundDeadline: normalizedAmounts.refundDeadline ?? null,
     refundPercentage: normalizedAmounts.refundPercentage ?? null,
     cancellationFee: normalizedAmounts.cancellationFee ?? null,
-    refundAmount: normalizedAmounts.refundAmount,
+    refundAmount: refundView.refundAmount,
     refundStatus,
     refundReason: booking.refundReason ?? null,
     refundProcessedAt: booking.refundProcessedAt ?? null,
-    refundEligible:
-      (normalizedAmounts.refundAllowed ?? true) &&
-      ((normalizedAmounts.refundDeadline?.getTime() ?? Number.POSITIVE_INFINITY) >= Date.now() ||
-        refundStatus === RefundStatus.PENDING ||
-        refundStatus === RefundStatus.APPROVED ||
-        refundStatus === RefundStatus.REFUNDED),
+    refundEligible: refundView.refundEligible,
     cancellationAllowedUntil: booking.cancellationAllowedUntil ?? null,
+    refundPolicyNote: normalizeRefundPolicyNote(booking.refundPolicyNote),
   };
 };
 
@@ -1621,6 +1812,7 @@ const mapEvent = (
     refundDeadline: event.refundDeadline ?? event.startsAt,
     refundPercentage: roundCurrency(event.refundPercentage ?? 100),
     cancellationFee: roundCurrency(event.cancellationFee ?? 0),
+    refundPolicyNote: normalizeRefundPolicyNote(event.refundPolicyNote),
     isSoldOut: availability.isSoldOut,
     isFullyBooked: availability.isSoldOut,
     isBookingClosed: availability.isBookingClosed,
@@ -1664,6 +1856,17 @@ const mapEventBooking = (
     currentUserBooking: mapBookingSummary(booking),
   });
   const refundPolicy = getBookingRefundPolicy(booking, booking.event);
+  const refundView = getDisplayedRefundState({
+    status: booking.status,
+    paymentStatus: booking.paymentStatus,
+    totalAmount: normalizedAmounts.totalAmount,
+    refundAmount: normalizedAmounts.refundAmount,
+    refundStatus: booking.refundStatus,
+    refundAllowed: refundPolicy.refundAllowed,
+    refundDeadline: refundPolicy.refundDeadline,
+    refundPercentage: refundPolicy.refundPercentage,
+    cancellationFee: refundPolicy.cancellationFee,
+  });
   const isPastEvent =
     eventView.isEventEnded ||
     eventView.isCancelled ||
@@ -1701,18 +1904,13 @@ const mapEventBooking = (
     refundDeadline: refundPolicy.refundDeadline,
     refundPercentage: refundPolicy.refundPercentage,
     cancellationFee: refundPolicy.cancellationFee,
-    refundEligible:
-      refundPolicy.refundAllowed &&
-      ((refundPolicy.refundDeadline?.getTime() ?? Number.POSITIVE_INFINITY) >= Date.now() ||
-        refundStatus === RefundStatus.PENDING ||
-        refundStatus === RefundStatus.APPROVED ||
-        refundStatus === RefundStatus.REFUNDED),
-    refundAmount: normalizedAmounts.refundAmount,
+    refundEligible: refundView.refundEligible,
+    refundAmount: refundView.refundAmount,
     refundStatus,
     refundReason: booking.refundReason,
     refundProcessedAt: booking.refundProcessedAt,
     cancellationAllowedUntil,
-    refundPolicyNote: getRefundPolicyNote(refundPolicy),
+    refundPolicyNote: refundPolicy.refundPolicyNote,
     createdAt: booking.createdAt,
     updatedAt: booking.updatedAt,
     canCancel:
@@ -1782,6 +1980,7 @@ const buildEventPayload = (
     refundDeadline?: Date | null;
     refundPercentage?: number | null;
     cancellationFee?: number | null;
+    refundPolicyNote?: string | null;
     status: string;
   },
 ) => ({
@@ -1802,6 +2001,7 @@ const buildEventPayload = (
   refundDeadline: input.refundDeadline ?? input.startsAt,
   refundPercentage: input.refundPercentage != null ? roundCurrency(input.refundPercentage) : 100,
   cancellationFee: input.cancellationFee != null ? roundCurrency(input.cancellationFee) : 0,
+  refundPolicyNote: normalizeRefundPolicyNote(input.refundPolicyNote),
   status:
     input.status === EventStatus.CANCELLED ? EventStatus.CANCELLED : EventStatus.ACTIVE,
 });
@@ -2010,6 +2210,7 @@ export const eventsService = {
     refundDeadline?: Date | null;
     refundPercentage?: number | null;
     cancellationFee?: number | null;
+    refundPolicyNote?: string | null;
     status: string;
   }) {
     await ensureTargetExists(input);
@@ -2053,6 +2254,7 @@ export const eventsService = {
       refundDeadline: Date | null;
       refundPercentage: number | null;
       cancellationFee: number | null;
+      refundPolicyNote: string | null;
       status: string;
     }>,
   ) {
@@ -2208,6 +2410,9 @@ export const eventsService = {
                 input.cancellationFee != null ? roundCurrency(input.cancellationFee) : 0,
             }
           : {}),
+        ...(input.refundPolicyNote !== undefined
+          ? { refundPolicyNote: normalizeRefundPolicyNote(input.refundPolicyNote) }
+          : {}),
         ...(input.status !== undefined
           ? {
               status:
@@ -2358,6 +2563,7 @@ export const eventsService = {
       refundDeadline?: Date | null;
       refundPercentage?: number | null;
       cancellationFee?: number | null;
+      refundPolicyNote?: string | null;
       status?: string;
     },
   ) {
@@ -2437,6 +2643,7 @@ export const eventsService = {
         input.refundDeadline !== undefined ? input.refundDeadline ?? input.startsAt : input.startsAt,
       refundPercentage: input.refundPercentage ?? 100,
       cancellationFee: input.cancellationFee ?? 0,
+      refundPolicyNote: input.refundPolicyNote ?? null,
       status: input.status ?? EventStatus.ACTIVE,
     });
   },
@@ -2559,6 +2766,7 @@ export const eventsService = {
           refundDeadline: paymentPricing.refundDeadline,
           refundPercentage: paymentPricing.refundPercentage,
           cancellationFee: paymentPricing.cancellationFee,
+          refundPolicyNote: paymentPricing.refundPolicyNote,
           refundAmount: 0,
           refundStatus: RefundStatus.NOT_REQUESTED,
           refundReason: null,

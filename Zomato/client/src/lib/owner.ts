@@ -283,6 +283,7 @@ export type OwnerEventInsight = {
     refundDeadline?: string | null;
     refundPercentage: number;
     cancellationFee: number;
+    refundPolicyNote?: string | null;
     status: "UPCOMING" | "LIVE" | "ENDED" | "CANCELLED";
     manualStatus: "ACTIVE" | "CANCELLED";
     lifecycleStatus: "UPCOMING" | "LIVE" | "ENDED" | "CANCELLED";
@@ -343,6 +344,7 @@ export type OwnerEventInsight = {
     refundDeadline?: string | null;
     refundPercentage?: number | null;
     cancellationFee?: number | null;
+    refundPolicyNote?: string | null;
     refundAmount?: number | null;
     refundStatus?: "NOT_REQUESTED" | "NOT_ELIGIBLE" | "PENDING" | "APPROVED" | "REJECTED" | "REFUNDED" | "FAILED" | null;
     refundReason?: string | null;
@@ -487,6 +489,7 @@ export const createOwnerEventFromTemplate = async (payload: {
   refundDeadline?: string | null;
   refundPercentage?: number | null;
   cancellationFee?: number | null;
+  refundPolicyNote?: string | null;
   status?: "ACTIVE" | "CANCELLED";
 }) =>
   unwrapData(

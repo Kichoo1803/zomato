@@ -18,6 +18,7 @@ const refundPolicyFields = {
   refundDeadline: z.union([z.coerce.date(), z.null()]).optional(),
   refundPercentage: z.union([z.coerce.number().min(0).max(100), z.null()]).optional(),
   cancellationFee: z.union([z.coerce.number().min(0), z.null()]).optional(),
+  refundPolicyNote: z.union([z.string().trim().max(1200), z.null()]).optional(),
 };
 
 const eventTargetFields = {

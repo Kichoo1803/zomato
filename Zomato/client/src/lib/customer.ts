@@ -458,6 +458,7 @@ export type CustomerRestaurantEvent = {
   refundDeadline?: string | null;
   refundPercentage: number;
   cancellationFee: number;
+  refundPolicyNote?: string | null;
   status: "UPCOMING" | "LIVE" | "ENDED" | "CANCELLED";
   manualStatus: "ACTIVE" | "CANCELLED";
   lifecycleStatus: "UPCOMING" | "LIVE" | "ENDED" | "CANCELLED";

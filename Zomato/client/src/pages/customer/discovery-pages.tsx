@@ -192,6 +192,31 @@ const getEventBookingPaymentSummary = (slotPrice: number, quantity: number) => {
   };
 };
 
+const getEventRefundPolicySummary = (
+  event: Pick<
+    CustomerRestaurantEvent,
+    | "refundAllowed"
+    | "refundPercentage"
+    | "refundDeadline"
+    | "startsAt"
+    | "cancellationFee"
+    | "refundPolicyNote"
+  >,
+) => {
+  const baseSummary = event.refundAllowed
+    ? `Refund policy: ${event.refundPercentage}% refund before ${formatDateTimeValue(
+        event.refundDeadline ?? event.startsAt,
+      )}${
+        event.cancellationFee > 0
+          ? ` with a ${formatCurrency(event.cancellationFee)} cancellation fee.`
+          : "."
+      }`
+    : "Refund policy: No refund applicable for this booking.";
+
+  const policyNote = event.refundPolicyNote?.trim();
+  return policyNote ? `${baseSummary} ${policyNote}` : baseSummary;
+};
+
 const formatLocationText = (...parts: Array<string | null | undefined>) =>
   parts
     .map((part) => part?.trim())
@@ -2679,15 +2704,7 @@ export const RestaurantDetailsPage = () => {
                       : "Choose the number of slots you want to reserve."}
                   </p>
                   <p className="text-xs leading-6 text-ink-muted">
-                    {selectedBookingEvent.refundAllowed
-                      ? `Refund policy: ${selectedBookingEvent.refundPercentage}% refund before ${formatDateTimeValue(
-                          selectedBookingEvent.refundDeadline ?? selectedBookingEvent.startsAt,
-                        )}${
-                          selectedBookingEvent.cancellationFee > 0
-                            ? ` with a ${formatCurrency(selectedBookingEvent.cancellationFee)} cancellation fee.`
-                            : "."
-                        }`
-                      : "Refund policy: No refund applicable for this booking."}
+                    {getEventRefundPolicySummary(selectedBookingEvent)}
                   </p>
                 </div>
               </div>
@@ -2736,7 +2753,7 @@ export const RestaurantDetailsPage = () => {
                             {selectedBookingEvent.refundAllowed
                               ? `Refunds are reviewed after cancellation and processed to the original payment method. Deadline: ${formatDateTimeValue(
                                   selectedBookingEvent.refundDeadline ?? selectedBookingEvent.startsAt,
-                                )}.`
+                                )}.${selectedBookingEvent.refundPolicyNote?.trim() ? ` Note: ${selectedBookingEvent.refundPolicyNote.trim()}` : ""}`
                               : "No refund is applicable for this booking."}
                           </p>
                         </div>

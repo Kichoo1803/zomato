@@ -206,6 +206,34 @@ const getEventRefundTone = (status?: string | null) => {
   }
 };
 
+const getEventRefundNote = (eventItem: CustomerMyEvent) => {
+  if (eventItem.refundReason?.trim()) {
+    return eventItem.refundReason.trim();
+  }
+
+  if (eventItem.refundPolicyNote?.trim()) {
+    return eventItem.refundPolicyNote.trim();
+  }
+
+  if (eventItem.event.refundPolicyNote?.trim()) {
+    return eventItem.event.refundPolicyNote.trim();
+  }
+
+  if (eventItem.refundStatus === "NOT_ELIGIBLE") {
+    return "No refund applicable for this booking.";
+  }
+
+  if (eventItem.refundStatus === "REJECTED") {
+    return "This refund request was rejected.";
+  }
+
+  if (eventItem.refundEligible) {
+    return "Eligible refunds move to pending review after cancellation.";
+  }
+
+  return "Refund details will update here after any cancellation review.";
+};
+
 const ADDRESS_TYPE_OPTIONS = [
   { value: "HOME", label: "Home" },
   { value: "WORK", label: "Work" },
@@ -1763,6 +1791,7 @@ export const MyEventsPage = () => {
       !eventItem.canCancel &&
       (eventItem.status === "CONFIRMED" || eventItem.status === "PENDING") &&
       new Date(eventItem.event.startsAt).getTime() <= Date.now();
+    const refundNote = getEventRefundNote(eventItem);
 
     return (
       <SurfaceCard
@@ -1871,6 +1900,11 @@ export const MyEventsPage = () => {
           </div>
         </div>
 
+        <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
+          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund reason / note</p>
+          <p className="mt-2">{refundNote}</p>
+        </div>
+
         {cancellationClosed ? (
           <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
             Cancellation closed because the event has started.
@@ -1883,12 +1917,7 @@ export const MyEventsPage = () => {
               Refund {formatEventBookingStatus(eventItem.refundStatus)}
               {` | ${formatCurrency(eventItem.refundAmount ?? 0)}`}
             </p>
-            <p className="mt-2">
-              {eventItem.refundReason ??
-                (eventItem.refundStatus === "NOT_ELIGIBLE"
-                  ? "No refund applicable for this booking."
-                  : "Your refund will be processed to the original payment method after review.")}
-            </p>
+            <p className="mt-2">{refundNote}</p>
           </div>
         ) : null}
 
@@ -2026,11 +2055,21 @@ export const MyEventsPage = () => {
                 </p>
               </div>
               <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund status</p>
+                <p className="mt-2 font-semibold text-ink">
+                  {formatEventBookingStatus(cancelTarget.refundStatus ?? "NOT_REQUESTED")}
+                </p>
+              </div>
+              <div>
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Cancellation allowed until</p>
                 <p className="mt-2 font-semibold text-ink">
                   {formatEventDateTime(cancelTarget.cancellationAllowedUntil ?? cancelTarget.event.startsAt)}
                 </p>
               </div>
+            </div>
+            <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
+              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund reason / note</p>
+              <p className="mt-2">{getEventRefundNote(cancelTarget)}</p>
             </div>
             <p className="text-sm leading-7 text-ink-soft">
               {cancelTarget.paymentStatus === "FREE"

@@ -29,6 +29,7 @@ import {
   updateEventTemplate,
   updateEvent,
   type AdminEvent,
+  type AdminEventAttendee,
   type AdminEventAttendeeReport,
   type AdminEventTemplate,
   type AdminRegion,
@@ -70,6 +71,7 @@ type EventFormState = {
   refundDeadline: string;
   refundPercentage: string;
   cancellationFee: string;
+  refundPolicyNote: string;
   status: EventStatusValue;
 };
 
@@ -114,6 +116,7 @@ const emptyForm: EventFormState = {
   refundDeadline: "",
   refundPercentage: "100",
   cancellationFee: "0",
+  refundPolicyNote: "",
   status: "ACTIVE",
 };
 
@@ -197,6 +200,21 @@ const getFormStatusValue = (event: AdminEvent): EventStatusValue =>
 
 const getTemplateFormStatusValue = (template: AdminEventTemplate): EventTemplateStatusValue =>
   template.status === "CANCELLED" ? "CANCELLED" : "ACTIVE";
+
+const canApproveRefund = (booking: AdminEventAttendee) =>
+  booking.status === "CANCELLED" &&
+  booking.paymentStatus !== "FREE" &&
+  booking.refundStatus === "PENDING";
+
+const canRejectRefund = (booking: AdminEventAttendee) =>
+  booking.status === "CANCELLED" &&
+  booking.paymentStatus !== "FREE" &&
+  booking.refundStatus === "PENDING";
+
+const canMarkRefunded = (booking: AdminEventAttendee) =>
+  booking.status === "CANCELLED" &&
+  booking.paymentStatus !== "FREE" &&
+  booking.refundStatus === "APPROVED";
 
 export const AdminEventsPage = () => {
   const [events, setEvents] = useState<AdminEvent[]>([]);
@@ -286,6 +304,7 @@ export const AdminEventsPage = () => {
       refundDeadline: toDateTimeLocalValue(event.refundDeadline),
       refundPercentage: String(event.refundPercentage ?? 100),
       cancellationFee: String(event.cancellationFee ?? 0),
+      refundPolicyNote: event.refundPolicyNote ?? "",
       status: getFormStatusValue(event),
     });
     setIsModalOpen(true);
@@ -383,6 +402,7 @@ export const AdminEventsPage = () => {
             ? Number(form.cancellationFee)
             : 0
           : 0,
+        refundPolicyNote: form.refundPolicyNote.trim() || null,
         status: form.status,
         ...(form.assignmentType === "RESTAURANT"
           ? {
@@ -561,7 +581,7 @@ export const AdminEventsPage = () => {
           ? "Refund approved successfully."
           : action === "REJECT"
             ? "Refund rejected successfully."
-            : "Refund processed successfully.",
+            : "Refund marked as refunded successfully.",
       );
       await Promise.all([
         loadData(),
@@ -966,40 +986,58 @@ export const AdminEventsPage = () => {
               onChange={(event) => setForm({ ...form, maxTicketsPerUser: event.target.value })}
               placeholder="Optional"
             />
-            <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream px-4 py-3 text-sm font-semibold text-ink">
-              <span>Refund allowed</span>
-              <input
-                type="checkbox"
-                className="h-4 w-4 accent-[rgb(139,30,36)]"
-                checked={form.refundAllowed}
-                onChange={(event) => setForm({ ...form, refundAllowed: event.target.checked })}
-              />
-            </label>
-            <Input
-              label="Refund deadline"
-              type="datetime-local"
-              value={form.refundDeadline}
-              onChange={(event) => setForm({ ...form, refundDeadline: event.target.value })}
-              disabled={!form.refundAllowed}
-            />
-            <Input
-              label="Refund percentage"
-              type="number"
-              min="0"
-              max="100"
-              value={form.refundPercentage}
-              onChange={(event) => setForm({ ...form, refundPercentage: event.target.value })}
-              disabled={!form.refundAllowed}
-            />
-            <Input
-              label="Cancellation fee"
-              type="number"
-              min="0"
-              step="0.01"
-              value={form.cancellationFee}
-              onChange={(event) => setForm({ ...form, cancellationFee: event.target.value })}
-              disabled={!form.refundAllowed}
-            />
+            <div className="md:col-span-2 rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-5 py-5">
+              <div className="mb-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund policy</p>
+                <p className="mt-2 text-sm text-ink-soft">
+                  Set the refund eligibility, fee, deadline, and any custom note customers should see before booking.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream px-4 py-3 text-sm font-semibold text-ink">
+                  <span>Refund allowed</span>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-[rgb(139,30,36)]"
+                    checked={form.refundAllowed}
+                    onChange={(event) => setForm({ ...form, refundAllowed: event.target.checked })}
+                  />
+                </label>
+                <Input
+                  label="Refund deadline"
+                  type="datetime-local"
+                  value={form.refundDeadline}
+                  onChange={(event) => setForm({ ...form, refundDeadline: event.target.value })}
+                  disabled={!form.refundAllowed}
+                />
+                <Input
+                  label="Refund percentage"
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={form.refundPercentage}
+                  onChange={(event) => setForm({ ...form, refundPercentage: event.target.value })}
+                  disabled={!form.refundAllowed}
+                />
+                <Input
+                  label="Cancellation fee"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.cancellationFee}
+                  onChange={(event) => setForm({ ...form, cancellationFee: event.target.value })}
+                  disabled={!form.refundAllowed}
+                />
+              </div>
+              <div className="mt-4">
+                <Textarea
+                  label="Refund policy note"
+                  value={form.refundPolicyNote}
+                  onChange={(event) => setForm({ ...form, refundPolicyNote: event.target.value })}
+                  placeholder="Add any extra refund conditions, timelines, or manual review notes."
+                />
+              </div>
+            </div>
             <Select
               label="Status"
               value={form.status}
@@ -1345,6 +1383,7 @@ export const AdminEventsPage = () => {
                         <p>Discount {formatCurrency(booking.discountAmount ?? 0)}</p>
                         <p>Refund eligible {booking.refundEligible ? "Yes" : "No"}</p>
                         <p>Refund {formatCurrency(booking.refundAmount ?? 0)}</p>
+                        {booking.refundReason ? <p>Refund note {booking.refundReason}</p> : null}
                       </div>
                     ),
                   },
@@ -1364,12 +1403,10 @@ export const AdminEventsPage = () => {
                             {attendingBookingId === booking.id ? "Saving..." : "Mark attended"}
                           </Button>
                         ) : null}
-                        {booking.status === "CANCELLED" &&
-                        booking.refundStatus !== "NOT_ELIGIBLE" &&
-                        booking.paymentStatus !== "FREE" ? (
+                        {canApproveRefund(booking) || canRejectRefund(booking) || canMarkRefunded(booking) ? (
                           <div className="space-y-2">
                             <Textarea
-                              label="Refund note"
+                              label="Refund note / reason"
                               value={refundNotes[booking.id] ?? booking.refundReason ?? ""}
                               onChange={(event) =>
                                 setRefundNotes((current) => ({
@@ -1377,35 +1414,41 @@ export const AdminEventsPage = () => {
                                   [booking.id]: event.target.value,
                                 }))
                               }
-                              placeholder="Add approval or rejection note"
+                              placeholder="Add the approval, rejection, or refund note."
                             />
                             <div className="flex flex-wrap gap-2">
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                className="px-3 py-2 text-xs"
-                                onClick={() => void handleRefundAction(booking.eventId, booking.id, "APPROVE")}
-                                disabled={refundUpdatingBookingId === booking.id}
-                              >
-                                Approve refund
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="secondary"
-                                className="px-3 py-2 text-xs"
-                                onClick={() => void handleRefundAction(booking.eventId, booking.id, "REJECT")}
-                                disabled={refundUpdatingBookingId === booking.id}
-                              >
-                                Reject refund
-                              </Button>
-                              <Button
-                                type="button"
-                                className="px-3 py-2 text-xs"
-                                onClick={() => void handleRefundAction(booking.eventId, booking.id, "PROCESS")}
-                                disabled={refundUpdatingBookingId === booking.id}
-                              >
-                                {refundUpdatingBookingId === booking.id ? "Saving..." : "Mark processed"}
-                              </Button>
+                              {canApproveRefund(booking) ? (
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  className="px-3 py-2 text-xs"
+                                  onClick={() => void handleRefundAction(booking.eventId, booking.id, "APPROVE")}
+                                  disabled={refundUpdatingBookingId === booking.id}
+                                >
+                                  Approve refund
+                                </Button>
+                              ) : null}
+                              {canRejectRefund(booking) ? (
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  className="px-3 py-2 text-xs"
+                                  onClick={() => void handleRefundAction(booking.eventId, booking.id, "REJECT")}
+                                  disabled={refundUpdatingBookingId === booking.id}
+                                >
+                                  Reject refund
+                                </Button>
+                              ) : null}
+                              {canMarkRefunded(booking) ? (
+                                <Button
+                                  type="button"
+                                  className="px-3 py-2 text-xs"
+                                  onClick={() => void handleRefundAction(booking.eventId, booking.id, "PROCESS")}
+                                  disabled={refundUpdatingBookingId === booking.id}
+                                >
+                                  {refundUpdatingBookingId === booking.id ? "Saving..." : "Mark refunded"}
+                                </Button>
+                              ) : null}
                             </div>
                           </div>
                         ) : null}
