@@ -33,3 +33,20 @@ export const updateRegion = asyncHandler(async (req, res) => {
     data: { region },
   });
 });
+
+export const getRegionDetails = asyncHandler(async (req, res) => {
+  const region = await regionsAdminService.getDetails(Number(req.params.regionId));
+
+  return sendSuccess(res, {
+    message: "Region details fetched successfully",
+    data: { region },
+  });
+});
+
+export const deleteRegion = asyncHandler(async (req, res) => {
+  await regionsAdminService.remove(Number(req.params.regionId));
+
+  return sendSuccess(res, {
+    message: "Region deleted successfully",
+  });
+});

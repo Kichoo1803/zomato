@@ -14,7 +14,9 @@ const eventPaymentMethodValues = [PaymentMethod.CARD, PaymentMethod.UPI] as cons
 const stringListSchema = z.array(z.string().trim().min(1).max(240)).default([]);
 
 const refundPolicyFields = {
+  cancellationAllowed: z.coerce.boolean().default(true),
   refundAllowed: z.coerce.boolean().default(true),
+  cancellationWithoutRefundAllowed: z.coerce.boolean().default(false),
   refundDeadline: z.union([z.coerce.date(), z.null()]).optional(),
   refundPercentage: z.union([z.coerce.number().min(0).max(100), z.null()]).optional(),
   cancellationFee: z.union([z.coerce.number().min(0), z.null()]).optional(),
@@ -395,7 +397,7 @@ export const ownerBookingIdParamSchema = {
   }),
 };
 
-const refundActionValues = ["APPROVE", "REJECT", "PROCESS"] as const;
+const refundActionValues = ["APPROVE", "REJECT", "PROCESS", "FAIL"] as const;
 
 export const updateEventRefundSchema = {
   params: z.object({

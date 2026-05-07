@@ -892,7 +892,11 @@ export const registrationApplicationsService = {
       select: registrationApplicationSelect,
     });
 
-    await Promise.all([notifyAdmins(application), notifyAssignedRegionalManager(application)]);
+    if (application.region?.manager?.id && application.region.manager.isActive) {
+      await notifyAssignedRegionalManager(application);
+    } else {
+      await notifyAdmins(application);
+    }
 
     return mapRegistrationApplication(application);
   },
@@ -980,7 +984,11 @@ export const registrationApplicationsService = {
       select: registrationApplicationSelect,
     });
 
-    await Promise.all([notifyAdmins(application), notifyAssignedRegionalManager(application)]);
+    if (application.region?.manager?.id && application.region.manager.isActive) {
+      await notifyAssignedRegionalManager(application);
+    } else {
+      await notifyAdmins(application);
+    }
 
     return mapRegistrationApplication(application);
   },

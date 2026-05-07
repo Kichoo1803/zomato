@@ -56,6 +56,7 @@ type AdminUserInput = {
   isActive?: boolean;
   emailVerified?: boolean;
   phoneVerified?: boolean;
+  confirmManagerReplacement?: boolean;
 };
 
 const getRegionAssignmentIds = (input: {
@@ -262,7 +263,9 @@ export const usersService = {
       });
 
       if (input.role === Role.REGIONAL_MANAGER && managedRegionIds !== undefined) {
-        await replaceRegionalManagerAssignments(tx, user.id, managedRegionIds);
+        await replaceRegionalManagerAssignments(tx, user.id, managedRegionIds, {
+          confirmManagerReplacement: input.confirmManagerReplacement,
+        });
       }
 
       return tx.user.findUniqueOrThrow({
@@ -351,7 +354,9 @@ export const usersService = {
 
       if (nextRole === Role.REGIONAL_MANAGER) {
         if (managedRegionIds !== undefined) {
-          await replaceRegionalManagerAssignments(tx, userId, managedRegionIds);
+          await replaceRegionalManagerAssignments(tx, userId, managedRegionIds, {
+            confirmManagerReplacement: input.confirmManagerReplacement,
+          });
         } else if (shouldInitializeRegionalManagerScope) {
           await clearRegionalManagerAssignments(tx, userId);
         }

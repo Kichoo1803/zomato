@@ -279,7 +279,9 @@ export type OwnerEventInsight = {
     bookedSlots: number;
     slotPrice: number;
     maxTicketsPerUser?: number | null;
+    cancellationAllowed: boolean;
     refundAllowed: boolean;
+    cancellationWithoutRefundAllowed: boolean;
     refundDeadline?: string | null;
     refundPercentage: number;
     cancellationFee: number;
@@ -340,7 +342,9 @@ export type OwnerEventInsight = {
     bookedAt: string;
     cancelledAt?: string | null;
     paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING" | "PARTIALLY_REFUNDED";
+    cancellationAllowed?: boolean | null;
     refundAllowed?: boolean | null;
+    cancellationWithoutRefundAllowed?: boolean | null;
     refundDeadline?: string | null;
     refundPercentage?: number | null;
     cancellationFee?: number | null;
@@ -350,6 +354,7 @@ export type OwnerEventInsight = {
     refundReason?: string | null;
     refundProcessedAt?: string | null;
     refundEligible?: boolean;
+    cancellationBlockedReason?: string | null;
     bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED" | "ATTENDED" | "FAILED";
     status: "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED" | "ATTENDED" | "FAILED";
     canCancel: boolean;
@@ -485,7 +490,9 @@ export const createOwnerEventFromTemplate = async (payload: {
   totalSlots?: number | null;
   slotPrice?: number | null;
   maxTicketsPerUser?: number | null;
+  cancellationAllowed?: boolean;
   refundAllowed?: boolean;
+  cancellationWithoutRefundAllowed?: boolean;
   refundDeadline?: string | null;
   refundPercentage?: number | null;
   cancellationFee?: number | null;
@@ -508,7 +515,7 @@ export const markOwnerEventBookingAttended = async (bookingId: number) =>
 export const updateOwnerEventBookingRefund = async (
   bookingId: number,
   payload: {
-    action: "APPROVE" | "REJECT" | "PROCESS";
+    action: "APPROVE" | "REJECT" | "PROCESS" | "FAIL";
     refundReason?: string;
   },
 ) =>

@@ -122,6 +122,7 @@ const regionBodyBaseSchema = z.object({
   additionalPincodes: optionalPincodeList,
   isActive: z.boolean().optional(),
   managerUserId: optionalManagerId,
+  confirmManagerReplacement: z.boolean().optional(),
 });
 
 export const listRegionsQuerySchema = {
@@ -147,5 +148,11 @@ export const updateRegionSchema = {
   }),
   body: regionBodyBaseSchema.partial().superRefine((values, context) => {
     addRegionLocationIssues(values, context, "update");
+  }),
+};
+
+export const regionIdParamSchema = {
+  params: z.object({
+    regionId: z.coerce.number().int().positive(),
   }),
 };

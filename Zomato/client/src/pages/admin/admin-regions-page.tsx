@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { AdminDataTable, AdminLoadingState, AdminToolbar } from "@/components/admin/admin-ui";
+import {
+  AdminDataTable,
+  AdminDetailsGrid,
+  AdminLoadingState,
+  AdminToolbar,
+  ConfirmDangerModal,
+} from "@/components/admin/admin-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
@@ -10,10 +16,13 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createRegionAdmin,
+  deleteRegionAdmin,
+  getRegionDetailsAdmin,
   getRegionsAdmin,
   getUsers,
   updateRegionAdmin,
   type AdminRegion,
+  type AdminRegionDetails,
   type AdminUser,
 } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
@@ -30,8 +39,11 @@ import {
   RefreshButton,
   RowActions,
   ToggleField,
+  formatCurrency,
+  formatDateTime,
   paginate,
   getToneForStatus,
+  toLabel,
 } from "./admin-shared";
 
 type RegionFormState = {
@@ -48,6 +60,19 @@ type RegionFormState = {
 };
 
 type RegionFormErrors = Partial<Record<keyof RegionFormState, string>>;
+type RegionFormPayload = {
+  name?: string;
+  districtName: string;
+  stateName: string;
+  code?: string;
+  slug?: string;
+  notes?: string;
+  primaryPincode?: string;
+  additionalPincodes?: string[];
+  isActive: boolean;
+  managerUserId: number | null;
+  confirmManagerReplacement?: boolean;
+};
 
 const emptyForm: RegionFormState = {
   name: "",
@@ -93,6 +118,12 @@ export const AdminRegionsPage = () => {
   const [form, setForm] = useState<RegionFormState>(emptyForm);
   const [formErrors, setFormErrors] = useState<RegionFormErrors>({});
   const [hasCustomCode, setHasCustomCode] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AdminRegion | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [regionDetails, setRegionDetails] = useState<AdminRegionDetails | null>(null);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const [pendingReplacementPayload, setPendingReplacementPayload] = useState<RegionFormPayload | null>(null);
 
   const baseStateOptions = useMemo(() => getIndianStateOptions(), []);
   const displayRegionOptions = useMemo(
@@ -208,6 +239,7 @@ export const AdminRegionsPage = () => {
   };
 
   const filteredRegions = regions;
+  const duplicateRegionGroupsCount = filteredRegions.filter((region) => region.hasDuplicates).length;
 
   const pagedRegions = paginate(filteredRegions, page);
 
@@ -280,6 +312,61 @@ export const AdminRegionsPage = () => {
     };
   };
 
+  const submitRegionPayload = async (payload: RegionFormPayload) => {
+    setIsSubmitting(true);
+
+    try {
+      if (editingRegion) {
+        await updateRegionAdmin(editingRegion.id, payload);
+        toast.success("Region updated successfully.");
+      } else {
+        await createRegionAdmin(payload);
+        toast.success("Region created successfully.");
+      }
+
+      setPendingReplacementPayload(null);
+      setIsModalOpen(false);
+      await Promise.all([loadRegions(), loadRegionalManagers()]);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to save this region."));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const loadRegionDetails = async (regionId: number) => {
+    setIsDetailsOpen(true);
+    setIsLoadingDetails(true);
+
+    try {
+      setRegionDetails(await getRegionDetailsAdmin(regionId));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to load this region."));
+      setIsDetailsOpen(false);
+    } finally {
+      setIsLoadingDetails(false);
+    }
+  };
+
+  const handleDeleteRegion = async () => {
+    if (!deleteTarget) {
+      return;
+    }
+
+    setIsDeleting(true);
+
+    try {
+      await deleteRegionAdmin(deleteTarget.id);
+      toast.success("Region deleted successfully.");
+      setDeleteTarget(null);
+      await Promise.all([loadRegions(), loadRegionalManagers()]);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to delete this region."));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const { isValid, additionalPincodeList } = validateForm();
@@ -305,24 +392,18 @@ export const AdminRegionsPage = () => {
       additionalPincodes: additionalPincodeList,
       isActive: form.isActive,
       managerUserId: form.managerUserId ? Number(form.managerUserId) : null,
-    };
+    } satisfies RegionFormPayload;
 
-    try {
-      if (editingRegion) {
-        await updateRegionAdmin(editingRegion.id, payload);
-        toast.success("Region updated successfully.");
-      } else {
-        await createRegionAdmin(payload);
-        toast.success("Region created successfully.");
-      }
-
-      setIsModalOpen(false);
-      await Promise.all([loadRegions(), loadRegionalManagers()]);
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to save this region."));
-    } finally {
-      setIsSubmitting(false);
+    if (
+      editingRegion?.manager &&
+      payload.managerUserId &&
+      payload.managerUserId !== editingRegion.manager.id
+    ) {
+      setPendingReplacementPayload(payload);
+      return;
     }
+
+    await submitRegionPayload(payload);
   };
 
   return (
@@ -376,6 +457,14 @@ export const AdminRegionsPage = () => {
         }
       />
 
+      {duplicateRegionGroupsCount ? (
+        <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-950">
+          Duplicate region records were detected in {duplicateRegionGroupsCount} canonical region
+          {duplicateRegionGroupsCount === 1 ? "" : "s"}. The table is showing canonical regions only.
+          Run `npm run prisma:cleanup:duplicate-regions` from the server workspace to merge the legacy duplicates safely.
+        </div>
+      ) : null}
+
       {isLoading ? (
         <AdminLoadingState rows={6} />
       ) : (
@@ -427,6 +516,9 @@ export const AdminRegionsPage = () => {
                       label={region.manager ? "Assigned" : "Unassigned"}
                       tone={getToneForStatus(region.manager ? "APPROVED" : "PENDING")}
                     />
+                    {region.hasDuplicates ? (
+                      <StatusPill label="Duplicates detected" tone="warning" />
+                    ) : null}
                   </div>
                 ),
               },
@@ -461,13 +553,51 @@ export const AdminRegionsPage = () => {
                       {region.counts.usersCount} user
                       {region.counts.usersCount === 1 ? "" : "s"}
                     </p>
+                    <p className="text-ink-muted">
+                      {region.counts.pendingApplicationsCount} pending application
+                      {region.counts.pendingApplicationsCount === 1 ? "" : "s"}
+                    </p>
+                    <p className="text-ink-muted">
+                      {region.counts.activeEventsCount} active event
+                      {region.counts.activeEventsCount === 1 ? "" : "s"}
+                    </p>
                   </div>
                 ),
               },
               {
                 key: "actions",
                 label: "Actions",
-                render: (region) => <RowActions onEdit={() => openEditModal(region)} />,
+                className: "w-[280px]",
+                render: (region) => (
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => void loadRegionDetails(region.id)}
+                    >
+                      View details
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => openEditModal(region)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="px-3 py-2 text-xs"
+                      onClick={() => setDeleteTarget(region)}
+                      disabled={!region.canDelete}
+                      title={region.canDelete ? "Delete region" : region.deleteBlockedReason ?? undefined}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                ),
               },
             ]}
           />
@@ -601,6 +731,349 @@ export const AdminRegionsPage = () => {
           </div>
         </form>
       </Modal>
+
+      <Modal
+        open={isDetailsOpen}
+        onClose={() => {
+          setIsDetailsOpen(false);
+          setRegionDetails(null);
+        }}
+        title={regionDetails?.name ?? "Region details"}
+        className="max-w-6xl"
+      >
+        {isLoadingDetails || !regionDetails ? (
+          <AdminLoadingState rows={6} />
+        ) : (
+          <div className="space-y-6">
+            <AdminDetailsGrid
+              items={[
+                {
+                  label: "Assigned manager",
+                  value: regionDetails.manager ? (
+                    <div>
+                      <p className="font-semibold text-ink">{regionDetails.manager.fullName}</p>
+                      <p className="text-xs text-ink-muted">{regionDetails.manager.email}</p>
+                    </div>
+                  ) : (
+                    "No manager assigned"
+                  ),
+                },
+                {
+                  label: "Statuses",
+                  value: (
+                    <div className="flex flex-wrap gap-2">
+                      <StatusPill
+                        label={regionDetails.isActive ? "Active" : "Inactive"}
+                        tone={getToneForStatus(regionDetails.isActive)}
+                      />
+                      <StatusPill
+                        label={regionDetails.manager ? "Assigned" : "Unassigned"}
+                        tone={getToneForStatus(regionDetails.manager ? "APPROVED" : "PENDING")}
+                      />
+                    </div>
+                  ),
+                },
+                {
+                  label: "Coverage counts",
+                  value: (
+                    <div className="space-y-1">
+                      <p>{regionDetails.counts.restaurantsCount} restaurants</p>
+                      <p>{regionDetails.counts.deliveryPartnersCount} delivery partners</p>
+                      <p>{regionDetails.counts.usersCount} users</p>
+                      <p>{regionDetails.counts.pendingApplicationsCount} pending applications</p>
+                      <p>{regionDetails.counts.activeOrdersCount} active orders</p>
+                      <p>{regionDetails.counts.activeEventsCount} active events</p>
+                    </div>
+                  ),
+                },
+                {
+                  label: "Activity summary",
+                  value: (
+                    <div className="space-y-1">
+                      <p>
+                        {regionDetails.details.summary.restaurantsActiveCount} active restaurants and{" "}
+                        {regionDetails.details.summary.restaurantsInactiveCount} inactive
+                      </p>
+                      <p>
+                        {regionDetails.details.summary.ownersActiveCount} active owners and{" "}
+                        {regionDetails.details.summary.ownersInactiveCount} inactive
+                      </p>
+                      <p>
+                        {regionDetails.details.summary.deliveryPartnersOnlineCount} online partners,{" "}
+                        {regionDetails.details.summary.deliveryPartnersOfflineCount} offline,{" "}
+                        {regionDetails.details.summary.deliveryPartnersBusyCount} busy
+                      </p>
+                      <p>
+                        {regionDetails.details.summary.approvedApplicationsCount} approved applications and{" "}
+                        {regionDetails.details.summary.rejectedApplicationsCount} rejected
+                      </p>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+
+            <AdminDataTable
+              rows={regionDetails.details.restaurants}
+              getRowKey={(restaurant) => restaurant.id}
+              emptyTitle="No restaurants in this region"
+              emptyDescription="Restaurants mapped into this region will appear here."
+              columns={[
+                {
+                  key: "restaurant",
+                  label: "Restaurant",
+                  render: (restaurant) => (
+                    <div>
+                      <p className="font-semibold text-ink">{restaurant.name}</p>
+                      <p className="text-xs text-ink-muted">{restaurant.owner.fullName}</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: "address",
+                  label: "Address",
+                  render: (restaurant) =>
+                    [restaurant.addressLine, restaurant.area, restaurant.city, restaurant.state, restaurant.pincode]
+                      .filter(Boolean)
+                      .join(", "),
+                },
+                {
+                  key: "status",
+                  label: "Status",
+                  render: (restaurant) => (
+                    <StatusPill
+                      label={restaurant.isActive ? "Active" : "Inactive"}
+                      tone={getToneForStatus(restaurant.isActive)}
+                    />
+                  ),
+                },
+              ]}
+            />
+
+            <AdminDataTable
+              rows={regionDetails.details.owners}
+              getRowKey={(owner) => owner.id}
+              emptyTitle="No linked owners"
+              emptyDescription="Owners linked to restaurants in this region will appear here."
+              columns={[
+                {
+                  key: "owner",
+                  label: "Owner",
+                  render: (owner) => (
+                    <div>
+                      <p className="font-semibold text-ink">{owner.fullName}</p>
+                      <p className="text-xs text-ink-muted">{owner.email}</p>
+                      <p className="text-xs text-ink-muted">{owner.phone ?? "No phone on file"}</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: "restaurants",
+                  label: "Restaurants in region",
+                  render: (owner) => owner.restaurants.map((restaurant) => restaurant.name).join(", "),
+                },
+                {
+                  key: "status",
+                  label: "Status",
+                  render: (owner) => (
+                    <StatusPill
+                      label={owner.isActive ? "Active" : "Inactive"}
+                      tone={getToneForStatus(owner.isActive)}
+                    />
+                  ),
+                },
+              ]}
+            />
+
+            <AdminDataTable
+              rows={regionDetails.details.deliveryPartners}
+              getRowKey={(partner) => partner.id}
+              emptyTitle="No delivery partners in this region"
+              emptyDescription="Delivery partners assigned to this region will appear here."
+              columns={[
+                {
+                  key: "partner",
+                  label: "Partner",
+                  render: (partner) => (
+                    <div>
+                      <p className="font-semibold text-ink">{partner.fullName}</p>
+                      <p className="text-xs text-ink-muted">{partner.email}</p>
+                      <p className="text-xs text-ink-muted">{partner.phone ?? "No phone on file"}</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: "vehicle",
+                  label: "Vehicle",
+                  render: (partner) =>
+                    [partner.deliveryProfile?.vehicleType, partner.deliveryProfile?.vehicleNumber]
+                      .filter(Boolean)
+                      .join(" • ") || "Unavailable",
+                },
+                {
+                  key: "availability",
+                  label: "Availability",
+                  render: (partner) => (
+                    <div className="space-y-2">
+                      <StatusPill
+                        label={toLabel(partner.deliveryProfile?.availabilityStatus ?? "OFFLINE")}
+                        tone={getToneForStatus(partner.deliveryProfile?.availabilityStatus ?? "OFFLINE")}
+                      />
+                      <StatusPill
+                        label={partner.deliveryProfile?.isVerified ? "Verified" : "Pending"}
+                        tone={getToneForStatus(partner.deliveryProfile?.isVerified ? "VERIFIED" : "PENDING")}
+                      />
+                    </div>
+                  ),
+                },
+              ]}
+            />
+
+            <AdminDataTable
+              rows={regionDetails.details.registrationApplications}
+              getRowKey={(application) => application.id}
+              emptyTitle="No registration applications"
+              emptyDescription="Restaurant and delivery onboarding applications for this region will appear here."
+              columns={[
+                {
+                  key: "application",
+                  label: "Application",
+                  render: (application) => (
+                    <div>
+                      <p className="font-semibold text-ink">{application.fullName}</p>
+                      <p className="text-xs text-ink-muted">{application.email}</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: "type",
+                  label: "Type",
+                  render: (application) => toLabel(application.roleType),
+                },
+                {
+                  key: "status",
+                  label: "Status",
+                  render: (application) => (
+                    <StatusPill
+                      label={toLabel(application.status)}
+                      tone={getToneForStatus(application.status)}
+                    />
+                  ),
+                },
+                {
+                  key: "submitted",
+                  label: "Submitted",
+                  render: (application) => formatDateTime(application.createdAt),
+                },
+              ]}
+            />
+
+            <AdminDataTable
+              rows={regionDetails.details.recentOrders}
+              getRowKey={(order) => order.id}
+              emptyTitle="No orders in this region"
+              emptyDescription="Recent region orders will appear here."
+              columns={[
+                {
+                  key: "order",
+                  label: "Order",
+                  render: (order) => (
+                    <div>
+                      <p className="font-semibold text-ink">{order.orderNumber}</p>
+                      <p className="text-xs text-ink-muted">{order.restaurant.name}</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: "customer",
+                  label: "Customer",
+                  render: (order) => order.user.fullName,
+                },
+                {
+                  key: "amount",
+                  label: "Amount",
+                  render: (order) => formatCurrency(order.totalAmount),
+                },
+                {
+                  key: "status",
+                  label: "Status",
+                  render: (order) => (
+                    <StatusPill label={toLabel(order.status)} tone={getToneForStatus(order.status)} />
+                  ),
+                },
+              ]}
+            />
+
+            <AdminDataTable
+              rows={regionDetails.details.events}
+              getRowKey={(eventItem) => eventItem.id}
+              emptyTitle="No events in this region"
+              emptyDescription="Restaurant and region events will appear here."
+              columns={[
+                {
+                  key: "event",
+                  label: "Event",
+                  render: (eventItem) => (
+                    <div>
+                      <p className="font-semibold text-ink">{eventItem.title}</p>
+                      <p className="text-xs text-ink-muted">{eventItem.restaurant?.name ?? "Region-wide event"}</p>
+                    </div>
+                  ),
+                },
+                {
+                  key: "window",
+                  label: "Schedule",
+                  render: (eventItem) => `${formatDateTime(eventItem.startsAt)} to ${formatDateTime(eventItem.endsAt)}`,
+                },
+                {
+                  key: "status",
+                  label: "Status",
+                  render: (eventItem) => (
+                    <StatusPill label={toLabel(eventItem.status)} tone={getToneForStatus(eventItem.status)} />
+                  ),
+                },
+              ]}
+            />
+          </div>
+        )}
+      </Modal>
+
+      <ConfirmDangerModal
+        open={Boolean(deleteTarget)}
+        title="Delete region"
+        description={
+          deleteTarget
+            ? `Delete ${deleteTarget.name}? This only works for fully unused regions with no linked manager, restaurants, users, partners, applications, orders, or events.`
+            : ""
+        }
+        confirmLabel="Delete region"
+        isSubmitting={isDeleting}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void handleDeleteRegion()}
+      />
+
+      <ConfirmDangerModal
+        open={Boolean(pendingReplacementPayload && editingRegion?.manager)}
+        title="Replace regional manager"
+        description={
+          editingRegion?.manager
+            ? `${editingRegion.name} is currently assigned to ${editingRegion.manager.fullName}. Confirm to replace that manager assignment with the selected regional manager.`
+            : ""
+        }
+        confirmLabel="Replace manager"
+        isSubmitting={isSubmitting}
+        onClose={() => setPendingReplacementPayload(null)}
+        onConfirm={() => {
+          if (!pendingReplacementPayload) {
+            return;
+          }
+
+          void submitRegionPayload({
+            ...pendingReplacementPayload,
+            confirmManagerReplacement: true,
+          });
+        }}
+      />
     </div>
   );
 };

@@ -75,6 +75,7 @@ const adminUserBodyBaseSchema = z.object({
   isActive: z.boolean().optional(),
   emailVerified: z.boolean().optional(),
   phoneVerified: z.boolean().optional(),
+  confirmManagerReplacement: z.boolean().optional(),
 });
 
 const withAdminUserBodyValidation = <T extends z.ZodTypeAny>(schema: T) =>

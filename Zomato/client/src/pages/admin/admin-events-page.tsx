@@ -6,6 +6,7 @@ import {
   AdminToolbar,
   ConfirmDangerModal,
 } from "@/components/admin/admin-ui";
+import { EventRefundPolicySection } from "@/components/events/event-refund-policy-section";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,7 @@ import {
   type AdminRestaurant,
 } from "@/lib/admin";
 import { getApiErrorMessage } from "@/lib/auth";
+import { buildEventRefundPolicyPayload } from "@/lib/event-refund-policy";
 import {
   AddButton,
   PAGE_SIZE,
@@ -67,7 +69,9 @@ type EventFormState = {
   totalSlots: string;
   slotPrice: string;
   maxTicketsPerUser: string;
+  cancellationAllowed: boolean;
   refundAllowed: boolean;
+  cancellationWithoutRefundAllowed: boolean;
   refundDeadline: string;
   refundPercentage: string;
   cancellationFee: string;
@@ -112,7 +116,9 @@ const emptyForm: EventFormState = {
   totalSlots: "",
   slotPrice: "",
   maxTicketsPerUser: "",
+  cancellationAllowed: true,
   refundAllowed: true,
+  cancellationWithoutRefundAllowed: false,
   refundDeadline: "",
   refundPercentage: "100",
   cancellationFee: "0",
@@ -216,6 +222,11 @@ const canMarkRefunded = (booking: AdminEventAttendee) =>
   booking.paymentStatus !== "FREE" &&
   booking.refundStatus === "APPROVED";
 
+const canMarkRefundFailed = (booking: AdminEventAttendee) =>
+  booking.status === "CANCELLED" &&
+  booking.paymentStatus !== "FREE" &&
+  booking.refundStatus === "APPROVED";
+
 export const AdminEventsPage = () => {
   const [events, setEvents] = useState<AdminEvent[]>([]);
   const [templates, setTemplates] = useState<AdminEventTemplate[]>([]);
@@ -300,7 +311,9 @@ export const AdminEventsPage = () => {
       totalSlots: event.totalSlots != null ? String(event.totalSlots) : "",
       slotPrice: event.slotPrice > 0 ? String(event.slotPrice) : "",
       maxTicketsPerUser: event.maxTicketsPerUser != null ? String(event.maxTicketsPerUser) : "",
+      cancellationAllowed: event.cancellationAllowed,
       refundAllowed: event.refundAllowed,
+      cancellationWithoutRefundAllowed: event.cancellationWithoutRefundAllowed,
       refundDeadline: toDateTimeLocalValue(event.refundDeadline),
       refundPercentage: String(event.refundPercentage ?? 100),
       cancellationFee: String(event.cancellationFee ?? 0),
@@ -374,6 +387,18 @@ export const AdminEventsPage = () => {
 
     setIsSubmitting(true);
     try {
+      const refundPolicyPayload = buildEventRefundPolicyPayload(
+        {
+          cancellationAllowed: form.cancellationAllowed,
+          refundAllowed: form.refundAllowed,
+          cancellationWithoutRefundAllowed: form.cancellationWithoutRefundAllowed,
+          refundDeadline: form.refundDeadline,
+          refundPercentage: form.refundPercentage,
+          cancellationFee: form.cancellationFee,
+          refundPolicyNote: form.refundPolicyNote,
+        },
+        combineDateAndTime(form.eventDate, form.eventStartTime),
+      );
       const payload = {
         title: form.title.trim(),
         description: form.description.trim(),
@@ -386,23 +411,7 @@ export const AdminEventsPage = () => {
         totalSlots: form.totalSlots.trim() ? Number(form.totalSlots) : null,
         slotPrice: form.slotPrice.trim() ? Number(form.slotPrice) : null,
         maxTicketsPerUser: form.maxTicketsPerUser.trim() ? Number(form.maxTicketsPerUser) : null,
-        refundAllowed: form.refundAllowed,
-        refundDeadline: form.refundAllowed
-          ? form.refundDeadline
-            ? new Date(form.refundDeadline).toISOString()
-            : combineDateAndTime(form.eventDate, form.eventStartTime)
-          : null,
-        refundPercentage: form.refundAllowed
-          ? form.refundPercentage.trim()
-            ? Number(form.refundPercentage)
-            : 100
-          : 0,
-        cancellationFee: form.refundAllowed
-          ? form.cancellationFee.trim()
-            ? Number(form.cancellationFee)
-            : 0
-          : 0,
-        refundPolicyNote: form.refundPolicyNote.trim() || null,
+        ...refundPolicyPayload,
         status: form.status,
         ...(form.assignmentType === "RESTAURANT"
           ? {
@@ -568,7 +577,7 @@ export const AdminEventsPage = () => {
   const handleRefundAction = async (
     eventId: number,
     bookingId: number,
-    action: "APPROVE" | "REJECT" | "PROCESS",
+    action: "APPROVE" | "REJECT" | "PROCESS" | "FAIL",
   ) => {
     setRefundUpdatingBookingId(bookingId);
     try {
@@ -581,7 +590,9 @@ export const AdminEventsPage = () => {
           ? "Refund approved successfully."
           : action === "REJECT"
             ? "Refund rejected successfully."
-            : "Refund marked as refunded successfully.",
+            : action === "FAIL"
+              ? "Refund marked as failed successfully."
+              : "Refund marked as refunded successfully.",
       );
       await Promise.all([
         loadData(),
@@ -986,58 +997,24 @@ export const AdminEventsPage = () => {
               onChange={(event) => setForm({ ...form, maxTicketsPerUser: event.target.value })}
               placeholder="Optional"
             />
-            <div className="md:col-span-2 rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-5 py-5">
-              <div className="mb-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund policy</p>
-                <p className="mt-2 text-sm text-ink-soft">
-                  Set the refund eligibility, fee, deadline, and any custom note customers should see before booking.
-                </p>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream px-4 py-3 text-sm font-semibold text-ink">
-                  <span>Refund allowed</span>
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-[rgb(139,30,36)]"
-                    checked={form.refundAllowed}
-                    onChange={(event) => setForm({ ...form, refundAllowed: event.target.checked })}
-                  />
-                </label>
-                <Input
-                  label="Refund deadline"
-                  type="datetime-local"
-                  value={form.refundDeadline}
-                  onChange={(event) => setForm({ ...form, refundDeadline: event.target.value })}
-                  disabled={!form.refundAllowed}
-                />
-                <Input
-                  label="Refund percentage"
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={form.refundPercentage}
-                  onChange={(event) => setForm({ ...form, refundPercentage: event.target.value })}
-                  disabled={!form.refundAllowed}
-                />
-                <Input
-                  label="Cancellation fee"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.cancellationFee}
-                  onChange={(event) => setForm({ ...form, cancellationFee: event.target.value })}
-                  disabled={!form.refundAllowed}
-                />
-              </div>
-              <div className="mt-4">
-                <Textarea
-                  label="Refund policy note"
-                  value={form.refundPolicyNote}
-                  onChange={(event) => setForm({ ...form, refundPolicyNote: event.target.value })}
-                  placeholder="Add any extra refund conditions, timelines, or manual review notes."
-                />
-              </div>
-            </div>
+            <EventRefundPolicySection
+              cancellationAllowed={form.cancellationAllowed}
+              refundAllowed={form.refundAllowed}
+              cancellationWithoutRefundAllowed={form.cancellationWithoutRefundAllowed}
+              refundDeadline={form.refundDeadline}
+              refundPercentage={form.refundPercentage}
+              cancellationFee={form.cancellationFee}
+              refundPolicyNote={form.refundPolicyNote}
+              onCancellationAllowedChange={(value) => setForm({ ...form, cancellationAllowed: value })}
+              onRefundAllowedChange={(value) => setForm({ ...form, refundAllowed: value })}
+              onCancellationWithoutRefundAllowedChange={(value) =>
+                setForm({ ...form, cancellationWithoutRefundAllowed: value })
+              }
+              onRefundDeadlineChange={(value) => setForm({ ...form, refundDeadline: value })}
+              onRefundPercentageChange={(value) => setForm({ ...form, refundPercentage: value })}
+              onCancellationFeeChange={(value) => setForm({ ...form, cancellationFee: value })}
+              onRefundPolicyNoteChange={(value) => setForm({ ...form, refundPolicyNote: value })}
+            />
             <Select
               label="Status"
               value={form.status}
@@ -1382,8 +1359,9 @@ export const AdminEventsPage = () => {
                         <p>Platform fee {formatCurrency(booking.platformFee ?? 0)}</p>
                         <p>Discount {formatCurrency(booking.discountAmount ?? 0)}</p>
                         <p>Refund eligible {booking.refundEligible ? "Yes" : "No"}</p>
-                        <p>Refund {formatCurrency(booking.refundAmount ?? 0)}</p>
-                        {booking.refundReason ? <p>Refund note {booking.refundReason}</p> : null}
+                        <p>Refund amount {formatCurrency(booking.refundAmount ?? 0)}</p>
+                        <p>Refund status {toLabel(booking.refundStatus ?? "NOT_REQUESTED")}</p>
+                        <p>Refund reason {booking.refundReason?.trim() || "Not provided"}</p>
                       </div>
                     ),
                   },
@@ -1403,7 +1381,10 @@ export const AdminEventsPage = () => {
                             {attendingBookingId === booking.id ? "Saving..." : "Mark attended"}
                           </Button>
                         ) : null}
-                        {canApproveRefund(booking) || canRejectRefund(booking) || canMarkRefunded(booking) ? (
+                        {canApproveRefund(booking) ||
+                        canRejectRefund(booking) ||
+                        canMarkRefunded(booking) ||
+                        canMarkRefundFailed(booking) ? (
                           <div className="space-y-2">
                             <Textarea
                               label="Refund note / reason"
@@ -1447,6 +1428,17 @@ export const AdminEventsPage = () => {
                                   disabled={refundUpdatingBookingId === booking.id}
                                 >
                                   {refundUpdatingBookingId === booking.id ? "Saving..." : "Mark refunded"}
+                                </Button>
+                              ) : null}
+                              {canMarkRefundFailed(booking) ? (
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  className="px-3 py-2 text-xs"
+                                  onClick={() => void handleRefundAction(booking.eventId, booking.id, "FAIL")}
+                                  disabled={refundUpdatingBookingId === booking.id}
+                                >
+                                  Mark refund failed
                                 </Button>
                               ) : null}
                             </div>

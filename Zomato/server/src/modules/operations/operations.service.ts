@@ -183,10 +183,24 @@ const buildUserRegionWhere = (filters: RegionFilters, scope: OperationsScope): P
 
   if (scope.isRestricted) {
     const scopedRegions = getScopedRegions(scope, filters);
+    const scopedRegionIds = scopedRegions
+      .map((region) => region.regionId)
+      .filter((regionId): regionId is number => typeof regionId === "number" && Number.isInteger(regionId) && regionId > 0);
+
     clauses.push({
-      OR: scopedRegions.map((region) => ({
-        AND: [{ opsState: region.state }, { opsDistrict: region.district }],
-      })),
+      OR: [
+        ...(scopedRegionIds.length
+          ? [
+              {
+                regionId:
+                  scopedRegionIds.length === 1 ? scopedRegionIds[0] : { in: scopedRegionIds },
+              },
+            ]
+          : []),
+        ...scopedRegions.map((region) => ({
+          AND: [{ regionId: null }, { opsState: region.state }, { opsDistrict: region.district }],
+        })),
+      ],
     });
   }
 
@@ -280,6 +294,7 @@ const hasRestaurantScope = (filters: RegionFilters, scope: OperationsScope) =>
 
 const isRestaurantVisibleInScope = (
   restaurant: {
+    regionId?: number | null;
     state?: string | null;
     city?: string | null;
   },
@@ -289,8 +304,10 @@ const isRestaurantVisibleInScope = (
   if (scope.isRestricted) {
     return getScopedRegions(scope, filters).some(
       (region) =>
-        normalizeRegionValue(restaurant.state) === region.state &&
-        matchesRegionDistrict(region.district, restaurant.city),
+        restaurant.regionId === region.regionId ||
+        (restaurant.regionId == null &&
+          normalizeRegionValue(restaurant.state) === region.state &&
+          matchesRegionDistrict(region.district, restaurant.city)),
     );
   }
 
@@ -307,6 +324,7 @@ const isRestaurantVisibleInScope = (
 
 const getVisibleRestaurantDistrict = (
   restaurant: {
+    regionId?: number | null;
     state?: string | null;
     city?: string | null;
   },
@@ -316,8 +334,10 @@ const getVisibleRestaurantDistrict = (
   if (scope.isRestricted) {
     const matchedRegion = getScopedRegions(scope, filters).find(
       (region) =>
-        normalizeRegionValue(restaurant.state) === region.state &&
-        matchesRegionDistrict(region.district, restaurant.city),
+        restaurant.regionId === region.regionId ||
+        (restaurant.regionId == null &&
+          normalizeRegionValue(restaurant.state) === region.state &&
+          matchesRegionDistrict(region.district, restaurant.city)),
     );
 
     return matchedRegion?.district ?? normalizeRegionValue(restaurant.city);
@@ -335,7 +355,9 @@ const getVisibleRestaurantDistrict = (
   return normalizeRegionValue(restaurant.city);
 };
 
-const filterRestaurantsForScope = <T extends { state?: string | null; city?: string | null }>(
+const filterRestaurantsForScope = <
+  T extends { regionId?: number | null; state?: string | null; city?: string | null },
+>(
   restaurants: T[],
   filters: RegionFilters,
   scope: OperationsScope,
@@ -363,18 +385,42 @@ const buildRestaurantScopeWhere = (
 
   if (scope.isRestricted) {
     const scopedRegions = getScopedRegions(scope, filters);
+    const scopedRegionIds = scopedRegions
+      .map((region) => region.regionId)
+      .filter((regionId): regionId is number => typeof regionId === "number" && Number.isInteger(regionId) && regionId > 0);
     const scopedRegionClauses = scopedRegions
       .map((region) => buildRestaurantRegionWhere(region.state, region.district))
       .filter((regionWhere): regionWhere is Prisma.RestaurantWhereInput => Boolean(regionWhere));
 
-    if (!scopedRegionClauses.length) {
+    if (!scopedRegionIds.length && !scopedRegionClauses.length) {
       return {
         id: -1,
       };
     }
 
     clauses.push({
-      OR: scopedRegionClauses,
+      OR: [
+        ...(scopedRegionIds.length
+          ? [
+              {
+                regionId:
+                  scopedRegionIds.length === 1 ? scopedRegionIds[0] : { in: scopedRegionIds },
+              },
+            ]
+          : []),
+        ...(scopedRegionClauses.length
+          ? [
+              {
+                AND: [
+                  { regionId: null },
+                  {
+                    OR: scopedRegionClauses,
+                  },
+                ],
+              },
+            ]
+          : []),
+      ],
     });
   }
 
@@ -424,6 +470,7 @@ const ownerSelect = {
   ownedRestaurants: {
     select: {
       id: true,
+      regionId: true,
       name: true,
       slug: true,
       city: true,
@@ -441,6 +488,7 @@ const ownerSelect = {
 
 const deliveryPartnerUserSelect = {
   id: true,
+  regionId: true,
   fullName: true,
   email: true,
   phone: true,
@@ -698,6 +746,7 @@ const getRegionOptions = async (filters: RegionFilters, scope: OperationsScope) 
         ...buildRestaurantScopeWhere(filters, scope),
       },
       select: {
+        regionId: true,
         state: true,
         city: true,
       },
@@ -762,6 +811,7 @@ const getRegionSummary = async (filters: RegionFilters, scope: OperationsScope) 
       select: {
         id: true,
         ownerId: true,
+        regionId: true,
         state: true,
         city: true,
       },

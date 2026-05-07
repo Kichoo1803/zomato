@@ -425,7 +425,9 @@ export type CustomerEventBookingSummary = {
   paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING" | "PARTIALLY_REFUNDED";
   paymentMethod?: "CARD" | "UPI" | null;
   paymentMethodId?: number | null;
+  cancellationAllowed?: boolean | null;
   refundAllowed?: boolean | null;
+  cancellationWithoutRefundAllowed?: boolean | null;
   refundDeadline?: string | null;
   refundPercentage?: number | null;
   cancellationFee?: number | null;
@@ -435,6 +437,7 @@ export type CustomerEventBookingSummary = {
   refundProcessedAt?: string | null;
   refundEligible?: boolean;
   cancellationAllowedUntil?: string | null;
+  cancellationBlockedReason?: string | null;
   refundPolicyNote?: string | null;
 };
 
@@ -454,7 +457,9 @@ export type CustomerRestaurantEvent = {
   bookedSlots: number;
   slotPrice: number;
   maxTicketsPerUser?: number | null;
+  cancellationAllowed: boolean;
   refundAllowed: boolean;
+  cancellationWithoutRefundAllowed: boolean;
   refundDeadline?: string | null;
   refundPercentage: number;
   cancellationFee: number;
@@ -518,7 +523,9 @@ export type CustomerMyEvent = {
   paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING" | "PARTIALLY_REFUNDED";
   paymentMethod?: "CARD" | "UPI" | null;
   paymentMethodId?: number | null;
+  cancellationAllowed?: boolean | null;
   refundAllowed?: boolean | null;
+  cancellationWithoutRefundAllowed?: boolean | null;
   refundDeadline?: string | null;
   refundPercentage?: number | null;
   cancellationFee?: number | null;
@@ -528,6 +535,7 @@ export type CustomerMyEvent = {
   refundProcessedAt?: string | null;
   refundEligible?: boolean;
   cancellationAllowedUntil?: string | null;
+  cancellationBlockedReason?: string | null;
   refundPolicyNote?: string | null;
   canCancel: boolean;
   isUpcoming: boolean;
@@ -905,6 +913,15 @@ export const cancelCustomerEvent = async (eventId: number) =>
       }>
     >(`/events/${eventId}/cancel`),
   );
+
+export const getCustomerEventBooking = async (bookingId: number) =>
+  unwrapData(
+    await apiClient.get<
+      ApiEnvelope<{
+        booking: CustomerMyEvent;
+      }>
+    >(`/event-bookings/${bookingId}`),
+  ).booking;
 
 export const getCustomerMyEvents = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ events: CustomerMyEvent[] }>>("/users/me/events")).events;

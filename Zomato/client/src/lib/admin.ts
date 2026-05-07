@@ -60,10 +60,151 @@ export type AdminRegion = {
     role: UserRole;
     isActive: boolean;
   } | null;
+  hasDuplicates: boolean;
+  duplicateRegionIds: number[];
+  canDelete: boolean;
+  deleteBlockedReason?: string | null;
   counts: {
     restaurantsCount: number;
     deliveryPartnersCount: number;
     usersCount: number;
+    pendingApplicationsCount: number;
+    activeOrdersCount: number;
+    activeEventsCount: number;
+  };
+};
+
+export type AdminRegionDetails = AdminRegion & {
+  details: {
+    summary: {
+      restaurantsActiveCount: number;
+      restaurantsInactiveCount: number;
+      ownersActiveCount: number;
+      ownersInactiveCount: number;
+      deliveryPartnersActiveCount: number;
+      deliveryPartnersInactiveCount: number;
+      deliveryPartnersOnlineCount: number;
+      deliveryPartnersOfflineCount: number;
+      deliveryPartnersBusyCount: number;
+      pendingApplicationsCount: number;
+      approvedApplicationsCount: number;
+      rejectedApplicationsCount: number;
+      activeOrdersCount: number;
+      activeEventsCount: number;
+    };
+    restaurants: Array<{
+      id: number;
+      name: string;
+      slug: string;
+      addressLine?: string | null;
+      area?: string | null;
+      city: string;
+      state: string;
+      pincode: string;
+      isActive: boolean;
+      createdAt: string;
+      owner: {
+        id: number;
+        fullName: string;
+        email: string;
+        phone?: string | null;
+        isActive: boolean;
+      };
+    }>;
+    owners: Array<{
+      id: number;
+      fullName: string;
+      email: string;
+      phone?: string | null;
+      isActive: boolean;
+      restaurants: Array<{
+        id: number;
+        name: string;
+        slug: string;
+        isActive: boolean;
+      }>;
+    }>;
+    deliveryPartners: Array<{
+      id: number;
+      fullName: string;
+      email: string;
+      phone?: string | null;
+      isActive: boolean;
+      lastLoginAt?: string | null;
+      deliveryProfile?: {
+        id: number;
+        availabilityStatus: string;
+        isVerified: boolean;
+        currentLatitude?: number | null;
+        currentLongitude?: number | null;
+        lastLocationUpdatedAt?: string | null;
+        vehicleType: string;
+        vehicleNumber?: string | null;
+        licenseNumber?: string | null;
+      } | null;
+    }>;
+    registrationApplications: Array<{
+      id: number;
+      roleType: string;
+      fullName: string;
+      email: string;
+      phone: string;
+      status: string;
+      createdAt: string;
+      reviewedAt?: string | null;
+      assignedRegionalManagerId?: number | null;
+    }>;
+    approvalRequests: Array<{
+      id: number;
+      targetEntityType: string;
+      actionType: string;
+      status: string;
+      createdAt: string;
+      requester: {
+        id: number;
+        fullName: string;
+        email: string;
+        role: string;
+      };
+    }>;
+    recentOrders: Array<{
+      id: number;
+      orderNumber: string;
+      status: string;
+      totalAmount: number;
+      orderedAt: string;
+      restaurant: {
+        id: number;
+        name: string;
+        slug: string;
+      };
+      user: {
+        id: number;
+        fullName: string;
+        email: string;
+      };
+      deliveryPartner?: {
+        id: number;
+        user: {
+          id: number;
+          fullName: string;
+          phone?: string | null;
+        };
+      } | null;
+    }>;
+    events: Array<{
+      id: number;
+      title: string;
+      status: string;
+      startsAt: string;
+      endsAt: string;
+      createdAt: string;
+      restaurant?: {
+        id: number;
+        name: string;
+        slug: string;
+      } | null;
+    }>;
   };
 };
 
@@ -539,7 +680,9 @@ export type AdminEvent = {
   bookedSlots: number;
   slotPrice: number;
   maxTicketsPerUser?: number | null;
+  cancellationAllowed: boolean;
   refundAllowed: boolean;
+  cancellationWithoutRefundAllowed: boolean;
   refundDeadline?: string | null;
   refundPercentage: number;
   cancellationFee: number;
@@ -613,7 +756,9 @@ export type AdminEventAttendee = {
   bookedAt: string;
   cancelledAt?: string | null;
   paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING" | "PARTIALLY_REFUNDED";
+  cancellationAllowed?: boolean | null;
   refundAllowed?: boolean | null;
+  cancellationWithoutRefundAllowed?: boolean | null;
   refundDeadline?: string | null;
   refundPercentage?: number | null;
   cancellationFee?: number | null;
@@ -623,6 +768,7 @@ export type AdminEventAttendee = {
   refundReason?: string | null;
   refundProcessedAt?: string | null;
   refundEligible?: boolean;
+  cancellationBlockedReason?: string | null;
   bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED" | "ATTENDED" | "FAILED";
   status: "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED" | "ATTENDED" | "FAILED";
   canCancel: boolean;
@@ -790,6 +936,7 @@ export const createUser = async (payload: {
   walletBalance?: number;
   isActive?: boolean;
   opsNotes?: string;
+  confirmManagerReplacement?: boolean;
 }) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ user: AdminUser }>>("/users", payload)).user;
 
@@ -807,6 +954,7 @@ export const updateUser = async (
     walletBalance?: number;
     isActive: boolean;
     opsNotes: string;
+    confirmManagerReplacement: boolean;
   }>,
 ) => unwrapData(await apiClient.patch<ApiEnvelope<{ user: AdminUser }>>(`/users/${userId}`, payload)).user;
 
@@ -831,6 +979,7 @@ export const createRegionAdmin = async (payload: {
   additionalPincodes?: string[];
   isActive?: boolean;
   managerUserId?: number | null;
+  confirmManagerReplacement?: boolean;
 }) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ region: AdminRegion }>>("/regions", payload)).region;
 
@@ -847,10 +996,17 @@ export const updateRegionAdmin = async (
       additionalPincodes: string[];
       isActive: boolean;
       managerUserId: number | null;
+      confirmManagerReplacement: boolean;
     }>,
 ) =>
   unwrapData(await apiClient.patch<ApiEnvelope<{ region: AdminRegion }>>(`/regions/${regionId}`, payload))
     .region;
+
+export const getRegionDetailsAdmin = async (regionId: number) =>
+  unwrapData(await apiClient.get<ApiEnvelope<{ region: AdminRegionDetails }>>(`/regions/${regionId}`)).region;
+
+export const deleteRegionAdmin = async (regionId: number) =>
+  unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/regions/${regionId}`));
 
 export const getRestaurants = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ restaurants: AdminRestaurant[] }>>("/restaurants/admin/all"))
@@ -1018,7 +1174,7 @@ export const updateEventBookingRefund = async (
   eventId: number,
   bookingId: number,
   payload: {
-    action: "APPROVE" | "REJECT" | "PROCESS";
+    action: "APPROVE" | "REJECT" | "PROCESS" | "FAIL";
     refundReason?: string;
   },
 ) =>

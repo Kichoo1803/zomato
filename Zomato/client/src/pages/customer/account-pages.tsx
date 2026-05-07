@@ -49,6 +49,7 @@ import {
   deleteCustomerPaymentMethod,
   deleteCustomerAddress,
   createCustomerPaymentMethod,
+  getCustomerEventBooking,
   getCustomerMyEvents,
   getCustomerAddresses,
   getCustomerPaymentMethods,
@@ -232,6 +233,37 @@ const getEventRefundNote = (eventItem: CustomerMyEvent) => {
   }
 
   return "Refund details will update here after any cancellation review.";
+};
+
+const getEventRefundStatusMessage = (eventItem: CustomerMyEvent) => {
+  switch (eventItem.refundStatus) {
+    case "PENDING":
+      return "Refund pending approval.";
+    case "APPROVED":
+      return "Refund approved. Processing payment.";
+    case "REFUNDED":
+      return "Refund completed.";
+    case "REJECTED":
+      return "Refund rejected.";
+    case "FAILED":
+      return "Refund failed.";
+    case "NOT_ELIGIBLE":
+      return "No refund applicable.";
+    default:
+      return eventItem.refundReason?.trim() || "Refund details will update here after any cancellation review.";
+  }
+};
+
+const getCancelPreviewRefundStatus = (eventItem: CustomerMyEvent) => {
+  if (eventItem.refundStatus && eventItem.refundStatus !== "NOT_REQUESTED") {
+    return eventItem.refundStatus;
+  }
+
+  if (eventItem.paymentStatus === "PAID") {
+    return eventItem.refundEligible ? "PENDING" : "NOT_ELIGIBLE";
+  }
+
+  return "NOT_REQUESTED";
 };
 
 const ADDRESS_TYPE_OPTIONS = [
@@ -1728,6 +1760,8 @@ export const MyEventsPage = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [cancelingBookingId, setCancelingBookingId] = useState<number | null>(null);
   const [cancelTarget, setCancelTarget] = useState<CustomerMyEvent | null>(null);
+  const [isLoadingCancelTarget, setIsLoadingCancelTarget] = useState(false);
+  const [cancelTargetError, setCancelTargetError] = useState<string | null>(null);
 
   const loadEvents = async ({ quietly = false }: { quietly?: boolean } = {}) => {
     if (!quietly) {
@@ -1749,6 +1783,62 @@ export const MyEventsPage = () => {
   useEffect(() => {
     void loadEvents();
   }, []);
+
+  useEffect(() => {
+    const refreshEvents = () => {
+      void loadEvents({ quietly: true });
+    };
+
+    const intervalId = window.setInterval(refreshEvents, 30_000);
+    const handleFocus = () => refreshEvents();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshEvents();
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!cancelTarget?.id) {
+      setCancelTargetError(null);
+      setIsLoadingCancelTarget(false);
+      return;
+    }
+
+    let isCancelled = false;
+    setIsLoadingCancelTarget(true);
+    setCancelTargetError(null);
+
+    void getCustomerEventBooking(cancelTarget.id)
+      .then((latestBooking) => {
+        if (!isCancelled) {
+          setCancelTarget(latestBooking);
+        }
+      })
+      .catch((error) => {
+        if (!isCancelled) {
+          setCancelTargetError(getApiErrorMessage(error, "Unable to load the latest cancellation policy right now."));
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsLoadingCancelTarget(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [cancelTarget?.id]);
 
   const upcomingEvents = events.filter((event) => event.isUpcoming);
   const pastEvents = events.filter((event) => !event.isUpcoming);
@@ -1787,10 +1877,14 @@ export const MyEventsPage = () => {
   };
 
   const renderEventCard = (eventItem: CustomerMyEvent, mode: "upcoming" | "past") => {
-    const cancellationClosed =
+    const cancellationBlockedReason =
       !eventItem.canCancel &&
-      (eventItem.status === "CONFIRMED" || eventItem.status === "PENDING") &&
-      new Date(eventItem.event.startsAt).getTime() <= Date.now();
+      (eventItem.status === "CONFIRMED" || eventItem.status === "PENDING")
+        ? eventItem.cancellationBlockedReason?.trim() ||
+          (new Date(eventItem.event.startsAt).getTime() <= Date.now()
+            ? "Cancellation closed because the event has started."
+            : "Cancellation is not allowed for this booking.")
+        : null;
     const refundNote = getEventRefundNote(eventItem);
 
     return (
@@ -1905,17 +1999,17 @@ export const MyEventsPage = () => {
           <p className="mt-2">{refundNote}</p>
         </div>
 
-        {cancellationClosed ? (
+        {cancellationBlockedReason ? (
           <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
-            Cancellation closed because the event has started.
+            {cancellationBlockedReason}
           </div>
         ) : null}
 
         {eventItem.refundStatus && eventItem.refundStatus !== "NOT_REQUESTED" ? (
           <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
-            <p className="font-semibold text-ink">
-              Refund {formatEventBookingStatus(eventItem.refundStatus)}
-              {` | ${formatCurrency(eventItem.refundAmount ?? 0)}`}
+            <p className="font-semibold text-ink">{getEventRefundStatusMessage(eventItem)}</p>
+            <p className="mt-2 text-xs text-ink-muted">
+              Refund {formatEventBookingStatus(eventItem.refundStatus)} | {formatCurrency(eventItem.refundAmount ?? 0)}
             </p>
             <p className="mt-2">{refundNote}</p>
           </div>
@@ -1946,9 +2040,9 @@ export const MyEventsPage = () => {
                 {cancelingBookingId === eventItem.id ? "Cancelling..." : "Cancel booking"}
               </Button>
             ) : null}
-            {cancellationClosed ? (
+            {cancellationBlockedReason ? (
               <span className="inline-flex items-center justify-center rounded-full border border-accent/10 bg-white px-4 py-2 text-xs font-semibold text-ink-soft shadow-soft">
-                Cancellation closed.
+                Cancellation unavailable.
               </span>
             ) : null}
           </div>
@@ -2024,6 +2118,22 @@ export const MyEventsPage = () => {
         className="max-w-2xl"
       >
         {cancelTarget ? (
+          isLoadingCancelTarget ? (
+            <div className="rounded-[1.5rem] bg-cream px-5 py-5 text-sm leading-7 text-ink-soft">
+              Loading the latest cancellation policy for this booking.
+            </div>
+          ) : cancelTargetError ? (
+            <div className="space-y-4">
+              <div className="rounded-[1.5rem] border border-accent/10 bg-white px-5 py-5 text-sm leading-7 text-ink-soft">
+                {cancelTargetError}
+              </div>
+              <div className="flex justify-end">
+                <Button type="button" variant="secondary" onClick={() => setCancelTarget(null)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          ) : (
           <div className="space-y-5">
             <div className="grid gap-4 rounded-[1.5rem] bg-cream px-5 py-5 text-sm text-ink-soft md:grid-cols-2">
               <div>
@@ -2038,6 +2148,18 @@ export const MyEventsPage = () => {
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Amount paid</p>
                 <p className="mt-2 font-semibold text-ink">
                   {cancelTarget.paymentStatus === "FREE" ? "Free booking" : formatCurrency(cancelTarget.totalAmount)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund percentage</p>
+                <p className="mt-2 font-semibold text-ink">
+                  {cancelTarget.refundAllowed ? `${cancelTarget.refundPercentage ?? 0}%` : "No refund"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Cancellation fee</p>
+                <p className="mt-2 font-semibold text-ink">
+                  {formatCurrency(cancelTarget.cancellationFee ?? 0)}
                 </p>
               </div>
               <div>
@@ -2057,7 +2179,7 @@ export const MyEventsPage = () => {
               <div>
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund status</p>
                 <p className="mt-2 font-semibold text-ink">
-                  {formatEventBookingStatus(cancelTarget.refundStatus ?? "NOT_REQUESTED")}
+                  {formatEventBookingStatus(getCancelPreviewRefundStatus(cancelTarget))}
                 </p>
               </div>
               <div>
@@ -2068,11 +2190,13 @@ export const MyEventsPage = () => {
               </div>
             </div>
             <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
-              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund reason / note</p>
+              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund policy note</p>
               <p className="mt-2">{getEventRefundNote(cancelTarget)}</p>
             </div>
             <p className="text-sm leading-7 text-ink-soft">
-              {cancelTarget.paymentStatus === "FREE"
+              {!cancelTarget.canCancel
+                ? cancelTarget.cancellationBlockedReason?.trim() || "Cancellation is not allowed for this booking."
+                : cancelTarget.paymentStatus === "FREE"
                 ? "Free booking cancelled."
                 : cancelTarget.refundEligible
                   ? "Eligible refunds will move to pending review after cancellation."
@@ -2082,11 +2206,16 @@ export const MyEventsPage = () => {
               <Button type="button" variant="secondary" onClick={() => setCancelTarget(null)} disabled={cancelingBookingId != null}>
                 Keep booking
               </Button>
-              <Button type="button" onClick={() => void handleCancelEvent()} disabled={cancelingBookingId != null}>
+              <Button
+                type="button"
+                onClick={() => void handleCancelEvent()}
+                disabled={cancelingBookingId != null || !cancelTarget.canCancel}
+              >
                 {cancelingBookingId != null ? "Cancelling..." : "Confirm cancellation"}
               </Button>
             </div>
           </div>
+          )
         ) : null}
       </Modal>
     </>

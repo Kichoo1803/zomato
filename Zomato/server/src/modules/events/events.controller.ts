@@ -154,6 +154,15 @@ export const listMyEvents = asyncHandler(async (req, res) => {
   });
 });
 
+export const getMyEventBooking = asyncHandler(async (req, res) => {
+  const booking = await eventsService.getBookingForUser(req.user!.id, Number(req.params.bookingId));
+
+  return sendSuccess(res, {
+    message: "Event booking fetched successfully",
+    data: { booking },
+  });
+});
+
 export const listEventAttendees = asyncHandler(async (req, res) => {
   const attendeeData = await eventsService.listAttendeesForAdmin(Number(req.params.eventId));
 

@@ -55,7 +55,20 @@ type RegionOption = {
   label: string;
   managerLabel: string;
   isAssignedToCurrentManager: boolean;
-  isSelectable: boolean;
+  requiresReplacement: boolean;
+};
+
+type RegionalManagerPayload = {
+  fullName: string;
+  email: string;
+  phone?: string;
+  password?: string;
+  role: "REGIONAL_MANAGER";
+  assignedRegionIds: number[];
+  profileImage?: string;
+  opsNotes?: string;
+  isActive: boolean;
+  confirmManagerReplacement?: boolean;
 };
 
 const emptyForm: RegionalManagerFormState = {
@@ -82,8 +95,8 @@ const getRegionConflictMessage = (region: AdminRegion, currentManagerId: number 
   region.managerUserId != null && region.managerUserId !== currentManagerId
     ? `${formatRegionLabel(region)} is already assigned to ${region.manager?.fullName ?? "another manager"}.`
     : getRegionManagerLabel(region, currentManagerId);
-const isRegionSelectableByManager = (region: AdminRegion, currentManagerId: number | null) =>
-  region.managerUserId == null || region.managerUserId === currentManagerId;
+const doesRegionRequireReplacement = (region: AdminRegion, currentManagerId: number | null) =>
+  region.managerUserId != null && region.managerUserId !== currentManagerId;
 const sortRegionsByCoverage = (regions: AdminRegion[]) =>
   [...regions].sort((left, right) => {
     if (left.stateName !== right.stateName) {
@@ -121,6 +134,7 @@ export const AdminRegionalManagersPage = () => {
   const [assignmentDistrict, setAssignmentDistrict] = useState("");
   const [assignmentMessage, setAssignmentMessage] = useState<string | null>(null);
   const [form, setForm] = useState<RegionalManagerFormState>(emptyForm);
+  const [pendingReplacementPayload, setPendingReplacementPayload] = useState<RegionalManagerPayload | null>(null);
 
   const loadRegionalManagers = async () => {
     setIsLoading(true);
@@ -308,16 +322,10 @@ export const AdminRegionalManagersPage = () => {
         );
       })
       .sort((left, right) => {
-        const leftRank = isRegionSelectableByManager(left, currentManagerId)
-          ? left.managerUserId === currentManagerId
-            ? 0
-            : 1
-          : 2;
-        const rightRank = isRegionSelectableByManager(right, currentManagerId)
-          ? right.managerUserId === currentManagerId
-            ? 0
-            : 1
-          : 2;
+        const leftRank =
+          left.managerUserId === currentManagerId ? 0 : left.managerUserId == null ? 1 : 2;
+        const rightRank =
+          right.managerUserId === currentManagerId ? 0 : right.managerUserId == null ? 1 : 2;
 
         if (leftRank !== rightRank) {
           return leftRank - rightRank;
@@ -339,7 +347,7 @@ export const AdminRegionalManagersPage = () => {
           label: formatRegionLabel(region),
           managerLabel: getRegionManagerLabel(region, currentManagerId),
           isAssignedToCurrentManager: region.managerUserId === currentManagerId,
-          isSelectable: isRegionSelectableByManager(region, currentManagerId),
+          requiresReplacement: doesRegionRequireReplacement(region, currentManagerId),
         }),
       );
   }, [assignableRegions, assignmentDistrict, assignmentState, editingManager?.id, regionSearch]);
@@ -478,11 +486,6 @@ export const AdminRegionalManagersPage = () => {
     const regionKey = getRegionAssignmentKey(assignmentState, assignmentDistrict);
     const existingActiveRegion = assignableRegionByArea.get(regionKey);
 
-    if (existingActiveRegion && !isRegionSelectableByManager(existingActiveRegion, currentManagerId)) {
-      setAssignmentMessage(getRegionConflictMessage(existingActiveRegion, currentManagerId));
-      return;
-    }
-
     if (existingActiveRegion && form.managedRegionIds.includes(existingActiveRegion.id)) {
       setAssignmentMessage(`${assignmentDistrict}, ${assignmentState} is already assigned here.`);
       return;
@@ -499,11 +502,6 @@ export const AdminRegionalManagersPage = () => {
         const existingRegion = regionByArea.get(regionKey);
 
         if (existingRegion) {
-          if (!isRegionSelectableByManager(existingRegion, currentManagerId)) {
-            setAssignmentMessage(getRegionConflictMessage(existingRegion, currentManagerId));
-            return;
-          }
-
           matchedRegion = existingRegion.isActive
             ? existingRegion
             : await updateRegionAdmin(existingRegion.id, {
@@ -533,6 +531,11 @@ export const AdminRegionalManagersPage = () => {
         managedRegionIds: [matchedRegion.id],
       }));
       setAssignmentDistrict("");
+      setAssignmentMessage(
+        doesRegionRequireReplacement(matchedRegion, currentManagerId)
+          ? `${formatRegionLabel(matchedRegion)} is currently assigned to ${matchedRegion.manager?.fullName ?? "another manager"}. Saving will ask you to confirm the replacement.`
+          : null,
+      );
       toast.success(
         createdRegion
           ? `${formatRegionLabel(matchedRegion)} was created and set as this manager's region.`
@@ -544,6 +547,31 @@ export const AdminRegionalManagersPage = () => {
       toast.error(getApiErrorMessage(error, "Unable to assign this region right now."));
     } finally {
       setIsAssigningRegion(false);
+    }
+  };
+
+  const submitManagerPayload = async (payload: RegionalManagerPayload) => {
+    setIsSubmitting(true);
+
+    try {
+      if (editingManager) {
+        await updateUser(editingManager.id, payload);
+        toast.success("Regional manager updated successfully.");
+      } else {
+        await createUser({
+          ...payload,
+          password: form.password,
+        });
+        toast.success("Regional manager created successfully.");
+      }
+
+      setPendingReplacementPayload(null);
+      setIsModalOpen(false);
+      await loadRegionalManagers();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to save this regional manager."));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -560,8 +588,6 @@ export const AdminRegionalManagersPage = () => {
       return;
     }
 
-    setIsSubmitting(true);
-
     const assignedRegionIds = [...new Set(form.managedRegionIds)].slice(0, 1);
     const payload = {
       fullName: form.fullName.trim(),
@@ -573,27 +599,18 @@ export const AdminRegionalManagersPage = () => {
       profileImage: form.profileImage.trim() || undefined,
       opsNotes: form.opsNotes.trim() || undefined,
       isActive: form.isActive,
-    };
+    } satisfies RegionalManagerPayload;
+    const currentManagerId = editingManager?.id ?? null;
 
-    try {
-      if (editingManager) {
-        await updateUser(editingManager.id, payload);
-        toast.success("Regional manager updated successfully.");
-      } else {
-        await createUser({
-          ...payload,
-          password: form.password,
-        });
-        toast.success("Regional manager created successfully.");
-      }
-
-      setIsModalOpen(false);
-      await loadRegionalManagers();
-    } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to save this regional manager."));
-    } finally {
-      setIsSubmitting(false);
+    if (
+      selectedRegion &&
+      doesRegionRequireReplacement(selectedRegion, currentManagerId)
+    ) {
+      setPendingReplacementPayload(payload);
+      return;
     }
+
+    await submitManagerPayload(payload);
   };
 
   const handleDisableManager = async () => {

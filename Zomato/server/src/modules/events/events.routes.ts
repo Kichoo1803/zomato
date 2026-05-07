@@ -11,6 +11,7 @@ import {
   createOwnerEventFromTemplate,
   deleteEventTemplateAdmin,
   deleteEvent,
+  getMyEventBooking,
   joinEvent,
   listEventTemplatesAdmin,
   listEvents,
@@ -58,6 +59,13 @@ export const ownerEventTemplatesRouter = Router();
 
 eventsRouter.get("/events", optionalAuth, validate(listEventsSchema), listEvents);
 eventsRouter.get("/users/me/events", requireAuth, authorize(Role.CUSTOMER), listMyEvents);
+eventsRouter.get(
+  "/event-bookings/:bookingId",
+  requireAuth,
+  authorize(Role.CUSTOMER),
+  validate(cancelBookingSchema),
+  getMyEventBooking,
+);
 eventsRouter.get(
   "/restaurants/:restaurantId/events",
   optionalAuth,
