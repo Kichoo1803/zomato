@@ -279,7 +279,13 @@ export type OwnerEventInsight = {
     bookedSlots: number;
     slotPrice: number;
     maxTicketsPerUser?: number | null;
-    status: "ACTIVE" | "INACTIVE" | "EXPIRED";
+    refundAllowed: boolean;
+    refundDeadline?: string | null;
+    refundPercentage: number;
+    cancellationFee: number;
+    status: "UPCOMING" | "LIVE" | "ENDED" | "CANCELLED";
+    manualStatus: "ACTIVE" | "CANCELLED";
+    lifecycleStatus: "UPCOMING" | "LIVE" | "ENDED" | "CANCELLED";
     createdAt: string;
     updatedAt: string;
     appliesToAllRestaurants: boolean;
@@ -289,7 +295,9 @@ export type OwnerEventInsight = {
     isSoldOut: boolean;
     isBookingClosed: boolean;
     isEventEnded: boolean;
-    availabilityStatus: "AVAILABLE" | "SOLD_OUT" | "BOOKING_CLOSED" | "EVENT_ENDED" | "INACTIVE";
+    isLive: boolean;
+    isCancelled: boolean;
+    availabilityStatus: "AVAILABLE" | "SOLD_OUT" | "BOOKING_CLOSED" | "LIVE" | "EVENT_ENDED" | "CANCELLED";
 
     // Compatibility aliases
     maxAttendees?: number | null;
@@ -330,12 +338,18 @@ export type OwnerEventInsight = {
     bookingCode: string;
     bookedAt: string;
     cancelledAt?: string | null;
-    paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING";
+    paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING" | "PARTIALLY_REFUNDED";
+    refundAllowed?: boolean | null;
+    refundDeadline?: string | null;
+    refundPercentage?: number | null;
+    cancellationFee?: number | null;
     refundAmount?: number | null;
-    refundStatus?: "NOT_REQUESTED" | "PENDING" | "REFUNDED" | "FAILED" | null;
+    refundStatus?: "NOT_REQUESTED" | "NOT_ELIGIBLE" | "PENDING" | "APPROVED" | "REJECTED" | "REFUNDED" | "FAILED" | null;
     refundReason?: string | null;
-    bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
-    status: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
+    refundProcessedAt?: string | null;
+    refundEligible?: boolean;
+    bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED" | "ATTENDED" | "FAILED";
+    status: "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED" | "ATTENDED" | "FAILED";
     canCancel: boolean;
     isUpcoming: boolean;
     isPastEvent: boolean;
@@ -469,7 +483,11 @@ export const createOwnerEventFromTemplate = async (payload: {
   totalSlots?: number | null;
   slotPrice?: number | null;
   maxTicketsPerUser?: number | null;
-  status?: "ACTIVE" | "INACTIVE";
+  refundAllowed?: boolean;
+  refundDeadline?: string | null;
+  refundPercentage?: number | null;
+  cancellationFee?: number | null;
+  status?: "ACTIVE" | "CANCELLED";
 }) =>
   unwrapData(
     await apiClient.post<ApiEnvelope<{ event: AdminEvent }>>("/owner/events/from-template", payload),
@@ -483,6 +501,31 @@ export const markOwnerEventBookingAttended = async (bookingId: number) =>
       }>
     >(`/owner/events/bookings/${bookingId}/attend`),
   ).booking;
+
+export const updateOwnerEventBookingRefund = async (
+  bookingId: number,
+  payload: {
+    action: "APPROVE" | "REJECT" | "PROCESS";
+    refundReason?: string;
+  },
+) =>
+  unwrapData(
+    await apiClient.patch<
+      ApiEnvelope<{
+        booking: OwnerEventInsight["bookings"][number];
+      }>
+    >(`/owner/events/bookings/${bookingId}/refund`, payload),
+  ).booking;
+
+export const updateOwnerEventStatus = async (
+  eventId: number,
+  payload: {
+    status: "ACTIVE" | "CANCELLED";
+  },
+) =>
+  unwrapData(
+    await apiClient.patch<ApiEnvelope<{ event: AdminEvent }>>(`/owner/events/${eventId}/status`, payload),
+  ).event;
 
 export const createOwnerOffer = async (payload: Record<string, unknown>) =>
   unwrapData(await apiClient.post<ApiEnvelope<{ offer: OwnerOffer }>>("/offers/owner", payload)).offer;

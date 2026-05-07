@@ -539,7 +539,13 @@ export type AdminEvent = {
   bookedSlots: number;
   slotPrice: number;
   maxTicketsPerUser?: number | null;
-  status: "ACTIVE" | "INACTIVE" | "EXPIRED";
+  refundAllowed: boolean;
+  refundDeadline?: string | null;
+  refundPercentage: number;
+  cancellationFee: number;
+  status: "UPCOMING" | "LIVE" | "ENDED" | "CANCELLED";
+  manualStatus: "ACTIVE" | "CANCELLED";
+  lifecycleStatus: "UPCOMING" | "LIVE" | "ENDED" | "CANCELLED";
   createdAt: string;
   updatedAt: string;
   appliesToAllRestaurants: boolean;
@@ -549,7 +555,9 @@ export type AdminEvent = {
   isSoldOut: boolean;
   isBookingClosed: boolean;
   isEventEnded: boolean;
-  availabilityStatus: "AVAILABLE" | "SOLD_OUT" | "BOOKING_CLOSED" | "EVENT_ENDED" | "INACTIVE";
+  isLive: boolean;
+  isCancelled: boolean;
+  availabilityStatus: "AVAILABLE" | "SOLD_OUT" | "BOOKING_CLOSED" | "LIVE" | "EVENT_ENDED" | "CANCELLED";
 
   // Compatibility aliases
   maxAttendees?: number | null;
@@ -582,7 +590,7 @@ export type AdminEventTemplate = {
   suggestedOfferLabel?: string | null;
   setupChecklist: string[];
   requiredItems: string[];
-  status: "ACTIVE" | "INACTIVE";
+  status: "ACTIVE" | "CANCELLED";
   createdByAdminId: number;
   createdAt: string;
   updatedAt: string;
@@ -603,12 +611,18 @@ export type AdminEventAttendee = {
   bookingCode: string;
   bookedAt: string;
   cancelledAt?: string | null;
-  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING";
+  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING" | "PARTIALLY_REFUNDED";
+  refundAllowed?: boolean | null;
+  refundDeadline?: string | null;
+  refundPercentage?: number | null;
+  cancellationFee?: number | null;
   refundAmount?: number | null;
-  refundStatus?: "NOT_REQUESTED" | "PENDING" | "REFUNDED" | "FAILED" | null;
+  refundStatus?: "NOT_REQUESTED" | "NOT_ELIGIBLE" | "PENDING" | "APPROVED" | "REJECTED" | "REFUNDED" | "FAILED" | null;
   refundReason?: string | null;
-  bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
-  status: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
+  refundProcessedAt?: string | null;
+  refundEligible?: boolean;
+  bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED" | "ATTENDED" | "FAILED";
+  status: "PENDING" | "CONFIRMED" | "CANCELLED" | "COMPLETED" | "ATTENDED" | "FAILED";
   canCancel: boolean;
   isUpcoming: boolean;
   isPastEvent: boolean;
@@ -634,6 +648,7 @@ export type AdminEventAttendeeReport = {
     pendingCount?: number;
     bookedSlots: number;
     confirmedCount: number;
+    completedCount?: number;
     attendedCount: number;
     cancelledCount: number;
     failedCount?: number;
@@ -995,6 +1010,22 @@ export const markEventBookingAttended = async (eventId: number, bookingId: numbe
         booking: AdminEventAttendee;
       }>
     >(`/admin/events/${eventId}/bookings/${bookingId}/attend`),
+  ).booking;
+
+export const updateEventBookingRefund = async (
+  eventId: number,
+  bookingId: number,
+  payload: {
+    action: "APPROVE" | "REJECT" | "PROCESS";
+    refundReason?: string;
+  },
+) =>
+  unwrapData(
+    await apiClient.patch<
+      ApiEnvelope<{
+        booking: AdminEventAttendee;
+      }>
+    >(`/admin/events/${eventId}/bookings/${bookingId}/refund`, payload),
   ).booking;
 
 export const createEvent = async (payload: Record<string, unknown>) =>

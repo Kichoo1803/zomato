@@ -88,6 +88,7 @@ export const getToneForStatus = (value?: string | boolean | null) => {
   const normalized = value?.toUpperCase() ?? "";
   if (
     normalized.includes("ACTIVE") ||
+    normalized.includes("COMPLETED") ||
     normalized.includes("DELIVERED") ||
     normalized.includes("ONLINE") ||
     normalized.includes("APPROVED") ||
@@ -102,6 +103,7 @@ export const getToneForStatus = (value?: string | boolean | null) => {
     normalized.includes("PENDING") ||
     normalized.includes("PLACED") ||
     normalized.includes("CONFIRMED") ||
+    normalized.includes("LIVE") ||
     normalized.includes("PREPARING") ||
     normalized.includes("LOOKING_FOR_DELIVERY_PARTNER") ||
     normalized.includes("DELIVERY_PARTNER_ASSIGNED") ||
@@ -116,6 +118,7 @@ export const getToneForStatus = (value?: string | boolean | null) => {
 
   if (
     normalized.includes("INACTIVE") ||
+    normalized.includes("ENDED") ||
     normalized.includes("OFFLINE") ||
     normalized.includes("CANCELLED") ||
     normalized.includes("FAILED") ||

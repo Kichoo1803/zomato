@@ -14,11 +14,13 @@ import { notificationsService } from "../notifications/notifications.service.js"
 
 const ACTIVE_BOOKING_STATUSES = [
   EventBookingStatus.CONFIRMED,
+  EventBookingStatus.COMPLETED,
   EventBookingStatus.ATTENDED,
 ] as const;
 const SLOT_RESERVED_BOOKING_STATUSES = [
   EventBookingStatus.PENDING,
   EventBookingStatus.CONFIRMED,
+  EventBookingStatus.COMPLETED,
   EventBookingStatus.ATTENDED,
 ] as const;
 const REBOOKABLE_BOOKING_STATUSES = [
@@ -50,6 +52,10 @@ const eventSelect = {
   bookedSlots: true,
   slotPrice: true,
   maxTicketsPerUser: true,
+  refundAllowed: true,
+  refundDeadline: true,
+  refundPercentage: true,
+  cancellationFee: true,
   status: true,
   createdAt: true,
   updatedAt: true,
@@ -117,9 +123,14 @@ const bookingSelect = {
   paymentStatus: true,
   paymentMethod: true,
   paymentMethodId: true,
+  refundAllowed: true,
+  refundDeadline: true,
+  refundPercentage: true,
+  cancellationFee: true,
   refundAmount: true,
   refundStatus: true,
   refundReason: true,
+  refundProcessedAt: true,
   cancellationAllowedUntil: true,
   createdAt: true,
   updatedAt: true,
@@ -163,9 +174,14 @@ type CurrentUserBookingSummary = {
   paymentStatus: string;
   paymentMethod: string | null;
   paymentMethodId: number | null;
+  refundAllowed: boolean | null;
+  refundDeadline: Date | null;
+  refundPercentage: number | null;
+  cancellationFee: number | null;
   refundAmount: number | null;
   refundStatus: string | null;
   refundReason: string | null;
+  refundProcessedAt: Date | null;
   cancellationAllowedUntil: Date | null;
 };
 
@@ -232,23 +248,39 @@ const serializeDatabaseError = (error: unknown) => {
   };
 };
 
-const getEffectiveEventStatus = (event: Pick<EventRecord, "status" | "endsAt">) => {
-  if (event.status === EventStatus.INACTIVE) {
-    return EventStatus.INACTIVE;
+const normalizeManualEventStatus = (status: string) =>
+  status === EventStatus.CANCELLED || status === EventStatus.INACTIVE
+    ? EventStatus.CANCELLED
+    : EventStatus.ACTIVE;
+
+const getEffectiveEventStatus = (
+  event: Pick<EventRecord, "status" | "startsAt" | "endsAt">,
+) => {
+  if (normalizeManualEventStatus(event.status) === EventStatus.CANCELLED) {
+    return EventStatus.CANCELLED;
   }
 
-  if (event.status === EventStatus.EXPIRED) {
-    return EventStatus.EXPIRED;
+  const now = Date.now();
+
+  if (event.endsAt.getTime() <= now) {
+    return EventStatus.ENDED;
   }
 
-  return event.endsAt.getTime() < Date.now() ? EventStatus.EXPIRED : EventStatus.ACTIVE;
+  if (event.startsAt.getTime() <= now) {
+    return EventStatus.LIVE;
+  }
+
+  return EventStatus.UPCOMING;
 };
 
 const getBookingWindow = (
   event: Pick<EventRecord, "bookingStartTime" | "bookingEndTime" | "createdAt" | "startsAt">,
 ) => ({
   bookingStartTime: event.bookingStartTime ?? event.createdAt,
-  bookingEndTime: event.bookingEndTime ?? event.startsAt,
+  bookingEndTime:
+    (event.bookingEndTime ?? event.startsAt).getTime() > event.startsAt.getTime()
+      ? event.startsAt
+      : (event.bookingEndTime ?? event.startsAt),
 });
 
 const getEventAvailability = (
@@ -265,23 +297,36 @@ const getEventAvailability = (
   bookedSlots: number,
 ) => {
   const effectiveStatus = getEffectiveEventStatus(event);
+  const manualStatus = normalizeManualEventStatus(event.status);
   const { bookingStartTime, bookingEndTime } = getBookingWindow(event);
   const totalSlots = event.totalSlots ?? null;
   const remainingSlots = totalSlots == null ? null : Math.max(totalSlots - bookedSlots, 0);
   const isSoldOut = totalSlots != null ? bookedSlots >= totalSlots : false;
   const now = Date.now();
-  const isEventEnded = event.endsAt.getTime() < now;
+  const isEventEnded = effectiveStatus === EventStatus.ENDED;
+  const isEventLive = effectiveStatus === EventStatus.LIVE;
+  const isCancelled = effectiveStatus === EventStatus.CANCELLED;
   const isBookingClosed =
-    effectiveStatus !== EventStatus.ACTIVE ||
+    isCancelled ||
+    isEventEnded ||
+    isEventLive ||
     now < bookingStartTime.getTime() ||
-    now > bookingEndTime.getTime();
+    now >= bookingEndTime.getTime();
 
-  let availabilityStatus: "AVAILABLE" | "SOLD_OUT" | "BOOKING_CLOSED" | "EVENT_ENDED" | "INACTIVE";
+  let availabilityStatus:
+    | "AVAILABLE"
+    | "SOLD_OUT"
+    | "BOOKING_CLOSED"
+    | "LIVE"
+    | "EVENT_ENDED"
+    | "CANCELLED";
 
-  if (effectiveStatus === EventStatus.INACTIVE) {
-    availabilityStatus = "INACTIVE";
+  if (isCancelled) {
+    availabilityStatus = "CANCELLED";
   } else if (isEventEnded) {
     availabilityStatus = "EVENT_ENDED";
+  } else if (isEventLive) {
+    availabilityStatus = "LIVE";
   } else if (isSoldOut) {
     availabilityStatus = "SOLD_OUT";
   } else if (isBookingClosed) {
@@ -292,6 +337,7 @@ const getEventAvailability = (
 
   return {
     effectiveStatus,
+    manualStatus,
     bookingStartTime,
     bookingEndTime,
     totalSlots,
@@ -299,10 +345,12 @@ const getEventAvailability = (
     remainingSlots,
     isSoldOut,
     isEventEnded,
+    isEventLive,
+    isCancelled,
     isBookingClosed,
     availabilityStatus,
     isBookable:
-      effectiveStatus === EventStatus.ACTIVE && !isSoldOut && !isEventEnded && !isBookingClosed,
+      effectiveStatus === EventStatus.UPCOMING && !isSoldOut && !isBookingClosed,
   };
 };
 
@@ -336,34 +384,169 @@ const buildEventWhere = (
     clauses.push({ regionId: query.regionId });
   }
 
-  if (mode === "admin") {
-    if (query.status) {
-      if (query.status === EventStatus.EXPIRED) {
-        clauses.push({
-          OR: [
-            { status: EventStatus.EXPIRED },
-            {
-              status: EventStatus.ACTIVE,
-              endsAt: {
-                lt: new Date(),
-              },
-            },
-          ],
-        });
-      } else {
-        clauses.push({ status: query.status });
-      }
-    }
-  } else {
+  if (mode !== "admin") {
     clauses.push({
-      status: EventStatus.ACTIVE,
+      status: {
+        notIn: [EventStatus.CANCELLED, EventStatus.INACTIVE],
+      },
       endsAt: {
-        gte: new Date(),
+        gt: new Date(),
       },
     });
   }
 
   return clauses.length ? { AND: clauses } : {};
+};
+
+const uniqueIds = (values: number[]) => [...new Set(values.filter((value) => Number.isFinite(value)))];
+
+const syncEventLifecycleStatuses = async (eventIds?: number[]) => {
+  const scopedIds = eventIds ? uniqueIds(eventIds) : [];
+
+  if (eventIds && !scopedIds.length) {
+    return;
+  }
+
+  const scope = scopedIds.length
+    ? {
+        id: {
+          in: scopedIds,
+        },
+      }
+    : {};
+  const now = new Date();
+
+  await prisma.event.updateMany({
+    where: {
+      ...scope,
+      status: EventStatus.INACTIVE,
+    },
+    data: {
+      status: EventStatus.CANCELLED,
+    },
+  });
+
+  await prisma.event.updateMany({
+    where: {
+      ...scope,
+      status: EventStatus.EXPIRED,
+    },
+    data: {
+      status: EventStatus.ENDED,
+    },
+  });
+
+  await prisma.event.updateMany({
+    where: {
+      ...scope,
+      endsAt: {
+        lte: now,
+      },
+      status: {
+        notIn: [EventStatus.CANCELLED, EventStatus.ENDED],
+      },
+    },
+    data: {
+      status: EventStatus.ENDED,
+    },
+  });
+
+  await prisma.event.updateMany({
+    where: {
+      ...scope,
+      startsAt: {
+        lte: now,
+      },
+      endsAt: {
+        gt: now,
+      },
+      status: {
+        in: [EventStatus.ACTIVE, EventStatus.UPCOMING],
+      },
+    },
+    data: {
+      status: EventStatus.LIVE,
+    },
+  });
+
+  await prisma.event.updateMany({
+    where: {
+      ...scope,
+      startsAt: {
+        gt: now,
+      },
+      status: {
+        in: [EventStatus.ACTIVE, EventStatus.LIVE],
+      },
+    },
+    data: {
+      status: EventStatus.UPCOMING,
+    },
+  });
+};
+
+const syncBookingLifecycleStatuses = async (eventIds?: number[]) => {
+  const scopedIds = eventIds ? uniqueIds(eventIds) : [];
+
+  if (eventIds && !scopedIds.length) {
+    return;
+  }
+
+  const endedEvents = await prisma.event.findMany({
+    where: {
+      ...(scopedIds.length
+        ? {
+            id: {
+              in: scopedIds,
+            },
+          }
+        : {}),
+      endsAt: {
+        lte: new Date(),
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+  const endedEventIds = endedEvents.map((event) => event.id);
+
+  await prisma.eventBooking.updateMany({
+    where: {
+      ...(scopedIds.length
+        ? {
+            eventId: {
+              in: scopedIds,
+            },
+          }
+        : {}),
+      status: EventBookingStatus.REFUNDED,
+    },
+    data: {
+      status: EventBookingStatus.CANCELLED,
+    },
+  });
+
+  if (!endedEventIds.length) {
+    return;
+  }
+
+  await prisma.eventBooking.updateMany({
+    where: {
+      eventId: {
+        in: endedEventIds,
+      },
+      status: EventBookingStatus.CONFIRMED,
+    },
+    data: {
+      status: EventBookingStatus.COMPLETED,
+    },
+  });
+};
+
+const syncEventAndBookingLifecycle = async (eventIds?: number[]) => {
+  await syncEventLifecycleStatuses(eventIds);
+  await syncBookingLifecycleStatuses(eventIds);
 };
 
 const ensureTargetExists = async (input: {
@@ -394,6 +577,8 @@ const ensureTargetExists = async (input: {
 };
 
 const getEventById = async (eventId: number) => {
+  await syncEventLifecycleStatuses([eventId]);
+
   const event = await prisma.event.findUnique({
     where: { id: eventId },
     select: eventSelect,
@@ -445,6 +630,8 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
     };
   }
 
+  await syncEventAndBookingLifecycle(eventIds);
+
   const bookings = await prisma.eventBooking.findMany({
     where: {
       eventId: {
@@ -470,9 +657,14 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
       paymentStatus: true,
       paymentMethod: true,
       paymentMethodId: true,
+      refundAllowed: true,
+      refundDeadline: true,
+      refundPercentage: true,
+      cancellationFee: true,
       refundAmount: true,
       refundStatus: true,
       refundReason: true,
+      refundProcessedAt: true,
       cancellationAllowedUntil: true,
     },
   });
@@ -512,7 +704,8 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
 
     if (
       booking.paymentStatus === PaymentStatus.REFUNDED ||
-      booking.paymentStatus === PaymentStatus.REFUND_PENDING
+      booking.paymentStatus === PaymentStatus.REFUND_PENDING ||
+      booking.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED
     ) {
       refundedAmountByEventId.set(
         booking.eventId,
@@ -599,20 +792,32 @@ const validateEventBookingWindow = (
 ) => {
   const availability = getEventAvailability(event, bookedSlotsOverride ?? event.bookedSlots);
 
-  if (availability.effectiveStatus !== EventStatus.ACTIVE) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "Booking closed.", "EVENT_NOT_ACTIVE");
+  if (availability.effectiveStatus === EventStatus.CANCELLED) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Booking is unavailable because this event was cancelled.",
+      "EVENT_CANCELLED",
+    );
   }
 
   if (availability.isEventEnded) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "Booking closed.", "EVENT_ENDED");
+    throw new AppError(StatusCodes.BAD_REQUEST, "Booking is unavailable because the event has ended.", "EVENT_ENDED");
+  }
+
+  if (availability.isEventLive) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Booking is unavailable because the event has already started.",
+      "EVENT_ALREADY_STARTED",
+    );
   }
 
   if (Date.now() < availability.bookingStartTime.getTime()) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "Booking closed.", "EVENT_BOOKING_NOT_OPEN");
+    throw new AppError(StatusCodes.BAD_REQUEST, "Booking is not open yet.", "EVENT_BOOKING_NOT_OPEN");
   }
 
-  if (Date.now() > availability.bookingEndTime.getTime()) {
-    throw new AppError(StatusCodes.BAD_REQUEST, "Booking closed.", "EVENT_BOOKING_CLOSED");
+  if (Date.now() >= availability.bookingEndTime.getTime()) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Booking has already closed.", "EVENT_BOOKING_CLOSED");
   }
 
   return availability;
@@ -655,13 +860,134 @@ const buildBookingCode = (bookingId: number, bookedAt: Date) =>
 
 const roundCurrency = (value: number) => Number(value.toFixed(2));
 
-const getBookingPricing = (event: Pick<EventRecord, "slotPrice" | "startsAt">, quantity: number) => {
+const getEventRefundPolicy = (
+  event: Pick<
+    EventRecord,
+    "startsAt" | "refundAllowed" | "refundDeadline" | "refundPercentage" | "cancellationFee"
+  >,
+) => ({
+  refundAllowed: event.refundAllowed ?? true,
+  refundDeadline: event.refundDeadline ?? event.startsAt,
+  refundPercentage: roundCurrency(event.refundPercentage ?? 100),
+  cancellationFee: roundCurrency(event.cancellationFee ?? 0),
+});
+
+const getBookingRefundPolicy = (
+  booking: Pick<
+    EventBookingRecord | CurrentUserBookingSummary,
+    "refundAllowed" | "refundDeadline" | "refundPercentage" | "cancellationFee"
+  >,
+  event: Pick<EventRecord, "startsAt" | "refundAllowed" | "refundDeadline" | "refundPercentage" | "cancellationFee">,
+) => ({
+  refundAllowed: booking.refundAllowed ?? event.refundAllowed ?? true,
+  refundDeadline: booking.refundDeadline ?? event.refundDeadline ?? event.startsAt,
+  refundPercentage: roundCurrency(booking.refundPercentage ?? event.refundPercentage ?? 100),
+  cancellationFee: roundCurrency(booking.cancellationFee ?? event.cancellationFee ?? 0),
+});
+
+const getRefundPolicyNote = (policy: {
+  refundAllowed: boolean;
+  refundDeadline: Date | null;
+  refundPercentage: number;
+  cancellationFee: number;
+}) => {
+  if (!policy.refundAllowed) {
+    return "No refund applicable for this booking.";
+  }
+
+  return `Refunds up to ${policy.refundPercentage}% are allowed until ${
+    new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" }).format(
+      policy.refundDeadline ?? new Date(),
+    )
+  } with a ${policy.cancellationFee > 0 ? `cancellation fee of INR ${policy.cancellationFee}` : "zero cancellation fee"}.`;
+};
+
+const calculateRefundForCancellation = (input: {
+  totalAmount: number;
+  paymentStatus: string;
+  refundAllowed: boolean;
+  refundDeadline: Date | null;
+  refundPercentage: number;
+  cancellationFee: number;
+  cancelledAt?: Date;
+}) => {
+  const evaluatedAt = input.cancelledAt ?? new Date();
+
+  if (input.paymentStatus !== PaymentStatus.PAID) {
+    return {
+      refundEligible: false,
+      refundAmount: 0,
+      refundStatus: RefundStatus.NOT_REQUESTED,
+      paymentStatus: input.paymentStatus,
+      refundReason:
+        input.paymentStatus === PaymentStatus.FREE
+          ? "No refund applicable for this booking."
+          : "Pending payment booking cancelled before payment capture.",
+    };
+  }
+
+  if (!input.refundAllowed) {
+    return {
+      refundEligible: false,
+      refundAmount: 0,
+      refundStatus: RefundStatus.NOT_ELIGIBLE,
+      paymentStatus: PaymentStatus.PAID,
+      refundReason: "No refund applicable for this booking.",
+    };
+  }
+
+  if (input.refundDeadline && evaluatedAt.getTime() > input.refundDeadline.getTime()) {
+    return {
+      refundEligible: false,
+      refundAmount: 0,
+      refundStatus: RefundStatus.NOT_ELIGIBLE,
+      paymentStatus: PaymentStatus.PAID,
+      refundReason: "Refund eligibility closed for this booking.",
+    };
+  }
+
+  const refundAmount = roundCurrency(
+    Math.max(0, (input.totalAmount * input.refundPercentage) / 100 - input.cancellationFee),
+  );
+
+  if (refundAmount <= 0) {
+    return {
+      refundEligible: false,
+      refundAmount: 0,
+      refundStatus: RefundStatus.NOT_ELIGIBLE,
+      paymentStatus: PaymentStatus.PAID,
+      refundReason: "No refund applicable for this booking.",
+    };
+  }
+
+  return {
+    refundEligible: true,
+    refundAmount,
+    refundStatus: RefundStatus.PENDING,
+    paymentStatus: PaymentStatus.REFUND_PENDING,
+    refundReason: "Refund request is pending approval.",
+  };
+};
+
+const getBookingPricing = (
+  event: Pick<
+    EventRecord,
+    | "slotPrice"
+    | "startsAt"
+    | "refundAllowed"
+    | "refundDeadline"
+    | "refundPercentage"
+    | "cancellationFee"
+  >,
+  quantity: number,
+) => {
   const slotPrice = roundCurrency(event.slotPrice ?? 0);
   const subtotalAmount = roundCurrency(slotPrice * quantity);
   const discountAmount = 0;
   const platformFee = subtotalAmount > 0 ? EVENT_PLATFORM_FEE : 0;
   const taxAmount = subtotalAmount > 0 ? roundCurrency(subtotalAmount * EVENT_GST_RATE) : 0;
   const totalAmount = roundCurrency(subtotalAmount + platformFee + taxAmount - discountAmount);
+  const refundPolicy = getEventRefundPolicy(event);
 
   return {
     slotPrice,
@@ -671,8 +997,11 @@ const getBookingPricing = (event: Pick<EventRecord, "slotPrice" | "startsAt">, q
     platformFee,
     discountAmount,
     totalAmount,
-    refundPolicyNote:
-      "Full refund is available until the event starts. Refunds are returned to the original payment method.",
+    refundAllowed: refundPolicy.refundAllowed,
+    refundDeadline: refundPolicy.refundDeadline,
+    refundPercentage: refundPolicy.refundPercentage,
+    cancellationFee: refundPolicy.cancellationFee,
+    refundPolicyNote: getRefundPolicyNote(refundPolicy),
     cancellationAllowedUntil: event.startsAt,
   };
 };
@@ -688,6 +1017,10 @@ const normalizeBookingAmounts = (
     | "discountAmount"
     | "totalAmount"
     | "refundAmount"
+    | "refundAllowed"
+    | "refundDeadline"
+    | "refundPercentage"
+    | "cancellationFee"
   >,
   eventSlotPrice?: number | null,
 ) => {
@@ -703,6 +1036,12 @@ const normalizeBookingAmounts = (
     taxAmount,
     platformFee,
     discountAmount,
+    refundAllowed: booking.refundAllowed ?? null,
+    refundDeadline: booking.refundDeadline ?? null,
+    refundPercentage:
+      booking.refundPercentage != null ? roundCurrency(booking.refundPercentage) : null,
+    cancellationFee:
+      booking.cancellationFee != null ? roundCurrency(booking.cancellationFee) : null,
     totalAmount: roundCurrency(booking.totalAmount),
     refundAmount: roundCurrency(booking.refundAmount ?? 0),
   };
@@ -717,6 +1056,10 @@ const getRefundStatusForBooking = (
   }
 
   if (paymentStatus === PaymentStatus.REFUNDED) {
+    return RefundStatus.REFUNDED;
+  }
+
+  if (paymentStatus === PaymentStatus.PARTIALLY_REFUNDED) {
     return RefundStatus.REFUNDED;
   }
 
@@ -957,6 +1300,244 @@ const validateSavedPaymentMethod = async (
   };
 };
 
+const notifyRefundStatusChange = async (
+  booking: Pick<EventBookingRecord, "id" | "userId" | "eventId" | "restaurantId" | "bookingCode" | "refundAmount"> & {
+    event: Pick<EventRecord, "title">;
+  },
+  input: {
+    title: string;
+    message: string;
+    eventKeySuffix: string;
+  },
+) => {
+  await notificationsService.createForUser({
+    userId: booking.userId,
+    title: input.title,
+    message: input.message,
+    meta: {
+      eventId: booking.eventId,
+      restaurantId: booking.restaurantId,
+      bookingId: booking.id,
+      bookingCode: booking.bookingCode,
+      path: "/my-events",
+      eventKey: `event:refund:${input.eventKeySuffix}:${booking.id}`,
+    },
+    dedupeWindowMinutes: 1,
+  });
+};
+
+const notifyEventCancellation = async (
+  event: Pick<EventRecord, "id" | "title">,
+  restaurantId?: number | null,
+) => {
+  const bookings = await prisma.eventBooking.findMany({
+    where: {
+      eventId: event.id,
+      status: {
+        in: [EventBookingStatus.PENDING, EventBookingStatus.CONFIRMED],
+      },
+    },
+    select: {
+      id: true,
+      userId: true,
+      bookingCode: true,
+      restaurantId: true,
+    },
+  });
+
+  await Promise.all(
+    bookings.map((booking) =>
+      notificationsService.createForUser({
+        userId: booking.userId,
+        title: "Event cancelled",
+        message: `${event.title} was cancelled by the restaurant or platform team. Review your booking and refund details in My Events.`,
+        meta: {
+          eventId: event.id,
+          restaurantId: restaurantId ?? booking.restaurantId,
+          bookingId: booking.id,
+          bookingCode: booking.bookingCode,
+          path: "/my-events",
+          eventKey: `event:cancelled:${event.id}:${booking.id}`,
+        },
+        dedupeWindowMinutes: 5,
+      }),
+    ),
+  );
+};
+
+const updateRefundStateForBooking = async (
+  booking: EventBookingRecord,
+  input: {
+    action: "APPROVE" | "REJECT" | "PROCESS";
+    refundReason?: string;
+  },
+) => {
+  const currentRefundStatus = getRefundStatusForBooking(booking.paymentStatus, booking.refundStatus);
+  const trimmedReason = input.refundReason?.trim() || null;
+
+  if (normalizeBookingStatus(booking.status) !== EventBookingStatus.CANCELLED) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Only cancelled bookings can be moved through refund actions.",
+      "EVENT_REFUND_INVALID_BOOKING_STATUS",
+    );
+  }
+
+  if (
+    booking.paymentStatus !== PaymentStatus.PAID &&
+    booking.paymentStatus !== PaymentStatus.REFUND_PENDING &&
+    booking.paymentStatus !== PaymentStatus.REFUNDED &&
+    booking.paymentStatus !== PaymentStatus.PARTIALLY_REFUNDED
+  ) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "This booking does not have a refundable payment to manage.",
+      "EVENT_REFUND_PAYMENT_NOT_REFUNDABLE",
+    );
+  }
+
+  if (currentRefundStatus === RefundStatus.NOT_ELIGIBLE) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "This booking is not eligible for a refund.",
+      "EVENT_REFUND_NOT_ELIGIBLE",
+    );
+  }
+
+  if (input.action === "APPROVE") {
+    if (
+      currentRefundStatus !== RefundStatus.PENDING &&
+      currentRefundStatus !== RefundStatus.APPROVED
+    ) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Only pending refunds can be approved.",
+        "EVENT_REFUND_APPROVE_INVALID_STATUS",
+      );
+    }
+
+    const updatedBooking = await prisma.eventBooking.update({
+      where: { id: booking.id },
+      data: {
+        refundStatus: RefundStatus.APPROVED,
+        paymentStatus:
+          booking.refundAmount && booking.refundAmount > 0
+            ? PaymentStatus.REFUND_PENDING
+            : PaymentStatus.PAID,
+        refundReason: trimmedReason ?? booking.refundReason,
+        refundProcessedAt: null,
+      },
+      select: bookingSelect,
+    });
+
+    await notifyRefundStatusChange(updatedBooking, {
+      title: "Event refund approved",
+      message: `Refund approval for ${booking.event.title} is complete. Amount approved: INR ${roundCurrency(
+        booking.refundAmount ?? 0,
+      )}.`,
+      eventKeySuffix: "approved",
+    });
+
+    return updatedBooking;
+  }
+
+  if (input.action === "REJECT") {
+    if (
+      currentRefundStatus !== RefundStatus.PENDING &&
+      currentRefundStatus !== RefundStatus.APPROVED
+    ) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Only pending or approved refunds can be rejected.",
+        "EVENT_REFUND_REJECT_INVALID_STATUS",
+      );
+    }
+
+    const updatedBooking = await prisma.eventBooking.update({
+      where: { id: booking.id },
+      data: {
+        refundStatus: RefundStatus.REJECTED,
+        paymentStatus:
+          booking.paymentStatus === PaymentStatus.REFUND_PENDING
+            ? PaymentStatus.PAID
+            : booking.paymentStatus,
+        refundReason: trimmedReason ?? booking.refundReason ?? "Refund request was rejected.",
+        refundProcessedAt: null,
+      },
+      select: bookingSelect,
+    });
+
+    await notifyRefundStatusChange(updatedBooking, {
+      title: "Event refund rejected",
+      message: `Refund review for ${booking.event.title} was rejected. ${
+        updatedBooking.refundReason ?? "Check My Events for the latest note."
+      }`,
+      eventKeySuffix: "rejected",
+    });
+
+    return updatedBooking;
+  }
+
+  if (currentRefundStatus !== RefundStatus.APPROVED) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Approve the refund before marking it as processed.",
+      "EVENT_REFUND_PROCESS_INVALID_STATUS",
+    );
+  }
+
+  if ((booking.refundAmount ?? 0) <= 0) {
+    throw new AppError(
+      StatusCodes.BAD_REQUEST,
+      "Refund amount must be greater than zero before processing.",
+      "EVENT_REFUND_ZERO_AMOUNT",
+    );
+  }
+
+  const updatedBooking = await prisma.eventBooking.update({
+    where: { id: booking.id },
+    data: {
+      refundStatus: RefundStatus.REFUNDED,
+      paymentStatus:
+        (booking.refundAmount ?? 0) < booking.totalAmount
+          ? PaymentStatus.PARTIALLY_REFUNDED
+          : PaymentStatus.REFUNDED,
+      refundReason: trimmedReason ?? booking.refundReason,
+      refundProcessedAt: new Date(),
+    },
+    select: bookingSelect,
+  });
+
+  await notifyRefundStatusChange(updatedBooking, {
+    title: "Event refund processed",
+    message: `Refund for ${booking.event.title} was processed to the original payment method.`,
+    eventKeySuffix: "processed",
+  });
+
+  return updatedBooking;
+};
+
+const normalizeBookingStatus = (status: string) =>
+  status === EventBookingStatus.REFUNDED ? EventBookingStatus.CANCELLED : status;
+
+const getEffectiveBookingStatus = (
+  booking: Pick<EventBookingRecord | CurrentUserBookingSummary, "status"> & {
+    event?: Pick<EventRecord, "endsAt">;
+  },
+) => {
+  const normalizedStatus = normalizeBookingStatus(booking.status);
+
+  if (
+    normalizedStatus === EventBookingStatus.CONFIRMED &&
+    booking.event &&
+    booking.event.endsAt.getTime() < Date.now()
+  ) {
+    return EventBookingStatus.COMPLETED;
+  }
+
+  return normalizedStatus;
+};
+
 const mapBookingSummary = (
   booking?: CurrentUserBookingSummary | EventBookingRecord | null,
 ) => {
@@ -964,28 +1545,46 @@ const mapBookingSummary = (
     return null;
   }
 
+  const effectiveStatus = getEffectiveBookingStatus(booking);
+  const normalizedAmounts = normalizeBookingAmounts(
+    booking,
+    "event" in booking ? booking.event.slotPrice ?? null : booking.slotPrice ?? null,
+  );
+  const refundStatus = getRefundStatusForBooking(booking.paymentStatus, booking.refundStatus);
+
   return {
     id: booking.id,
     eventId: booking.eventId,
     restaurantId: booking.restaurantId,
-    slotPrice: booking.slotPrice ?? null,
+    slotPrice: normalizedAmounts.slotPrice,
     quantity: booking.quantity,
-    subtotalAmount: booking.subtotalAmount ?? null,
-    taxAmount: booking.taxAmount ?? null,
-    platformFee: booking.platformFee ?? null,
-    discountAmount: booking.discountAmount ?? null,
-    totalAmount: booking.totalAmount,
+    subtotalAmount: normalizedAmounts.subtotalAmount,
+    taxAmount: normalizedAmounts.taxAmount,
+    platformFee: normalizedAmounts.platformFee,
+    discountAmount: normalizedAmounts.discountAmount,
+    totalAmount: normalizedAmounts.totalAmount,
     bookingCode: booking.bookingCode,
-    bookingStatus: booking.status,
-    status: booking.status,
+    bookingStatus: effectiveStatus,
+    status: effectiveStatus,
     bookedAt: booking.bookedAt,
     cancelledAt: booking.cancelledAt ?? null,
     paymentStatus: booking.paymentStatus,
     paymentMethod: booking.paymentMethod ?? null,
     paymentMethodId: booking.paymentMethodId ?? null,
-    refundAmount: booking.refundAmount ?? null,
-    refundStatus: booking.refundStatus ?? null,
+    refundAllowed: normalizedAmounts.refundAllowed ?? null,
+    refundDeadline: normalizedAmounts.refundDeadline ?? null,
+    refundPercentage: normalizedAmounts.refundPercentage ?? null,
+    cancellationFee: normalizedAmounts.cancellationFee ?? null,
+    refundAmount: normalizedAmounts.refundAmount,
+    refundStatus,
     refundReason: booking.refundReason ?? null,
+    refundProcessedAt: booking.refundProcessedAt ?? null,
+    refundEligible:
+      (normalizedAmounts.refundAllowed ?? true) &&
+      ((normalizedAmounts.refundDeadline?.getTime() ?? Number.POSITIVE_INFINITY) >= Date.now() ||
+        refundStatus === RefundStatus.PENDING ||
+        refundStatus === RefundStatus.APPROVED ||
+        refundStatus === RefundStatus.REFUNDED),
     cancellationAllowedUntil: booking.cancellationAllowedUntil ?? null,
   };
 };
@@ -1008,6 +1607,8 @@ const mapEvent = (
     ...event,
     restaurant: options?.restaurantOverride ?? event.restaurant,
     status: availability.effectiveStatus,
+    manualStatus: availability.manualStatus,
+    lifecycleStatus: availability.effectiveStatus,
     appliesToAllRestaurants: !event.restaurantId && !event.regionId,
     bookingStartTime: availability.bookingStartTime,
     bookingEndTime: availability.bookingEndTime,
@@ -1016,10 +1617,16 @@ const mapEvent = (
     remainingSlots: availability.remainingSlots,
     slotPrice: event.slotPrice ?? 0,
     maxTicketsPerUser: event.maxTicketsPerUser ?? null,
+    refundAllowed: event.refundAllowed ?? true,
+    refundDeadline: event.refundDeadline ?? event.startsAt,
+    refundPercentage: roundCurrency(event.refundPercentage ?? 100),
+    cancellationFee: roundCurrency(event.cancellationFee ?? 0),
     isSoldOut: availability.isSoldOut,
     isFullyBooked: availability.isSoldOut,
     isBookingClosed: availability.isBookingClosed,
     isEventEnded: availability.isEventEnded,
+    isLive: availability.isEventLive,
+    isCancelled: availability.isCancelled,
     availabilityStatus: availability.availabilityStatus,
     isBookable: availability.isBookable,
     bookingsCount: options?.confirmedBookingCount ?? 0,
@@ -1049,6 +1656,26 @@ const mapEventBooking = (
   const normalizedAmounts = normalizeBookingAmounts(booking, booking.event.slotPrice ?? null);
   const cancellationAllowedUntil = booking.cancellationAllowedUntil ?? booking.event.startsAt;
   const refundStatus = getRefundStatusForBooking(booking.paymentStatus, booking.refundStatus);
+  const effectiveStatus = getEffectiveBookingStatus(booking);
+  const eventView = mapEvent(booking.event, {
+    bookedSlots: options?.bookedSlots,
+    confirmedBookingCount: options?.confirmedBookingCount,
+    revenue: options?.revenue,
+    currentUserBooking: mapBookingSummary(booking),
+  });
+  const refundPolicy = getBookingRefundPolicy(booking, booking.event);
+  const isPastEvent =
+    eventView.isEventEnded ||
+    eventView.isCancelled ||
+    effectiveStatus === EventBookingStatus.CANCELLED ||
+    effectiveStatus === EventBookingStatus.COMPLETED ||
+    effectiveStatus === EventBookingStatus.FAILED;
+  const isUpcoming =
+    reservedStatuses.has(
+      effectiveStatus as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number],
+    ) &&
+    !eventView.isEventEnded &&
+    !eventView.isCancelled;
 
   return {
     id: booking.id,
@@ -1063,33 +1690,42 @@ const mapEventBooking = (
     discountAmount: normalizedAmounts.discountAmount,
     totalAmount: normalizedAmounts.totalAmount,
     bookingCode: booking.bookingCode,
-    bookingStatus: booking.status,
-    status: booking.status,
+    bookingStatus: effectiveStatus,
+    status: effectiveStatus,
     bookedAt: booking.bookedAt,
     cancelledAt: booking.cancelledAt,
     paymentStatus: booking.paymentStatus,
     paymentMethod: booking.paymentMethod,
     paymentMethodId: booking.paymentMethodId,
+    refundAllowed: refundPolicy.refundAllowed,
+    refundDeadline: refundPolicy.refundDeadline,
+    refundPercentage: refundPolicy.refundPercentage,
+    cancellationFee: refundPolicy.cancellationFee,
+    refundEligible:
+      refundPolicy.refundAllowed &&
+      ((refundPolicy.refundDeadline?.getTime() ?? Number.POSITIVE_INFINITY) >= Date.now() ||
+        refundStatus === RefundStatus.PENDING ||
+        refundStatus === RefundStatus.APPROVED ||
+        refundStatus === RefundStatus.REFUNDED),
     refundAmount: normalizedAmounts.refundAmount,
     refundStatus,
     refundReason: booking.refundReason,
+    refundProcessedAt: booking.refundProcessedAt,
     cancellationAllowedUntil,
-    refundPolicyNote:
-      "Full refund is available until the event starts. Refunds are returned to the original payment method.",
+    refundPolicyNote: getRefundPolicyNote(refundPolicy),
     createdAt: booking.createdAt,
     updatedAt: booking.updatedAt,
     canCancel:
       cancellableStatuses.has(
-        booking.status as (typeof CANCELLABLE_BOOKING_STATUSES)[number],
-      ) && cancellationAllowedUntil.getTime() > Date.now(),
-    isUpcoming:
-      reservedStatuses.has(
-        booking.status as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number],
+        effectiveStatus as (typeof CANCELLABLE_BOOKING_STATUSES)[number],
       ) &&
-      booking.event.endsAt.getTime() >= Date.now(),
-    isPastEvent: booking.event.endsAt.getTime() < Date.now(),
+      cancellationAllowedUntil.getTime() > Date.now() &&
+      !eventView.isCancelled &&
+      !eventView.isEventEnded,
+    isUpcoming,
+    isPastEvent,
     hasActiveBooking: activeStatuses.has(
-      booking.status as (typeof ACTIVE_BOOKING_STATUSES)[number],
+      effectiveStatus as (typeof ACTIVE_BOOKING_STATUSES)[number],
     ),
     restaurant: {
       id: booking.restaurant.id,
@@ -1097,12 +1733,7 @@ const mapEventBooking = (
       slug: booking.restaurant.slug,
     },
     user: booking.user,
-    event: mapEvent(booking.event, {
-      bookedSlots: options?.bookedSlots,
-      confirmedBookingCount: options?.confirmedBookingCount,
-      revenue: options?.revenue,
-      currentUserBooking: mapBookingSummary(booking),
-    }),
+    event: eventView,
   };
 };
 
@@ -1147,6 +1778,10 @@ const buildEventPayload = (
     maxAttendees?: number | null;
     slotPrice?: number | null;
     maxTicketsPerUser?: number | null;
+    refundAllowed?: boolean;
+    refundDeadline?: Date | null;
+    refundPercentage?: number | null;
+    cancellationFee?: number | null;
     status: string;
   },
 ) => ({
@@ -1163,7 +1798,12 @@ const buildEventPayload = (
   totalSlots: input.totalSlots ?? input.maxAttendees ?? null,
   slotPrice: input.slotPrice != null ? roundCurrency(input.slotPrice) : null,
   maxTicketsPerUser: input.maxTicketsPerUser ?? null,
-  status: input.status,
+  refundAllowed: input.refundAllowed ?? true,
+  refundDeadline: input.refundDeadline ?? input.startsAt,
+  refundPercentage: input.refundPercentage != null ? roundCurrency(input.refundPercentage) : 100,
+  cancellationFee: input.cancellationFee != null ? roundCurrency(input.cancellationFee) : 0,
+  status:
+    input.status === EventStatus.CANCELLED ? EventStatus.CANCELLED : EventStatus.ACTIVE,
 });
 
 const buildEventTemplatePayload = (
@@ -1220,6 +1860,8 @@ export const eventsService = {
     regionId?: number;
     status?: string;
   }) {
+    await syncEventAndBookingLifecycle();
+
     const events = await prisma.event.findMany({
       where: buildEventWhere(query, "admin"),
       select: eventSelect,
@@ -1228,13 +1870,19 @@ export const eventsService = {
     const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
       await getEventBookingMetrics(events.map((event) => event.id));
 
-    return events.map((event) =>
+    const mappedEvents = events.map((event) =>
       mapEvent(event, {
         bookedSlots: bookedSlotsByEventId.get(event.id) ?? event.bookedSlots,
         confirmedBookingCount: confirmedBookingCountByEventId.get(event.id) ?? 0,
         revenue: revenueByEventId.get(event.id) ?? 0,
       }),
     );
+
+    return query.status
+      ? mappedEvents.filter(
+          (event) => event.status === query.status || event.manualStatus === query.status,
+        )
+      : mappedEvents;
   },
 
   async listPublic(
@@ -1245,6 +1893,8 @@ export const eventsService = {
     },
     userId?: number,
   ) {
+    await syncEventAndBookingLifecycle();
+
     const events = await prisma.event.findMany({
       where: buildEventWhere(query, "public"),
       select: eventSelect,
@@ -1256,24 +1906,29 @@ export const eventsService = {
         userId,
       );
 
-    return events.map((event) =>
+    return events
+      .map((event) =>
       mapEvent(event, {
         bookedSlots: bookedSlotsByEventId.get(event.id) ?? event.bookedSlots,
         confirmedBookingCount: confirmedBookingCountByEventId.get(event.id) ?? 0,
         revenue: revenueByEventId.get(event.id) ?? 0,
         currentUserBooking: currentUserBookingByEventId.get(event.id) ?? null,
       }),
-    );
+      )
+      .filter((event) => event.status !== EventStatus.ENDED && event.status !== EventStatus.CANCELLED);
   },
 
   async listForRestaurantPublic(restaurantId: number, userId?: number) {
     const restaurant = await getRestaurantBookingContext(restaurantId);
+    await syncEventAndBookingLifecycle();
 
     const events = await prisma.event.findMany({
       where: {
-        status: EventStatus.ACTIVE,
+        status: {
+          notIn: [EventStatus.CANCELLED, EventStatus.INACTIVE],
+        },
         endsAt: {
-          gte: new Date(),
+          gt: new Date(),
         },
         OR: [
           { restaurantId },
@@ -1298,7 +1953,8 @@ export const eventsService = {
       userId,
     );
 
-    return events.map((event) =>
+    return events
+      .map((event) =>
       mapEvent(event, {
         bookedSlots: bookedSlotsByEventId.get(event.id) ?? event.bookedSlots,
         confirmedBookingCount: confirmedBookingCountByEventId.get(event.id) ?? 0,
@@ -1310,7 +1966,8 @@ export const eventsService = {
           slug: restaurant.slug,
         },
       }),
-    );
+      )
+      .filter((event) => event.status !== EventStatus.ENDED && event.status !== EventStatus.CANCELLED);
   },
 
   async listTemplatesAdmin() {
@@ -1349,6 +2006,10 @@ export const eventsService = {
     maxAttendees?: number | null;
     slotPrice?: number | null;
     maxTicketsPerUser?: number | null;
+    refundAllowed?: boolean;
+    refundDeadline?: Date | null;
+    refundPercentage?: number | null;
+    cancellationFee?: number | null;
     status: string;
   }) {
     await ensureTargetExists(input);
@@ -1388,6 +2049,10 @@ export const eventsService = {
       maxAttendees: number | null;
       slotPrice: number | null;
       maxTicketsPerUser: number | null;
+      refundAllowed: boolean;
+      refundDeadline: Date | null;
+      refundPercentage: number | null;
+      cancellationFee: number | null;
       status: string;
     }>,
   ) {
@@ -1427,6 +2092,12 @@ export const eventsService = {
       input.maxTicketsPerUser !== undefined
         ? input.maxTicketsPerUser
         : existingEvent.maxTicketsPerUser;
+    const nextRefundAllowed =
+      input.refundAllowed !== undefined ? input.refundAllowed : existingEvent.refundAllowed;
+    const nextRefundDeadline =
+      input.refundDeadline !== undefined ? input.refundDeadline : existingEvent.refundDeadline;
+    const nextRefundPercentage =
+      input.refundPercentage !== undefined ? input.refundPercentage : existingEvent.refundPercentage;
 
     if (nextEndsAt <= nextStartsAt) {
       throw new AppError(
@@ -1452,6 +2123,14 @@ export const eventsService = {
       );
     }
 
+    if (nextBookingEndTime && nextBookingEndTime > nextStartsAt) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Booking must close before the event starts.",
+        "INVALID_EVENT_BOOKING_WINDOW",
+      );
+    }
+
     if (
       nextTotalSlots != null &&
       nextMaxTicketsPerUser != null &&
@@ -1469,6 +2148,22 @@ export const eventsService = {
         StatusCodes.BAD_REQUEST,
         "Total slots cannot be set below the slots that are already booked.",
         "EVENT_SLOT_COUNT_TOO_LOW",
+      );
+    }
+
+    if (nextRefundAllowed && nextRefundDeadline && nextRefundDeadline > nextStartsAt) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Refund deadline cannot be after the event start time.",
+        "INVALID_EVENT_REFUND_POLICY",
+      );
+    }
+
+    if (nextRefundPercentage != null && nextRefundPercentage > 100) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Refund percentage cannot exceed 100.",
+        "INVALID_EVENT_REFUND_POLICY",
       );
     }
 
@@ -1497,10 +2192,40 @@ export const eventsService = {
         ...(input.maxTicketsPerUser !== undefined
           ? { maxTicketsPerUser: input.maxTicketsPerUser ?? null }
           : {}),
-        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.refundAllowed !== undefined ? { refundAllowed: input.refundAllowed } : {}),
+        ...(input.refundDeadline !== undefined
+          ? { refundDeadline: input.refundDeadline ?? nextStartsAt }
+          : {}),
+        ...(input.refundPercentage !== undefined
+          ? {
+              refundPercentage:
+                input.refundPercentage != null ? roundCurrency(input.refundPercentage) : 100,
+            }
+          : {}),
+        ...(input.cancellationFee !== undefined
+          ? {
+              cancellationFee:
+                input.cancellationFee != null ? roundCurrency(input.cancellationFee) : 0,
+            }
+          : {}),
+        ...(input.status !== undefined
+          ? {
+              status:
+                input.status === EventStatus.CANCELLED
+                  ? EventStatus.CANCELLED
+                  : EventStatus.ACTIVE,
+            }
+          : {}),
       },
       select: eventSelect,
     });
+
+    if (
+      input.status === EventStatus.CANCELLED &&
+      normalizeManualEventStatus(existingEvent.status) !== EventStatus.CANCELLED
+    ) {
+      await notifyEventCancellation(event, event.restaurantId);
+    }
 
     const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
       await getEventBookingMetrics([event.id]);
@@ -1629,6 +2354,10 @@ export const eventsService = {
       maxAttendees?: number | null;
       slotPrice?: number | null;
       maxTicketsPerUser?: number | null;
+      refundAllowed?: boolean;
+      refundDeadline?: Date | null;
+      refundPercentage?: number | null;
+      cancellationFee?: number | null;
       status?: string;
     },
   ) {
@@ -1703,6 +2432,11 @@ export const eventsService = {
         input.maxTicketsPerUser !== undefined
           ? input.maxTicketsPerUser
           : template?.suggestedMaxTicketsPerUser ?? null,
+      refundAllowed: input.refundAllowed ?? true,
+      refundDeadline:
+        input.refundDeadline !== undefined ? input.refundDeadline ?? input.startsAt : input.startsAt,
+      refundPercentage: input.refundPercentage ?? 100,
+      cancellationFee: input.cancellationFee ?? 0,
       status: input.status ?? EventStatus.ACTIVE,
     });
   },
@@ -1821,9 +2555,14 @@ export const eventsService = {
           paymentStatus: paymentDetails.paymentStatus,
           paymentMethod: paymentDetails.paymentMethod,
           paymentMethodId: paymentDetails.paymentMethodId,
+          refundAllowed: paymentPricing.refundAllowed,
+          refundDeadline: paymentPricing.refundDeadline,
+          refundPercentage: paymentPricing.refundPercentage,
+          cancellationFee: paymentPricing.cancellationFee,
           refundAmount: 0,
           refundStatus: RefundStatus.NOT_REQUESTED,
           refundReason: null,
+          refundProcessedAt: null,
           cancellationAllowedUntil: paymentPricing.cancellationAllowedUntil,
         };
 
@@ -2089,6 +2828,7 @@ export const eventsService = {
           paymentMethodId: paymentDetails.paymentMethodId,
           refundStatus: RefundStatus.NOT_REQUESTED,
           refundReason: null,
+          refundProcessedAt: null,
         },
       });
 
@@ -2212,6 +2952,7 @@ export const eventsService = {
               refundAmount: 0,
               refundStatus: RefundStatus.NOT_REQUESTED,
               refundReason: "Payment could not be completed.",
+              refundProcessedAt: null,
             },
           });
         } catch (bookingFailureError) {
@@ -2325,20 +3066,24 @@ export const eventsService = {
       );
     }
 
-    const wasPaid = booking.paymentStatus === PaymentStatus.PAID;
     const wasPendingPayment = booking.paymentStatus === PaymentStatus.PENDING;
-    const nextPaymentStatus = wasPaid
-      ? PaymentStatus.REFUNDED
-      : wasPendingPayment
-        ? PaymentStatus.FAILED
-        : booking.paymentStatus;
-    const refundAmount = wasPaid ? booking.totalAmount : 0;
-    const refundStatus = wasPaid ? RefundStatus.REFUNDED : RefundStatus.NOT_REQUESTED;
-    const refundReason = wasPaid
-      ? "Full refund processed because the booking was cancelled before the event started."
-      : booking.paymentStatus === PaymentStatus.FREE
-        ? "Free booking cancelled."
-        : "Pending payment booking cancelled before payment capture.";
+    const cancelledAt = new Date();
+    const refundPolicy = getBookingRefundPolicy(booking, booking.event);
+    const refundDecision = calculateRefundForCancellation({
+      totalAmount: booking.totalAmount,
+      paymentStatus: booking.paymentStatus,
+      refundAllowed: refundPolicy.refundAllowed,
+      refundDeadline: refundPolicy.refundDeadline,
+      refundPercentage: refundPolicy.refundPercentage,
+      cancellationFee: refundPolicy.cancellationFee,
+      cancelledAt,
+    });
+    const nextPaymentStatus = wasPendingPayment
+      ? PaymentStatus.FAILED
+      : refundDecision.paymentStatus;
+    const refundAmount = refundDecision.refundAmount;
+    const refundStatus = refundDecision.refundStatus;
+    const refundReason = refundDecision.refundReason;
 
     let slotsReleased = false;
 
@@ -2378,11 +3123,16 @@ export const eventsService = {
       },
       data: {
         status: EventBookingStatus.CANCELLED,
-        cancelledAt: new Date(),
+        cancelledAt,
         paymentStatus: nextPaymentStatus,
+        refundAllowed: refundPolicy.refundAllowed,
+        refundDeadline: refundPolicy.refundDeadline,
+        refundPercentage: refundPolicy.refundPercentage,
+        cancellationFee: refundPolicy.cancellationFee,
         refundAmount,
         refundStatus,
         refundReason,
+        refundProcessedAt: null,
       },
     });
 
@@ -2418,8 +3168,10 @@ export const eventsService = {
       userId,
       title: "Event booking cancelled",
       message:
-        wasPaid
-          ? `Your booking for ${booking.event.title} was cancelled and refunded to the original payment method.`
+        refundStatus === RefundStatus.PENDING
+          ? `Your booking for ${booking.event.title} was cancelled. Refund review is now pending.`
+          : refundStatus === RefundStatus.NOT_ELIGIBLE
+            ? `Your booking for ${booking.event.title} was cancelled. No refund is applicable for this booking.`
           : booking.paymentStatus === PaymentStatus.FREE
             ? `Your free booking for ${booking.event.title} was cancelled successfully.`
             : `Your booking for ${booking.event.title} was cancelled before payment capture.`,
@@ -2432,6 +3184,22 @@ export const eventsService = {
       },
       dedupeWindowMinutes: 1,
     });
+
+    if (refundStatus === RefundStatus.PENDING) {
+      await notificationsService.createForUser({
+        userId,
+        title: "Event refund pending",
+        message: `Refund review for ${booking.event.title} is pending. Expected refund amount: INR ${refundAmount}.`,
+        meta: {
+          eventId: booking.eventId,
+          restaurantId: booking.restaurantId,
+          bookingId: booking.id,
+          path: "/my-events",
+          eventKey: `event:refund:pending:${booking.id}`,
+        },
+        dedupeWindowMinutes: 1,
+      });
+    }
 
     const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
       await getEventBookingMetrics([booking.eventId], userId);
@@ -2499,6 +3267,7 @@ export const eventsService = {
   },
 
   async listAttendeesForAdmin(eventId: number) {
+    await syncEventAndBookingLifecycle([eventId]);
     const event = await getEventById(eventId);
     const bookings = await prisma.eventBooking.findMany({
       where: {
@@ -2508,18 +3277,24 @@ export const eventsService = {
       orderBy: [{ bookedAt: "desc" }],
     });
 
-    const pendingCount = bookings.filter((booking) => booking.status === EventBookingStatus.PENDING).length;
-    const confirmedCount = bookings.filter((booking) => booking.status === EventBookingStatus.CONFIRMED).length;
-    const attendedCount = bookings.filter((booking) => booking.status === EventBookingStatus.ATTENDED).length;
-    const cancelledCount = bookings.filter((booking) => booking.status === EventBookingStatus.CANCELLED).length;
-    const failedCount = bookings.filter((booking) => booking.status === EventBookingStatus.FAILED).length;
+    const pendingCount = bookings.filter((booking) => getEffectiveBookingStatus(booking) === EventBookingStatus.PENDING).length;
+    const confirmedCount = bookings.filter((booking) => getEffectiveBookingStatus(booking) === EventBookingStatus.CONFIRMED).length;
+    const completedCount = bookings.filter((booking) => getEffectiveBookingStatus(booking) === EventBookingStatus.COMPLETED).length;
+    const attendedCount = bookings.filter((booking) => getEffectiveBookingStatus(booking) === EventBookingStatus.ATTENDED).length;
+    const cancelledCount = bookings.filter((booking) => getEffectiveBookingStatus(booking) === EventBookingStatus.CANCELLED).length;
+    const failedCount = bookings.filter((booking) => getEffectiveBookingStatus(booking) === EventBookingStatus.FAILED).length;
     const refundedCount = bookings.filter(
       (booking) =>
         booking.paymentStatus === PaymentStatus.REFUNDED ||
-        booking.paymentStatus === PaymentStatus.REFUND_PENDING,
+        booking.paymentStatus === PaymentStatus.REFUND_PENDING ||
+        booking.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED,
     ).length;
     const bookedSlots = bookings.reduce((total, booking) => {
-      if (SLOT_RESERVED_BOOKING_STATUSES.includes(booking.status as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number])) {
+      if (
+        SLOT_RESERVED_BOOKING_STATUSES.includes(
+          getEffectiveBookingStatus(booking) as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number],
+        )
+      ) {
         return total + booking.quantity;
       }
 
@@ -2528,8 +3303,9 @@ export const eventsService = {
     const revenue = roundCurrency(
       bookings.reduce((total, booking) => {
         if (
-          (booking.status === EventBookingStatus.CONFIRMED ||
-            booking.status === EventBookingStatus.ATTENDED) &&
+          (getEffectiveBookingStatus(booking) === EventBookingStatus.CONFIRMED ||
+            getEffectiveBookingStatus(booking) === EventBookingStatus.COMPLETED ||
+            getEffectiveBookingStatus(booking) === EventBookingStatus.ATTENDED) &&
           booking.paymentStatus === PaymentStatus.PAID
         ) {
           return total + booking.totalAmount;
@@ -2541,8 +3317,9 @@ export const eventsService = {
     const totalTax = roundCurrency(
       bookings.reduce((total, booking) => {
         if (
-          (booking.status === EventBookingStatus.CONFIRMED ||
-            booking.status === EventBookingStatus.ATTENDED) &&
+          (getEffectiveBookingStatus(booking) === EventBookingStatus.CONFIRMED ||
+            getEffectiveBookingStatus(booking) === EventBookingStatus.COMPLETED ||
+            getEffectiveBookingStatus(booking) === EventBookingStatus.ATTENDED) &&
           booking.paymentStatus === PaymentStatus.PAID
         ) {
           return total + (booking.taxAmount ?? 0);
@@ -2555,7 +3332,8 @@ export const eventsService = {
       bookings.reduce((total, booking) => {
         if (
           booking.paymentStatus === PaymentStatus.REFUNDED ||
-          booking.paymentStatus === PaymentStatus.REFUND_PENDING
+          booking.paymentStatus === PaymentStatus.REFUND_PENDING ||
+          booking.paymentStatus === PaymentStatus.PARTIALLY_REFUNDED
         ) {
           return total + (booking.refundAmount ?? 0);
         }
@@ -2582,11 +3360,13 @@ export const eventsService = {
     bookings.forEach((booking) => {
       const current = restaurantBreakdownMap.get(booking.restaurant.id);
       const isActiveBooking = SLOT_RESERVED_BOOKING_STATUSES.includes(
-        booking.status as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number],
+        getEffectiveBookingStatus(booking) as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number],
       );
       const nextRevenue =
         booking.paymentStatus === PaymentStatus.PAID &&
-        ACTIVE_BOOKING_STATUSES.includes(booking.status as (typeof ACTIVE_BOOKING_STATUSES)[number])
+        ACTIVE_BOOKING_STATUSES.includes(
+          getEffectiveBookingStatus(booking) as (typeof ACTIVE_BOOKING_STATUSES)[number],
+        )
           ? booking.totalAmount
           : 0;
 
@@ -2605,7 +3385,7 @@ export const eventsService = {
     const mappedBookings = bookings.map((booking) =>
       mapEventBooking(booking, {
         bookedSlots,
-        confirmedBookingCount: confirmedCount + attendedCount,
+        confirmedBookingCount: confirmedCount + completedCount + attendedCount,
         revenue,
       }),
     );
@@ -2613,13 +3393,14 @@ export const eventsService = {
     return {
       event: mapEvent(event, {
         bookedSlots,
-        confirmedBookingCount: confirmedCount + attendedCount,
+        confirmedBookingCount: confirmedCount + completedCount + attendedCount,
         revenue,
       }),
       summary: {
         bookingsCount: bookings.length,
         pendingCount,
         confirmedCount,
+        completedCount,
         attendedCount,
         cancelledCount,
         failedCount,
@@ -2659,10 +3440,13 @@ export const eventsService = {
       );
     }
 
-    if (booking.status !== EventBookingStatus.CONFIRMED) {
+    if (
+      getEffectiveBookingStatus(booking) !== EventBookingStatus.CONFIRMED &&
+      getEffectiveBookingStatus(booking) !== EventBookingStatus.COMPLETED
+    ) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
-        "Only confirmed bookings can be marked as attended.",
+        "Only confirmed or completed bookings can be marked as attended.",
         "EVENT_BOOKING_NOT_ATTENDABLE",
       );
     }
@@ -2711,6 +3495,7 @@ export const eventsService = {
   },
 
   async listOwnerParticipation(userId: number) {
+    await syncEventAndBookingLifecycle();
     const ownedRestaurants = await prisma.restaurant.findMany({
       where: {
         ownerId: userId,
@@ -2738,10 +3523,6 @@ export const eventsService = {
 
     const events = await prisma.event.findMany({
       where: {
-        status: EventStatus.ACTIVE,
-        endsAt: {
-          gte: new Date(),
-        },
         OR: [
           { restaurantId: { in: ownedRestaurantIds } },
           ...(ownedRegionIds.length ? [{ regionId: { in: ownedRegionIds } }] : []),
@@ -2781,8 +3562,9 @@ export const eventsService = {
           bookings: [] as EventBookingRecord[],
         };
         const isActiveBooking =
-          booking.status === EventBookingStatus.CONFIRMED ||
-          booking.status === EventBookingStatus.ATTENDED;
+          getEffectiveBookingStatus(booking) === EventBookingStatus.CONFIRMED ||
+          getEffectiveBookingStatus(booking) === EventBookingStatus.COMPLETED ||
+          getEffectiveBookingStatus(booking) === EventBookingStatus.ATTENDED;
 
         current.bookedSlots += isActiveBooking ? booking.quantity : 0;
         current.revenue = roundCurrency(
@@ -2845,6 +3627,109 @@ export const eventsService = {
           ),
         };
       });
+    });
+  },
+
+  async updateRefundForAdmin(
+    eventId: number,
+    bookingId: number,
+    input: {
+      action: "APPROVE" | "REJECT" | "PROCESS";
+      refundReason?: string;
+    },
+  ) {
+    const booking = await prisma.eventBooking.findFirst({
+      where: {
+        id: bookingId,
+        eventId,
+      },
+      select: bookingSelect,
+    });
+
+    if (!booking) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "Event booking not found.",
+        "EVENT_BOOKING_NOT_FOUND",
+      );
+    }
+
+    const updatedBooking = await updateRefundStateForBooking(booking, input);
+    const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
+      await getEventBookingMetrics([booking.eventId], booking.userId);
+
+    return {
+      booking: mapEventBooking(updatedBooking, {
+        bookedSlots: bookedSlotsByEventId.get(booking.eventId) ?? updatedBooking.event.bookedSlots,
+        confirmedBookingCount: confirmedBookingCountByEventId.get(booking.eventId) ?? 0,
+        revenue: revenueByEventId.get(booking.eventId) ?? 0,
+      }),
+    };
+  },
+
+  async updateRefundForOwner(
+    userId: number,
+    bookingId: number,
+    input: {
+      action: "APPROVE" | "REJECT" | "PROCESS";
+      refundReason?: string;
+    },
+  ) {
+    const booking = await prisma.eventBooking.findFirst({
+      where: {
+        id: bookingId,
+      },
+      select: bookingSelect,
+    });
+
+    if (!booking || booking.restaurant.ownerId !== userId) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "Event booking not found.",
+        "EVENT_BOOKING_NOT_FOUND",
+      );
+    }
+
+    const updatedBooking = await updateRefundStateForBooking(booking, input);
+    const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
+      await getEventBookingMetrics([booking.eventId], booking.userId);
+
+    return {
+      booking: mapEventBooking(updatedBooking, {
+        bookedSlots: bookedSlotsByEventId.get(booking.eventId) ?? updatedBooking.event.bookedSlots,
+        confirmedBookingCount: confirmedBookingCountByEventId.get(booking.eventId) ?? 0,
+        revenue: revenueByEventId.get(booking.eventId) ?? 0,
+      }),
+    };
+  },
+
+  async updateEventStatusForOwner(
+    userId: number,
+    eventId: number,
+    input: {
+      status: string;
+    },
+  ) {
+    const event = await prisma.event.findFirst({
+      where: {
+        id: eventId,
+        restaurant: {
+          is: {
+            ownerId: userId,
+          },
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!event) {
+      throw new AppError(StatusCodes.NOT_FOUND, "Event not found", "EVENT_NOT_FOUND");
+    }
+
+    return this.update(eventId, {
+      status: input.status,
     });
   },
 

@@ -175,6 +175,19 @@ export const markEventBookingAttended = asyncHandler(async (req, res) => {
   });
 });
 
+export const updateEventBookingRefund = asyncHandler(async (req, res) => {
+  const result = await eventsService.updateRefundForAdmin(
+    Number(req.params.eventId),
+    Number(req.params.bookingId),
+    req.body,
+  );
+
+  return sendSuccess(res, {
+    message: "Event refund updated successfully",
+    data: result,
+  });
+});
+
 export const listOwnerEvents = asyncHandler(async (req, res) => {
   const events = await eventsService.listOwnerParticipation(req.user!.id);
 
@@ -193,6 +206,32 @@ export const markOwnerEventBookingAttended = asyncHandler(async (req, res) => {
   return sendSuccess(res, {
     message: "Event booking marked as attended successfully",
     data: result,
+  });
+});
+
+export const updateOwnerEventBookingRefund = asyncHandler(async (req, res) => {
+  const result = await eventsService.updateRefundForOwner(
+    req.user!.id,
+    Number(req.params.bookingId),
+    req.body,
+  );
+
+  return sendSuccess(res, {
+    message: "Event refund updated successfully",
+    data: result,
+  });
+});
+
+export const updateOwnerEventStatus = asyncHandler(async (req, res) => {
+  const event = await eventsService.updateEventStatusForOwner(
+    req.user!.id,
+    Number(req.params.eventId),
+    req.body,
+  );
+
+  return sendSuccess(res, {
+    message: "Event updated successfully",
+    data: { event },
   });
 });
 

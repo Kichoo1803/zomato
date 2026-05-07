@@ -17,6 +17,8 @@ import {
   getOwnerEventInsights,
   getOwnerRestaurants,
   markOwnerEventBookingAttended,
+  updateOwnerEventBookingRefund,
+  updateOwnerEventStatus,
   updateOwnerRestaurant,
   type OwnerEventInsight,
   type OwnerEventTemplate,
@@ -55,7 +57,7 @@ const emptyForm = {
   cuisineIds: [] as number[],
 };
 
-type OwnerEventStatusValue = "ACTIVE" | "INACTIVE";
+type OwnerEventStatusValue = "ACTIVE" | "CANCELLED";
 
 type OwnerEventFormState = {
   restaurantId: string;
@@ -71,10 +73,14 @@ type OwnerEventFormState = {
   totalSlots: string;
   slotPrice: string;
   maxTicketsPerUser: string;
+  refundAllowed: boolean;
+  refundDeadline: string;
+  refundPercentage: string;
+  cancellationFee: string;
   status: OwnerEventStatusValue;
 };
 
-const OWNER_EVENT_STATUS_OPTIONS: OwnerEventStatusValue[] = ["ACTIVE", "INACTIVE"];
+const OWNER_EVENT_STATUS_OPTIONS: OwnerEventStatusValue[] = ["ACTIVE", "CANCELLED"];
 
 const emptyEventForm: OwnerEventFormState = {
   restaurantId: "",
@@ -90,6 +96,10 @@ const emptyEventForm: OwnerEventFormState = {
   totalSlots: "",
   slotPrice: "",
   maxTicketsPerUser: "",
+  refundAllowed: true,
+  refundDeadline: "",
+  refundPercentage: "100",
+  cancellationFee: "0",
   status: "ACTIVE",
 };
 
@@ -119,6 +129,9 @@ export const OwnerRestaurantPage = () => {
   const [editingRestaurant, setEditingRestaurant] = useState<OwnerRestaurant | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [attendingBookingId, setAttendingBookingId] = useState<number | null>(null);
+  const [refundUpdatingBookingId, setRefundUpdatingBookingId] = useState<number | null>(null);
+  const [eventStatusUpdatingId, setEventStatusUpdatingId] = useState<number | null>(null);
+  const [refundNotes, setRefundNotes] = useState<Record<number, string>>({});
   const [form, setForm] = useState(emptyForm);
   const [selectedTemplate, setSelectedTemplate] = useState<OwnerEventTemplate | null>(null);
   const [isTemplatePickerOpen, setIsTemplatePickerOpen] = useState(false);
@@ -163,6 +176,44 @@ export const OwnerRestaurantPage = () => {
       toast.error(getApiErrorMessage(error, "Unable to mark this booking as attended."));
     } finally {
       setAttendingBookingId(null);
+    }
+  };
+
+  const handleRefundAction = async (
+    bookingId: number,
+    action: "APPROVE" | "REJECT" | "PROCESS",
+  ) => {
+    setRefundUpdatingBookingId(bookingId);
+    try {
+      await updateOwnerEventBookingRefund(bookingId, {
+        action,
+        refundReason: refundNotes[bookingId]?.trim() || undefined,
+      });
+      toast.success(
+        action === "APPROVE"
+          ? "Refund approved successfully."
+          : action === "REJECT"
+            ? "Refund rejected successfully."
+            : "Refund processed successfully.",
+      );
+      await loadRestaurants();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to update this refund right now."));
+    } finally {
+      setRefundUpdatingBookingId(null);
+    }
+  };
+
+  const handleEventStatusChange = async (eventId: number, status: "ACTIVE" | "CANCELLED") => {
+    setEventStatusUpdatingId(eventId);
+    try {
+      await updateOwnerEventStatus(eventId, { status });
+      toast.success(status === "CANCELLED" ? "Event cancelled successfully." : "Event reopened successfully.");
+      await loadRestaurants();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to update this event right now."));
+    } finally {
+      setEventStatusUpdatingId(null);
     }
   };
 
@@ -219,6 +270,10 @@ export const OwnerRestaurantPage = () => {
         template.suggestedMaxTicketsPerUser != null
           ? String(template.suggestedMaxTicketsPerUser)
           : "",
+      refundAllowed: true,
+      refundDeadline: current.refundDeadline || derivedBookingEnd || "",
+      refundPercentage: current.refundPercentage || "100",
+      cancellationFee: current.cancellationFee || "0",
       status: "ACTIVE",
     }));
     setIsTemplatePickerOpen(false);
@@ -272,6 +327,22 @@ export const OwnerRestaurantPage = () => {
         maxTicketsPerUser: eventForm.maxTicketsPerUser.trim()
           ? Number(eventForm.maxTicketsPerUser)
           : null,
+        refundAllowed: eventForm.refundAllowed,
+        refundDeadline: eventForm.refundAllowed
+          ? eventForm.refundDeadline
+            ? new Date(eventForm.refundDeadline).toISOString()
+            : combineDateAndTime(eventForm.eventDate, eventForm.eventStartTime)
+          : null,
+        refundPercentage: eventForm.refundAllowed
+          ? eventForm.refundPercentage.trim()
+            ? Number(eventForm.refundPercentage)
+            : 100
+          : 0,
+        cancellationFee: eventForm.refundAllowed
+          ? eventForm.cancellationFee.trim()
+            ? Number(eventForm.cancellationFee)
+            : 0
+          : 0,
         status: eventForm.status,
       });
       toast.success(
@@ -597,6 +668,10 @@ export const OwnerRestaurantPage = () => {
                               </div>
                               <div className="flex flex-wrap gap-2">
                                 <StatusPill
+                                  label={toLabel(eventInsight.event.status)}
+                                  tone={getToneForStatus(eventInsight.event.status)}
+                                />
+                                <StatusPill
                                   label={`${eventInsight.restaurantBookedSlots} at this restaurant`}
                                   tone="info"
                                 />
@@ -624,9 +699,31 @@ export const OwnerRestaurantPage = () => {
                                 : "Free event booking"}
                             </p>
                             <p className="mt-2 text-sm text-ink-soft">
-                              {eventInsight.bookings.filter((booking) => booking.status === "CONFIRMED" || booking.status === "ATTENDED").length} confirmed attendee booking(s) |{" "}
+                              {eventInsight.bookings.filter((booking) => booking.status === "CONFIRMED" || booking.status === "COMPLETED" || booking.status === "ATTENDED").length} confirmed attendee booking(s) |{" "}
                               {eventInsight.bookings.filter((booking) => booking.status === "CANCELLED").length} cancelled booking(s)
                             </p>
+                            {eventInsight.event.status !== "ENDED" ? (
+                              <div className="mt-3">
+                                <Button
+                                  type="button"
+                                  variant="secondary"
+                                  className="px-3 py-2 text-xs"
+                                  onClick={() =>
+                                    void handleEventStatusChange(
+                                      eventInsight.event.id,
+                                      eventInsight.event.manualStatus === "CANCELLED" ? "ACTIVE" : "CANCELLED",
+                                    )
+                                  }
+                                  disabled={eventStatusUpdatingId === eventInsight.event.id}
+                                >
+                                  {eventStatusUpdatingId === eventInsight.event.id
+                                    ? "Saving..."
+                                    : eventInsight.event.manualStatus === "CANCELLED"
+                                      ? "Reopen event"
+                                      : "Cancel event"}
+                                </Button>
+                              </div>
+                            ) : null}
                             {eventInsight.bookings.length ? (
                               <div className="mt-4 space-y-3">
                                 {eventInsight.bookings.map((booking) => (
@@ -647,7 +744,9 @@ export const OwnerRestaurantPage = () => {
                                         <StatusPill
                                           label={toLabel(booking.paymentStatus)}
                                           tone={
-                                            booking.paymentStatus === "PAID" || booking.paymentStatus === "REFUNDED"
+                                            booking.paymentStatus === "PAID" ||
+                                            booking.paymentStatus === "REFUNDED" ||
+                                            booking.paymentStatus === "PARTIALLY_REFUNDED"
                                               ? "success"
                                               : booking.paymentStatus === "FAILED"
                                                 ? "warning"
@@ -656,21 +755,14 @@ export const OwnerRestaurantPage = () => {
                                         />
                                         <StatusPill
                                           label={toLabel(booking.refundStatus ?? "NOT_REQUESTED")}
-                                          tone={
-                                            booking.refundStatus === "REFUNDED"
-                                              ? "success"
-                                              : booking.refundStatus === "FAILED"
-                                                ? "warning"
-                                                : "neutral"
-                                          }
+                                          tone={getToneForStatus(booking.refundStatus ?? "NOT_REQUESTED")}
                                         />
                                       </div>
                                       <p className="mt-2 text-xs text-ink-muted">{formatDateTime(booking.bookedAt)}</p>
                                       <p className="mt-2 text-xs text-ink-muted">
-                                        Total {formatCurrency(booking.totalAmount)}
-                                        {booking.refundAmount ? ` | Refund ${formatCurrency(booking.refundAmount)}` : ""}
+                                        Total {formatCurrency(booking.totalAmount)} | Tax {formatCurrency(booking.taxAmount ?? 0)} | Refund {formatCurrency(booking.refundAmount ?? 0)}
                                       </p>
-                                      {booking.status === "CONFIRMED" ? (
+                                      {booking.status === "CONFIRMED" || booking.status === "COMPLETED" ? (
                                         <Button
                                           type="button"
                                           variant="secondary"
@@ -680,6 +772,51 @@ export const OwnerRestaurantPage = () => {
                                         >
                                           {attendingBookingId === booking.id ? "Saving..." : "Mark attended"}
                                         </Button>
+                                      ) : null}
+                                      {booking.status === "CANCELLED" &&
+                                      booking.refundStatus !== "NOT_ELIGIBLE" &&
+                                      booking.paymentStatus !== "FREE" ? (
+                                        <div className="mt-3 space-y-2">
+                                          <Textarea
+                                            label="Refund note"
+                                            value={refundNotes[booking.id] ?? booking.refundReason ?? ""}
+                                            onChange={(event) =>
+                                              setRefundNotes((current) => ({
+                                                ...current,
+                                                [booking.id]: event.target.value,
+                                              }))
+                                            }
+                                            placeholder="Add refund note"
+                                          />
+                                          <div className="flex flex-wrap justify-end gap-2">
+                                            <Button
+                                              type="button"
+                                              variant="secondary"
+                                              className="px-3 py-2 text-xs"
+                                              onClick={() => void handleRefundAction(booking.id, "APPROVE")}
+                                              disabled={refundUpdatingBookingId === booking.id}
+                                            >
+                                              Approve refund
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              variant="secondary"
+                                              className="px-3 py-2 text-xs"
+                                              onClick={() => void handleRefundAction(booking.id, "REJECT")}
+                                              disabled={refundUpdatingBookingId === booking.id}
+                                            >
+                                              Reject refund
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              className="px-3 py-2 text-xs"
+                                              onClick={() => void handleRefundAction(booking.id, "PROCESS")}
+                                              disabled={refundUpdatingBookingId === booking.id}
+                                            >
+                                              {refundUpdatingBookingId === booking.id ? "Saving..." : "Mark processed"}
+                                            </Button>
+                                          </div>
+                                        </div>
                                       ) : null}
                                     </div>
                                   </div>
@@ -937,6 +1074,40 @@ export const OwnerRestaurantPage = () => {
               value={eventForm.maxTicketsPerUser}
               onChange={(event) => setEventForm({ ...eventForm, maxTicketsPerUser: event.target.value })}
               placeholder="Optional"
+            />
+            <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream px-4 py-3 text-sm font-semibold text-ink">
+              <span>Refund allowed</span>
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-[rgb(139,30,36)]"
+                checked={eventForm.refundAllowed}
+                onChange={(event) => setEventForm({ ...eventForm, refundAllowed: event.target.checked })}
+              />
+            </label>
+            <Input
+              label="Refund deadline"
+              type="datetime-local"
+              value={eventForm.refundDeadline}
+              onChange={(event) => setEventForm({ ...eventForm, refundDeadline: event.target.value })}
+              disabled={!eventForm.refundAllowed}
+            />
+            <Input
+              label="Refund percentage"
+              type="number"
+              min="0"
+              max="100"
+              value={eventForm.refundPercentage}
+              onChange={(event) => setEventForm({ ...eventForm, refundPercentage: event.target.value })}
+              disabled={!eventForm.refundAllowed}
+            />
+            <Input
+              label="Cancellation fee"
+              type="number"
+              min="0"
+              step="0.01"
+              value={eventForm.cancellationFee}
+              onChange={(event) => setEventForm({ ...eventForm, cancellationFee: event.target.value })}
+              disabled={!eventForm.refundAllowed}
             />
           </div>
 

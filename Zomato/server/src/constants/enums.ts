@@ -51,6 +51,10 @@ export type OfferScope = (typeof OfferScope)[keyof typeof OfferScope];
 
 export const EventStatus = {
   ACTIVE: "ACTIVE",
+  UPCOMING: "UPCOMING",
+  LIVE: "LIVE",
+  ENDED: "ENDED",
+  CANCELLED: "CANCELLED",
   INACTIVE: "INACTIVE",
   EXPIRED: "EXPIRED",
 } as const;
@@ -68,6 +72,7 @@ export const EventBookingStatus = {
   PENDING: "PENDING",
   CONFIRMED: "CONFIRMED",
   CANCELLED: "CANCELLED",
+  COMPLETED: "COMPLETED",
   REFUNDED: "REFUNDED",
   ATTENDED: "ATTENDED",
   FAILED: "FAILED",
@@ -101,12 +106,16 @@ export const PaymentStatus = {
   FAILED: "FAILED",
   REFUND_PENDING: "REFUND_PENDING",
   REFUNDED: "REFUNDED",
+  PARTIALLY_REFUNDED: "PARTIALLY_REFUNDED",
 } as const;
 export type PaymentStatus = (typeof PaymentStatus)[keyof typeof PaymentStatus];
 
 export const RefundStatus = {
   NOT_REQUESTED: "NOT_REQUESTED",
+  NOT_ELIGIBLE: "NOT_ELIGIBLE",
   PENDING: "PENDING",
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
   REFUNDED: "REFUNDED",
   FAILED: "FAILED",
 } as const;

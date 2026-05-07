@@ -158,12 +158,12 @@ const formatEventBookingStatus = (status?: string | null) =>
 const getEventBookingTone = (status?: string | null) => {
   switch (status) {
     case "ATTENDED":
+    case "COMPLETED":
       return "success" as const;
     case "PENDING":
       return "info" as const;
     case "FAILED":
       return "warning" as const;
-    case "REFUNDED":
     case "CANCELLED":
       return "warning" as const;
     case "CONFIRMED":
@@ -176,6 +176,7 @@ const getEventPaymentTone = (status?: string | null) => {
   switch (status) {
     case "PAID":
     case "REFUNDED":
+    case "PARTIALLY_REFUNDED":
       return "success" as const;
     case "FAILED":
       return "warning" as const;
@@ -191,10 +192,13 @@ const getEventPaymentTone = (status?: string | null) => {
 const getEventRefundTone = (status?: string | null) => {
   switch (status) {
     case "REFUNDED":
+    case "APPROVED":
       return "success" as const;
     case "PENDING":
       return "info" as const;
     case "FAILED":
+    case "REJECTED":
+    case "NOT_ELIGIBLE":
       return "warning" as const;
     case "NOT_REQUESTED":
     default:
@@ -1736,8 +1740,12 @@ export const MyEventsPage = () => {
         ),
       );
       toast.success(
-        result.booking.paymentStatus === "REFUNDED"
-          ? `Booking cancelled. Refund ${formatCurrency(result.booking.refundAmount ?? result.booking.totalAmount)} has been marked to the original payment method.`
+        result.booking.refundStatus === "PENDING"
+          ? `Booking cancelled. Refund ${formatCurrency(result.booking.refundAmount ?? 0)} is pending review.`
+          : result.booking.refundStatus === "NOT_ELIGIBLE"
+            ? "Booking cancelled. No refund is applicable for this booking."
+          : result.booking.paymentStatus === "REFUNDED" || result.booking.paymentStatus === "PARTIALLY_REFUNDED"
+            ? `Booking cancelled. Refund ${formatCurrency(result.booking.refundAmount ?? 0)} has been processed.`
           : result.booking.paymentStatus === "FREE"
             ? "Free booking cancelled."
             : "Event booking cancelled successfully.",
@@ -1822,7 +1830,11 @@ export const MyEventsPage = () => {
           </div>
         </div>
 
-        <div className="grid gap-4 rounded-[1.5rem] bg-cream px-5 py-4 text-sm text-ink-soft md:grid-cols-3">
+        <div className="grid gap-4 rounded-[1.5rem] bg-cream px-5 py-4 text-sm text-ink-soft md:grid-cols-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Slot price</p>
+            <p className="mt-2">{formatCurrency(eventItem.slotPrice ?? 0)}</p>
+          </div>
           <div>
             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Subtotal</p>
             <p className="mt-2">{formatCurrency(eventItem.subtotalAmount ?? eventItem.totalAmount)}</p>
@@ -1832,12 +1844,30 @@ export const MyEventsPage = () => {
             <p className="mt-2">{formatCurrency(eventItem.platformFee ?? 0)}</p>
           </div>
           <div>
-            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund amount</p>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Discount</p>
             <p className="mt-2">
-              {eventItem.refundAmount && eventItem.refundAmount > 0
-                ? formatCurrency(eventItem.refundAmount)
-                : "No refund"}
+              {eventItem.discountAmount && eventItem.discountAmount > 0
+                ? `-${formatCurrency(eventItem.discountAmount)}`
+                : formatCurrency(0)}
             </p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Total paid</p>
+            <p className="mt-2">
+              {eventItem.paymentStatus === "FREE" ? "Free booking" : formatCurrency(eventItem.totalAmount)}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund eligible</p>
+            <p className="mt-2">{eventItem.refundEligible ? "Yes" : "No"}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund amount</p>
+            <p className="mt-2">{formatCurrency(eventItem.refundAmount ?? 0)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund status</p>
+            <p className="mt-2">{formatEventBookingStatus(eventItem.refundStatus ?? "NOT_REQUESTED")}</p>
           </div>
         </div>
 
@@ -1851,10 +1881,13 @@ export const MyEventsPage = () => {
           <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
             <p className="font-semibold text-ink">
               Refund {formatEventBookingStatus(eventItem.refundStatus)}
-              {eventItem.refundAmount ? ` • ${formatCurrency(eventItem.refundAmount)}` : ""}
+              {` | ${formatCurrency(eventItem.refundAmount ?? 0)}`}
             </p>
             <p className="mt-2">
-              {eventItem.refundReason ?? "Your refund will be processed to the original payment method."}
+              {eventItem.refundReason ??
+                (eventItem.refundStatus === "NOT_ELIGIBLE"
+                  ? "No refund applicable for this booking."
+                  : "Your refund will be processed to the original payment method after review.")}
             </p>
           </div>
         ) : null}
@@ -1983,7 +2016,7 @@ export const MyEventsPage = () => {
                 <p className="mt-2 font-semibold text-ink">
                   {cancelTarget.paymentStatus === "FREE"
                     ? "No refund needed"
-                    : formatCurrency(cancelTarget.refundAmount ?? cancelTarget.totalAmount)}
+                    : formatCurrency(cancelTarget.refundAmount ?? 0)}
                 </p>
               </div>
               <div>
@@ -2002,7 +2035,9 @@ export const MyEventsPage = () => {
             <p className="text-sm leading-7 text-ink-soft">
               {cancelTarget.paymentStatus === "FREE"
                 ? "Free booking cancelled."
-                : "Your refund will be processed to the original payment method."}
+                : cancelTarget.refundEligible
+                  ? "Eligible refunds will move to pending review after cancellation."
+                  : "No refund is applicable for this booking."}
             </p>
             <div className="flex justify-end gap-3">
               <Button type="button" variant="secondary" onClick={() => setCancelTarget(null)} disabled={cancelingBookingId != null}>

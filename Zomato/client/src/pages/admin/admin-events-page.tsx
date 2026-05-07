@@ -25,6 +25,7 @@ import {
   getRegionsAdmin,
   getRestaurants,
   markEventBookingAttended,
+  updateEventBookingRefund,
   updateEventTemplate,
   updateEvent,
   type AdminEvent,
@@ -47,7 +48,7 @@ import {
 } from "./admin-shared";
 
 type AssignmentType = "ALL" | "RESTAURANT" | "REGION";
-type EventStatusValue = "ACTIVE" | "INACTIVE";
+type EventStatusValue = "ACTIVE" | "CANCELLED";
 
 type EventFormState = {
   title: string;
@@ -65,10 +66,14 @@ type EventFormState = {
   totalSlots: string;
   slotPrice: string;
   maxTicketsPerUser: string;
+  refundAllowed: boolean;
+  refundDeadline: string;
+  refundPercentage: string;
+  cancellationFee: string;
   status: EventStatusValue;
 };
 
-type EventTemplateStatusValue = "ACTIVE" | "INACTIVE";
+type EventTemplateStatusValue = "ACTIVE" | "CANCELLED";
 
 type EventTemplateFormState = {
   title: string;
@@ -85,9 +90,9 @@ type EventTemplateFormState = {
   status: EventTemplateStatusValue;
 };
 
-const EVENT_STATUS_OPTIONS = ["ACTIVE", "INACTIVE", "EXPIRED"] as const;
-const EVENT_FORM_STATUS_OPTIONS: EventStatusValue[] = ["ACTIVE", "INACTIVE"];
-const TEMPLATE_STATUS_OPTIONS: EventTemplateStatusValue[] = ["ACTIVE", "INACTIVE"];
+const EVENT_STATUS_OPTIONS = ["UPCOMING", "LIVE", "ENDED", "CANCELLED"] as const;
+const EVENT_FORM_STATUS_OPTIONS: EventStatusValue[] = ["ACTIVE", "CANCELLED"];
+const TEMPLATE_STATUS_OPTIONS: EventTemplateStatusValue[] = ["ACTIVE", "CANCELLED"];
 
 const emptyForm: EventFormState = {
   title: "",
@@ -105,6 +110,10 @@ const emptyForm: EventFormState = {
   totalSlots: "",
   slotPrice: "",
   maxTicketsPerUser: "",
+  refundAllowed: true,
+  refundDeadline: "",
+  refundPercentage: "100",
+  cancellationFee: "0",
   status: "ACTIVE",
 };
 
@@ -184,10 +193,10 @@ const getAssignmentLabel = (event: AdminEvent) => {
 };
 
 const getFormStatusValue = (event: AdminEvent): EventStatusValue =>
-  event.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";
+  event.manualStatus === "CANCELLED" ? "CANCELLED" : "ACTIVE";
 
 const getTemplateFormStatusValue = (template: AdminEventTemplate): EventTemplateStatusValue =>
-  template.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";
+  template.status === "CANCELLED" ? "CANCELLED" : "ACTIVE";
 
 export const AdminEventsPage = () => {
   const [events, setEvents] = useState<AdminEvent[]>([]);
@@ -214,6 +223,8 @@ export const AdminEventsPage = () => {
   const [attendeeReport, setAttendeeReport] = useState<AdminEventAttendeeReport | null>(null);
   const [isLoadingAttendeeReport, setIsLoadingAttendeeReport] = useState(false);
   const [attendingBookingId, setAttendingBookingId] = useState<number | null>(null);
+  const [refundUpdatingBookingId, setRefundUpdatingBookingId] = useState<number | null>(null);
+  const [refundNotes, setRefundNotes] = useState<Record<number, string>>({});
   const [form, setForm] = useState<EventFormState>(emptyForm);
   const [templateForm, setTemplateForm] = useState<EventTemplateFormState>(emptyTemplateForm);
 
@@ -271,6 +282,10 @@ export const AdminEventsPage = () => {
       totalSlots: event.totalSlots != null ? String(event.totalSlots) : "",
       slotPrice: event.slotPrice > 0 ? String(event.slotPrice) : "",
       maxTicketsPerUser: event.maxTicketsPerUser != null ? String(event.maxTicketsPerUser) : "",
+      refundAllowed: event.refundAllowed,
+      refundDeadline: toDateTimeLocalValue(event.refundDeadline),
+      refundPercentage: String(event.refundPercentage ?? 100),
+      cancellationFee: String(event.cancellationFee ?? 0),
       status: getFormStatusValue(event),
     });
     setIsModalOpen(true);
@@ -352,6 +367,22 @@ export const AdminEventsPage = () => {
         totalSlots: form.totalSlots.trim() ? Number(form.totalSlots) : null,
         slotPrice: form.slotPrice.trim() ? Number(form.slotPrice) : null,
         maxTicketsPerUser: form.maxTicketsPerUser.trim() ? Number(form.maxTicketsPerUser) : null,
+        refundAllowed: form.refundAllowed,
+        refundDeadline: form.refundAllowed
+          ? form.refundDeadline
+            ? new Date(form.refundDeadline).toISOString()
+            : combineDateAndTime(form.eventDate, form.eventStartTime)
+          : null,
+        refundPercentage: form.refundAllowed
+          ? form.refundPercentage.trim()
+            ? Number(form.refundPercentage)
+            : 100
+          : 0,
+        cancellationFee: form.refundAllowed
+          ? form.cancellationFee.trim()
+            ? Number(form.cancellationFee)
+            : 0
+          : 0,
         status: form.status,
         ...(form.assignmentType === "RESTAURANT"
           ? {
@@ -484,12 +515,12 @@ export const AdminEventsPage = () => {
   };
 
   const handleToggleStatus = async (event: AdminEvent) => {
-    const nextStatus = event.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    const nextStatus = event.manualStatus === "CANCELLED" ? "ACTIVE" : "CANCELLED";
 
     setTogglingEventId(event.id);
     try {
       await updateEvent(event.id, { status: nextStatus });
-      toast.success(`Event ${nextStatus === "ACTIVE" ? "activated" : "deactivated"} successfully.`);
+      toast.success(`Event ${nextStatus === "ACTIVE" ? "reopened" : "cancelled"} successfully.`);
       await loadData();
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to update this event status."));
@@ -511,6 +542,35 @@ export const AdminEventsPage = () => {
       toast.error(getApiErrorMessage(error, "Unable to mark this booking as attended."));
     } finally {
       setAttendingBookingId(null);
+    }
+  };
+
+  const handleRefundAction = async (
+    eventId: number,
+    bookingId: number,
+    action: "APPROVE" | "REJECT" | "PROCESS",
+  ) => {
+    setRefundUpdatingBookingId(bookingId);
+    try {
+      await updateEventBookingRefund(eventId, bookingId, {
+        action,
+        refundReason: refundNotes[bookingId]?.trim() || undefined,
+      });
+      toast.success(
+        action === "APPROVE"
+          ? "Refund approved successfully."
+          : action === "REJECT"
+            ? "Refund rejected successfully."
+            : "Refund processed successfully.",
+      );
+      await Promise.all([
+        loadData(),
+        selectedAttendeeEvent?.id === eventId ? openAttendeesModal(selectedAttendeeEvent) : Promise.resolve(),
+      ]);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to update this refund right now."));
+    } finally {
+      setRefundUpdatingBookingId(null);
     }
   };
 
@@ -655,7 +715,7 @@ export const AdminEventsPage = () => {
                     >
                       View bookings
                     </Button>
-                    {event.status !== "EXPIRED" ? (
+                    {event.status !== "ENDED" ? (
                       <Button
                         type="button"
                         variant="secondary"
@@ -665,9 +725,9 @@ export const AdminEventsPage = () => {
                       >
                         {togglingEventId === event.id
                           ? "Saving..."
-                          : event.status === "ACTIVE"
-                            ? "Deactivate"
-                            : "Activate"}
+                          : event.manualStatus === "CANCELLED"
+                            ? "Reopen"
+                            : "Cancel event"}
                       </Button>
                     ) : null}
                     <RowActions onEdit={() => openEditModal(event)} onDelete={() => setDeleteTarget(event)} />
@@ -906,6 +966,40 @@ export const AdminEventsPage = () => {
               onChange={(event) => setForm({ ...form, maxTicketsPerUser: event.target.value })}
               placeholder="Optional"
             />
+            <label className="flex items-center justify-between rounded-[1.5rem] border border-accent/10 bg-cream px-4 py-3 text-sm font-semibold text-ink">
+              <span>Refund allowed</span>
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-[rgb(139,30,36)]"
+                checked={form.refundAllowed}
+                onChange={(event) => setForm({ ...form, refundAllowed: event.target.checked })}
+              />
+            </label>
+            <Input
+              label="Refund deadline"
+              type="datetime-local"
+              value={form.refundDeadline}
+              onChange={(event) => setForm({ ...form, refundDeadline: event.target.value })}
+              disabled={!form.refundAllowed}
+            />
+            <Input
+              label="Refund percentage"
+              type="number"
+              min="0"
+              max="100"
+              value={form.refundPercentage}
+              onChange={(event) => setForm({ ...form, refundPercentage: event.target.value })}
+              disabled={!form.refundAllowed}
+            />
+            <Input
+              label="Cancellation fee"
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.cancellationFee}
+              onChange={(event) => setForm({ ...form, cancellationFee: event.target.value })}
+              disabled={!form.refundAllowed}
+            />
             <Select
               label="Status"
               value={form.status}
@@ -1118,6 +1212,10 @@ export const AdminEventsPage = () => {
                 <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.confirmedCount}</p>
               </div>
               <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Completed</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.completedCount ?? 0}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Attended</p>
                 <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.attendedCount}</p>
               </div>
@@ -1218,7 +1316,9 @@ export const AdminEventsPage = () => {
                         <StatusPill
                           label={toLabel(booking.paymentStatus)}
                           tone={
-                            booking.paymentStatus === "PAID" || booking.paymentStatus === "REFUNDED"
+                            booking.paymentStatus === "PAID" ||
+                            booking.paymentStatus === "REFUNDED" ||
+                            booking.paymentStatus === "PARTIALLY_REFUNDED"
                               ? "success"
                               : booking.paymentStatus === "FAILED"
                                 ? "warning"
@@ -1227,13 +1327,7 @@ export const AdminEventsPage = () => {
                         />
                         <StatusPill
                           label={toLabel(booking.refundStatus ?? "NOT_REQUESTED")}
-                          tone={
-                            booking.refundStatus === "REFUNDED"
-                              ? "success"
-                              : booking.refundStatus === "FAILED"
-                                ? "warning"
-                                : "neutral"
-                          }
+                          tone={getToneForStatus(booking.refundStatus ?? "NOT_REQUESTED")}
                         />
                       </div>
                     ),
@@ -1243,8 +1337,13 @@ export const AdminEventsPage = () => {
                     label: "Amounts",
                     render: (booking) => (
                       <div className="space-y-1 text-xs text-ink-muted">
+                        <p>Slot price {formatCurrency(booking.slotPrice ?? 0)}</p>
+                        <p>Subtotal {formatCurrency(booking.subtotalAmount ?? booking.totalAmount)}</p>
                         <p>Total {formatCurrency(booking.totalAmount)}</p>
                         <p>Tax {formatCurrency(booking.taxAmount ?? 0)}</p>
+                        <p>Platform fee {formatCurrency(booking.platformFee ?? 0)}</p>
+                        <p>Discount {formatCurrency(booking.discountAmount ?? 0)}</p>
+                        <p>Refund eligible {booking.refundEligible ? "Yes" : "No"}</p>
                         <p>Refund {formatCurrency(booking.refundAmount ?? 0)}</p>
                       </div>
                     ),
@@ -1252,20 +1351,71 @@ export const AdminEventsPage = () => {
                   {
                     key: "actions",
                     label: "Actions",
-                    render: (booking) =>
-                      booking.status === "CONFIRMED" ? (
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          className="px-3 py-2 text-xs"
-                          onClick={() => void handleMarkAttended(booking.eventId, booking.id)}
-                          disabled={attendingBookingId === booking.id}
-                        >
-                          {attendingBookingId === booking.id ? "Saving..." : "Mark attended"}
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-ink-muted">No actions</span>
-                      ),
+                    render: (booking) => (
+                      <div className="space-y-3">
+                        {booking.status === "CONFIRMED" || booking.status === "COMPLETED" ? (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            className="px-3 py-2 text-xs"
+                            onClick={() => void handleMarkAttended(booking.eventId, booking.id)}
+                            disabled={attendingBookingId === booking.id}
+                          >
+                            {attendingBookingId === booking.id ? "Saving..." : "Mark attended"}
+                          </Button>
+                        ) : null}
+                        {booking.status === "CANCELLED" &&
+                        booking.refundStatus !== "NOT_ELIGIBLE" &&
+                        booking.paymentStatus !== "FREE" ? (
+                          <div className="space-y-2">
+                            <Textarea
+                              label="Refund note"
+                              value={refundNotes[booking.id] ?? booking.refundReason ?? ""}
+                              onChange={(event) =>
+                                setRefundNotes((current) => ({
+                                  ...current,
+                                  [booking.id]: event.target.value,
+                                }))
+                              }
+                              placeholder="Add approval or rejection note"
+                            />
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                className="px-3 py-2 text-xs"
+                                onClick={() => void handleRefundAction(booking.eventId, booking.id, "APPROVE")}
+                                disabled={refundUpdatingBookingId === booking.id}
+                              >
+                                Approve refund
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                className="px-3 py-2 text-xs"
+                                onClick={() => void handleRefundAction(booking.eventId, booking.id, "REJECT")}
+                                disabled={refundUpdatingBookingId === booking.id}
+                              >
+                                Reject refund
+                              </Button>
+                              <Button
+                                type="button"
+                                className="px-3 py-2 text-xs"
+                                onClick={() => void handleRefundAction(booking.eventId, booking.id, "PROCESS")}
+                                disabled={refundUpdatingBookingId === booking.id}
+                              >
+                                {refundUpdatingBookingId === booking.id ? "Saving..." : "Mark processed"}
+                              </Button>
+                            </div>
+                          </div>
+                        ) : null}
+                        {booking.status !== "CONFIRMED" &&
+                        booking.status !== "COMPLETED" &&
+                        booking.status !== "CANCELLED" ? (
+                          <span className="text-xs text-ink-muted">No actions</span>
+                        ) : null}
+                      </div>
+                    ),
                   },
                 ]}
               />

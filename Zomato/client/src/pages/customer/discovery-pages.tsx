@@ -128,11 +128,15 @@ const formatEventStatusLabel = (status?: string | null) =>
     : "Unavailable";
 
 const getEventStatusTone = (status?: string | null) => {
-  if (status === "ACTIVE") {
+  if (status === "UPCOMING") {
     return "success" as const;
   }
 
-  if (status === "EXPIRED") {
+  if (status === "LIVE") {
+    return "info" as const;
+  }
+
+  if (status === "ENDED" || status === "CANCELLED") {
     return "warning" as const;
   }
 
@@ -152,7 +156,11 @@ const getEventAvailabilityTone = (status?: string | null) => {
     return "success" as const;
   }
 
-  if (status === "SOLD_OUT" || status === "EVENT_ENDED") {
+  if (status === "LIVE") {
+    return "info" as const;
+  }
+
+  if (status === "SOLD_OUT" || status === "EVENT_ENDED" || status === "CANCELLED") {
     return "warning" as const;
   }
 
@@ -2461,6 +2469,10 @@ export const RestaurantDetailsPage = () => {
                                 ? event.userBooking?.paymentStatus === "PENDING"
                                   ? `Payment is pending for ${event.userBooking?.quantity ?? 0} reserved slot${event.userBooking?.quantity === 1 ? "" : "s"}.`
                                   : `Booked ${event.userBooking?.quantity ?? 0} slot${event.userBooking?.quantity === 1 ? "" : "s"} for this event.`
+                                : event.availabilityStatus === "LIVE"
+                                  ? "This event is live now. New bookings are closed."
+                                  : event.availabilityStatus === "CANCELLED"
+                                    ? "This event was cancelled."
                                 : event.availabilityStatus === "SOLD_OUT"
                                   ? "This event is sold out right now."
                                   : event.availabilityStatus === "BOOKING_CLOSED"
@@ -2481,7 +2493,7 @@ export const RestaurantDetailsPage = () => {
                                           : ""
                                   }`
                                 : event.totalSlots != null
-                                  ? `${event.bookedSlots} of ${event.totalSlots} slots booked`
+                                ? `${event.bookedSlots} of ${event.totalSlots} slots booked`
                                   : "This event is running without a fixed seat cap."}
                             </p>
                           </div>
@@ -2500,6 +2512,10 @@ export const RestaurantDetailsPage = () => {
                               ? "Booking..."
                               : event.hasUserBooking
                                 ? "Booked"
+                                : event.availabilityStatus === "LIVE"
+                                  ? "Live Now"
+                                  : event.availabilityStatus === "CANCELLED"
+                                    ? "Cancelled"
                                 : event.availabilityStatus === "SOLD_OUT"
                                   ? "Sold Out"
                                   : event.availabilityStatus === "EVENT_ENDED"
@@ -2662,6 +2678,17 @@ export const RestaurantDetailsPage = () => {
                       ? `Maximum ${selectedBookingEvent.maxTicketsPerUser} slot${selectedBookingEvent.maxTicketsPerUser === 1 ? "" : "s"} per user.`
                       : "Choose the number of slots you want to reserve."}
                   </p>
+                  <p className="text-xs leading-6 text-ink-muted">
+                    {selectedBookingEvent.refundAllowed
+                      ? `Refund policy: ${selectedBookingEvent.refundPercentage}% refund before ${formatDateTimeValue(
+                          selectedBookingEvent.refundDeadline ?? selectedBookingEvent.startsAt,
+                        )}${
+                          selectedBookingEvent.cancellationFee > 0
+                            ? ` with a ${formatCurrency(selectedBookingEvent.cancellationFee)} cancellation fee.`
+                            : "."
+                        }`
+                      : "Refund policy: No refund applicable for this booking."}
+                  </p>
                 </div>
               </div>
 
@@ -2706,7 +2733,11 @@ export const RestaurantDetailsPage = () => {
                             </span>
                           </p>
                           <p className="text-xs leading-6 text-ink-muted">
-                            Refund policy: Full refund is available until the event starts. Refunds are processed to the original payment method.
+                            {selectedBookingEvent.refundAllowed
+                              ? `Refunds are reviewed after cancellation and processed to the original payment method. Deadline: ${formatDateTimeValue(
+                                  selectedBookingEvent.refundDeadline ?? selectedBookingEvent.startsAt,
+                                )}.`
+                              : "No refund is applicable for this booking."}
                           </p>
                         </div>
                       ) : null}

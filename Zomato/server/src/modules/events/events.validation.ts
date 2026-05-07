@@ -1,10 +1,24 @@
 import { EventStatus, PaymentMethod } from "../../constants/enums.js";
 import { z } from "zod";
 
-const eventStatusValues = [EventStatus.ACTIVE, EventStatus.INACTIVE, EventStatus.EXPIRED] as const;
-const eventTemplateStatusValues = [EventStatus.ACTIVE, EventStatus.INACTIVE] as const;
+const eventStatusValues = [
+  EventStatus.ACTIVE,
+  EventStatus.UPCOMING,
+  EventStatus.LIVE,
+  EventStatus.ENDED,
+  EventStatus.CANCELLED,
+] as const;
+const editableEventStatusValues = [EventStatus.ACTIVE, EventStatus.CANCELLED] as const;
+const eventTemplateStatusValues = [EventStatus.ACTIVE, EventStatus.CANCELLED] as const;
 const eventPaymentMethodValues = [PaymentMethod.CARD, PaymentMethod.UPI] as const;
 const stringListSchema = z.array(z.string().trim().min(1).max(240)).default([]);
+
+const refundPolicyFields = {
+  refundAllowed: z.coerce.boolean().default(true),
+  refundDeadline: z.union([z.coerce.date(), z.null()]).optional(),
+  refundPercentage: z.union([z.coerce.number().min(0).max(100), z.null()]).optional(),
+  cancellationFee: z.union([z.coerce.number().min(0), z.null()]).optional(),
+};
 
 const eventTargetFields = {
   restaurantId: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
@@ -83,6 +97,14 @@ const validateEventSchedule = (
     });
   }
 
+  if (value.bookingEndTime && value.startsAt && value.bookingEndTime > value.startsAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["bookingEndTime"],
+      message: "Booking must close before the event starts.",
+    });
+  }
+
   const totalSlots = getResolvedTotalSlots(value);
 
   if (
@@ -98,8 +120,48 @@ const validateEventSchedule = (
   }
 };
 
+const validateRefundPolicy = (
+  value: {
+    startsAt?: Date;
+    refundAllowed?: boolean;
+    refundDeadline?: Date | null;
+    refundPercentage?: number | null;
+    cancellationFee?: number | null;
+  },
+  ctx: z.RefinementCtx,
+) => {
+  if (!value.refundAllowed) {
+    return;
+  }
+
+  if (value.refundDeadline && value.startsAt && value.refundDeadline > value.startsAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["refundDeadline"],
+      message: "Refund deadline cannot be after the event start time.",
+    });
+  }
+
+  if (value.refundPercentage != null && value.refundPercentage > 100) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["refundPercentage"],
+      message: "Refund percentage cannot exceed 100.",
+    });
+  }
+
+  if (value.cancellationFee != null && value.cancellationFee < 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["cancellationFee"],
+      message: "Cancellation fee cannot be negative.",
+    });
+  }
+};
+
 const eventBodyBaseSchema = z.object({
   ...eventTargetFields,
+  ...refundPolicyFields,
   title: z.string().trim().min(2).max(120),
   description: z.string().trim().min(2).max(500),
   imageUrl: z.union([z.string().trim().url(), z.null()]).optional(),
@@ -112,17 +174,19 @@ const eventBodyBaseSchema = z.object({
   maxAttendees: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
   slotPrice: z.union([z.coerce.number().min(0), z.null()]).optional(),
   maxTicketsPerUser: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
-  status: z.enum(eventStatusValues).default(EventStatus.ACTIVE),
+  status: z.enum(editableEventStatusValues).default(EventStatus.ACTIVE),
 });
 
 const createEventBodySchema = eventBodyBaseSchema.superRefine((value, ctx) => {
   validateEventTarget(value, ctx);
   validateEventSchedule(value, ctx);
+  validateRefundPolicy(value, ctx);
 });
 
 const updateEventBodySchema = eventBodyBaseSchema.partial().superRefine((value, ctx) => {
   validateEventTarget(value, ctx);
   validateEventSchedule(value, ctx);
+  validateRefundPolicy(value, ctx);
 });
 
 const validateEventTemplateSuggestions = (
@@ -184,7 +248,8 @@ const ownerEventFromTemplateBodySchema = z
     maxAttendees: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
     slotPrice: z.union([z.coerce.number().min(0), z.null()]).optional(),
     maxTicketsPerUser: z.union([z.coerce.number().int().positive(), z.null()]).optional(),
-    status: z.enum(eventTemplateStatusValues).default(EventStatus.ACTIVE),
+    ...refundPolicyFields,
+    status: z.enum(editableEventStatusValues).default(EventStatus.ACTIVE),
   })
   .superRefine((value, ctx) => {
     if (!value.templateId && !value.title) {
@@ -212,6 +277,8 @@ const ownerEventFromTemplateBodySchema = z
         message: "End time is required when no template duration is available.",
       });
     }
+
+    validateRefundPolicy(value, ctx);
   });
 
 export const listEventsSchema = {
@@ -324,5 +391,37 @@ export const markBookingAttendedSchema = {
 export const ownerBookingIdParamSchema = {
   params: z.object({
     bookingId: z.coerce.number().int().positive(),
+  }),
+};
+
+const refundActionValues = ["APPROVE", "REJECT", "PROCESS"] as const;
+
+export const updateEventRefundSchema = {
+  params: z.object({
+    eventId: z.coerce.number().int().positive(),
+    bookingId: z.coerce.number().int().positive(),
+  }),
+  body: z.object({
+    action: z.enum(refundActionValues),
+    refundReason: z.string().trim().max(500).optional(),
+  }),
+};
+
+export const updateOwnerEventRefundSchema = {
+  params: z.object({
+    bookingId: z.coerce.number().int().positive(),
+  }),
+  body: z.object({
+    action: z.enum(refundActionValues),
+    refundReason: z.string().trim().max(500).optional(),
+  }),
+};
+
+export const ownerEventStatusParamSchema = {
+  params: z.object({
+    eventId: z.coerce.number().int().positive(),
+  }),
+  body: z.object({
+    status: z.enum(editableEventStatusValues),
   }),
 };

@@ -22,8 +22,11 @@ import {
   markEventBookingAttended,
   markOwnerEventBookingAttended,
   payEventBooking,
+  updateEventBookingRefund,
   updateEventTemplateAdmin,
   updateEvent,
+  updateOwnerEventBookingRefund,
+  updateOwnerEventStatus,
 } from "./events.controller.js";
 import {
   bookEventSchema,
@@ -38,10 +41,13 @@ import {
   listEventsSchema,
   markBookingAttendedSchema,
   ownerBookingIdParamSchema,
+  ownerEventStatusParamSchema,
   payEventBookingSchema,
   restaurantEventsParamSchema,
+  updateEventRefundSchema,
   updateEventTemplateSchema,
   updateEventSchema,
+  updateOwnerEventRefundSchema,
 } from "./events.validation.js";
 
 export const eventsRouter = Router();
@@ -137,6 +143,13 @@ adminEventsRouter.patch(
   validate(markBookingAttendedSchema),
   markEventBookingAttended,
 );
+adminEventsRouter.patch(
+  "/:eventId/bookings/:bookingId/refund",
+  requireAuth,
+  authorize(Role.ADMIN),
+  validate(updateEventRefundSchema),
+  updateEventBookingRefund,
+);
 
 adminEventTemplatesRouter.get("/", requireAuth, authorize(Role.ADMIN), listEventTemplatesAdmin);
 adminEventTemplatesRouter.post(
@@ -175,6 +188,20 @@ ownerEventsRouter.patch(
   authorize(Role.RESTAURANT_OWNER),
   validate(ownerBookingIdParamSchema),
   markOwnerEventBookingAttended,
+);
+ownerEventsRouter.patch(
+  "/bookings/:bookingId/refund",
+  requireAuth,
+  authorize(Role.RESTAURANT_OWNER),
+  validate(updateOwnerEventRefundSchema),
+  updateOwnerEventBookingRefund,
+);
+ownerEventsRouter.patch(
+  "/:eventId/status",
+  requireAuth,
+  authorize(Role.RESTAURANT_OWNER),
+  validate(ownerEventStatusParamSchema),
+  updateOwnerEventStatus,
 );
 
 ownerEventTemplatesRouter.get("/", requireAuth, authorize(Role.RESTAURANT_OWNER), listOwnerEventTemplates);
