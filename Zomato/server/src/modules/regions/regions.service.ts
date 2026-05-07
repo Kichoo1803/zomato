@@ -11,6 +11,8 @@ import { AppError } from "../../utils/app-error.js";
 import { RegistrationApplicationStatus } from "../registration-applications/registration-applications.constants.js";
 import {
   buildRegionIdentity,
+  buildRegionIdentityKey,
+  getRegionStateVariants,
   isRegionalOperationsRole,
   normalizeRegionCode,
   normalizeRegionValue,
@@ -63,6 +65,22 @@ const regionAdminSelect = {
   },
 } satisfies Prisma.RegionSelect;
 
+const regionIdentitySelect = {
+  id: true,
+  name: true,
+  districtName: true,
+  stateName: true,
+  code: true,
+  slug: true,
+  isActive: true,
+  managerUserId: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.RegionSelect;
+
+type RegionAdminRecord = Prisma.RegionGetPayload<{ select: typeof regionAdminSelect }>;
+type RegionIdentityRecord = Prisma.RegionGetPayload<{ select: typeof regionIdentitySelect }>;
+
 const managedRegionScopeSelect = {
   id: true,
   stateName: true,
@@ -70,8 +88,117 @@ const managedRegionScopeSelect = {
 } satisfies Prisma.RegionSelect;
 
 const normalizeRegionSlug = (value?: string | null) => {
-  const trimmed = value?.trim().toLowerCase();
+  const trimmed = value
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
   return trimmed ? trimmed : null;
+};
+
+const normalizeSearchValue = (value?: string | null) => normalizeRegionValue(value)?.toLowerCase() ?? "";
+
+const compareRegionsForPriority = <
+  T extends {
+    managerUserId?: number | null;
+    isActive: boolean;
+    createdAt: Date;
+    id: number;
+  },
+>(
+  left: T,
+  right: T,
+) => {
+  const leftAssignedScore = left.managerUserId ? 1 : 0;
+  const rightAssignedScore = right.managerUserId ? 1 : 0;
+
+  if (leftAssignedScore !== rightAssignedScore) {
+    return rightAssignedScore - leftAssignedScore;
+  }
+
+  if (left.isActive !== right.isActive) {
+    return Number(right.isActive) - Number(left.isActive);
+  }
+
+  const createdAtDifference = left.createdAt.getTime() - right.createdAt.getTime();
+
+  if (createdAtDifference !== 0) {
+    return createdAtDifference;
+  }
+
+  return left.id - right.id;
+};
+
+const selectPrimaryRegion = <
+  T extends {
+    managerUserId?: number | null;
+    isActive: boolean;
+    createdAt: Date;
+    id: number;
+  },
+>(
+  regions: T[],
+) => [...regions].sort(compareRegionsForPriority)[0] ?? null;
+
+const getRegionIdentityKeyFromRecord = (region: {
+  stateName?: string | null;
+  districtName?: string | null;
+}) => buildRegionIdentityKey(region.stateName, region.districtName);
+
+const matchesRegionIdentity = (
+  region: Pick<RegionIdentityRecord, "stateName" | "districtName" | "code" | "slug">,
+  input: {
+    stateName?: string | null;
+    districtName?: string | null;
+    code?: string | null;
+    slug?: string | null;
+  },
+) => {
+  const targetIdentityKey = buildRegionIdentityKey(input.stateName, input.districtName);
+  const regionIdentityKey = getRegionIdentityKeyFromRecord(region);
+
+  if (targetIdentityKey && regionIdentityKey === targetIdentityKey) {
+    return true;
+  }
+
+  const targetCode = normalizeRegionCode(input.code);
+  const regionCode = normalizeRegionCode(region.code);
+
+  if (targetCode && regionCode === targetCode) {
+    return true;
+  }
+
+  const targetSlug = normalizeRegionSlug(input.slug);
+  const regionSlug = normalizeRegionSlug(region.slug);
+
+  return Boolean(targetSlug && regionSlug === targetSlug);
+};
+
+const findMatchingRegions = async (
+  client: RegionWriteClient,
+  input: {
+    stateName?: string | null;
+    districtName?: string | null;
+    code?: string | null;
+    slug?: string | null;
+    excludeRegionId?: number;
+  },
+) => {
+  const regions = await client.region.findMany({
+    select: regionIdentitySelect,
+  });
+
+  return regions.filter(
+    (region) =>
+      region.id !== input.excludeRegionId &&
+      matchesRegionIdentity(region, {
+        stateName: input.stateName,
+        districtName: input.districtName,
+        code: input.code,
+        slug: input.slug,
+      }),
+  );
 };
 
 const normalizeRegionNotes = (value?: string | null) => {
@@ -187,6 +314,7 @@ const getManagedRegionsForManager = async (client: RegionWriteClient, managerUse
 
 const syncRegionalManagerScope = async (client: RegionWriteClient, managerUserId: number) => {
   const [primaryRegion] = await getManagedRegionsForManager(client, managerUserId);
+  const primaryRegionIdentity = buildRegionIdentity(primaryRegion?.stateName, primaryRegion?.districtName);
 
   await client.user.updateMany({
     where: {
@@ -194,8 +322,8 @@ const syncRegionalManagerScope = async (client: RegionWriteClient, managerUserId
     },
     data: {
       regionId: primaryRegion?.id ?? null,
-      opsState: primaryRegion?.stateName ?? null,
-      opsDistrict: primaryRegion?.districtName ?? null,
+      opsState: primaryRegionIdentity?.state ?? primaryRegion?.stateName ?? null,
+      opsDistrict: primaryRegionIdentity?.district ?? primaryRegion?.districtName ?? null,
     },
   });
 };
@@ -377,63 +505,20 @@ const assertRegionUniqueness = async (
     excludeRegionId?: number;
   },
 ) => {
-  const regionConflict = await client.region.findFirst({
-    where: {
-      stateName: input.stateName,
-      districtName: input.districtName,
-      ...(input.excludeRegionId
-        ? {
-            NOT: {
-              id: input.excludeRegionId,
-            },
-          }
-        : {}),
-    },
-    select: {
-      id: true,
-    },
-  });
+  const matchingRegions = await findMatchingRegions(client, input);
 
-  if (regionConflict) {
+  if (matchingRegions.some((region) => getRegionIdentityKeyFromRecord(region) === buildRegionIdentityKey(input.stateName, input.districtName))) {
     throw new AppError(
       StatusCodes.CONFLICT,
-      "A region for this district and state already exists",
+      "Region already exists.",
       "REGION_ALREADY_EXISTS",
     );
   }
 
-  const [codeConflict, slugConflict] = await Promise.all([
-    client.region.findFirst({
-      where: {
-        code: input.code,
-        ...(input.excludeRegionId
-          ? {
-              NOT: {
-                id: input.excludeRegionId,
-              },
-            }
-          : {}),
-      },
-      select: {
-        id: true,
-      },
-    }),
-    client.region.findFirst({
-      where: {
-        slug: input.slug,
-        ...(input.excludeRegionId
-          ? {
-              NOT: {
-                id: input.excludeRegionId,
-              },
-            }
-          : {}),
-      },
-      select: {
-        id: true,
-      },
-    }),
-  ]);
+  const normalizedCode = normalizeRegionCode(input.code);
+  const normalizedSlug = normalizeRegionSlug(input.slug);
+  const codeConflict = matchingRegions.find((region) => normalizeRegionCode(region.code) === normalizedCode);
+  const slugConflict = matchingRegions.find((region) => normalizeRegionSlug(region.slug) === normalizedSlug);
 
   if (codeConflict) {
     throw new AppError(StatusCodes.CONFLICT, "Region code already exists", "REGION_CODE_TAKEN");
@@ -444,23 +529,36 @@ const assertRegionUniqueness = async (
   }
 };
 
-const getRegionCounts = async (regionId: number) => {
+const getRegionCounts = async (regionIds: number | number[]) => {
+  const uniqueRegionIds = [...new Set(Array.isArray(regionIds) ? regionIds : [regionIds])].filter(
+    (regionId) => Number.isInteger(regionId) && regionId > 0,
+  );
+
+  if (!uniqueRegionIds.length) {
+    return {
+      restaurantsCount: 0,
+      deliveryPartnersCount: 0,
+      usersCount: 0,
+    };
+  }
+
+  const restaurantWhere =
+    uniqueRegionIds.length === 1 ? { regionId: uniqueRegionIds[0] } : { regionId: { in: uniqueRegionIds } };
+  const userWhere =
+    uniqueRegionIds.length === 1 ? { regionId: uniqueRegionIds[0] } : { regionId: { in: uniqueRegionIds } };
+
   const [restaurantsCount, deliveryPartnersCount, usersCount] = await Promise.all([
     prisma.restaurant.count({
-      where: {
-        regionId,
-      },
+      where: restaurantWhere,
     }),
     prisma.user.count({
       where: {
-        regionId,
+        ...userWhere,
         role: Role.DELIVERY_PARTNER,
       },
     }),
     prisma.user.count({
-      where: {
-        regionId,
-      },
+      where: userWhere,
     }),
   ]);
 
@@ -472,17 +570,36 @@ const getRegionCounts = async (regionId: number) => {
 };
 
 const toAdminRegion = async (
-  region: Prisma.RegionGetPayload<{ select: typeof regionAdminSelect }>,
-) => ({
-  ...region,
-  stateName: normalizeRegionValue(region.stateName) ?? region.stateName,
-  districtName: normalizeRegionValue(region.districtName) ?? region.districtName,
-  notes: region.notes ?? null,
-  primaryPincode: region.primaryPincode ?? null,
-  additionalPincodes: region.additionalPincodes ?? [],
-  manager: (region.manager as RegionManagerProfile | null) ?? null,
-  counts: await getRegionCounts(region.id),
-});
+  region: RegionAdminRecord,
+  options?: {
+    mergedRegionIds?: number[];
+    mergedPrimaryPincode?: string | null;
+    mergedAdditionalPincodes?: string[];
+    counts?: Awaited<ReturnType<typeof getRegionCounts>>;
+    isActive?: boolean;
+  },
+) => {
+  const identity = buildRegionIdentity(region.stateName, region.districtName);
+  const mergedAdditionalPincodes = [...new Set(options?.mergedAdditionalPincodes ?? region.additionalPincodes ?? [])]
+    .map((value) => normalizePincode(value))
+    .filter((value): value is string => Boolean(value))
+    .sort((left, right) => left.localeCompare(right, "en-IN"));
+
+  return {
+    ...region,
+    name: identity?.name ?? normalizeRegionValue(region.name) ?? region.name,
+    stateName: identity?.state ?? normalizeRegionValue(region.stateName) ?? region.stateName,
+    districtName: identity?.district ?? normalizeRegionValue(region.districtName) ?? region.districtName,
+    code: normalizeRegionCode(region.code) ?? identity?.code ?? region.code,
+    slug: normalizeRegionSlug(region.slug) ?? identity?.slug ?? region.slug,
+    notes: region.notes ?? null,
+    primaryPincode: normalizePincode(options?.mergedPrimaryPincode ?? region.primaryPincode) ?? null,
+    additionalPincodes: mergedAdditionalPincodes,
+    isActive: options?.isActive ?? region.isActive,
+    manager: (region.manager as RegionManagerProfile | null) ?? null,
+    counts: options?.counts ?? (await getRegionCounts(options?.mergedRegionIds ?? [region.id])),
+  };
+};
 
 export const resolveRegionIdForAssignment = async (
   client: RegionWriteClient,
@@ -495,34 +612,50 @@ export const resolveRegionIdForAssignment = async (
     return null;
   }
 
-  const existingRegion = await client.region.findFirst({
-    where: {
-      stateName: identity.state,
-      districtName: identity.district,
-    },
-    select: {
-      id: true,
-    },
+  const matchingRegions = await findMatchingRegions(client, {
+    stateName: identity.state,
+    districtName: identity.district,
+    code: identity.code,
+    slug: identity.slug,
   });
+  const existingRegion = selectPrimaryRegion(matchingRegions);
+  const hasDuplicateMatches = matchingRegions.length > 1;
 
   const region = existingRegion
-    ? await client.region.update({
-        where: {
-          id: existingRegion.id,
-        },
-        data: {
-          stateName: identity.state,
-          districtName: identity.district,
-        },
-        select: {
-          id: true,
-          name: true,
-          stateName: true,
-          districtName: true,
-          code: true,
-          slug: true,
-        },
-      })
+    ? hasDuplicateMatches
+      ? await client.region.findUniqueOrThrow({
+          where: {
+            id: existingRegion.id,
+          },
+          select: {
+            id: true,
+            name: true,
+            stateName: true,
+            districtName: true,
+            code: true,
+            slug: true,
+          },
+        })
+      : await client.region.update({
+          where: {
+            id: existingRegion.id,
+          },
+          data: {
+            name: identity.name,
+            stateName: identity.state,
+            districtName: identity.district,
+            code: identity.code,
+            slug: identity.slug,
+          },
+          select: {
+            id: true,
+            name: true,
+            stateName: true,
+            districtName: true,
+            code: true,
+            slug: true,
+          },
+        })
     : await client.region.create({
         data: {
           name: identity.name,
@@ -597,38 +730,78 @@ const syncPendingApplicationsForRegions = async (
 
 export const regionsAdminService = {
   async list(filters?: RegionListFilters) {
-    const search = filters?.search?.trim();
+    const search = normalizeSearchValue(filters?.search);
     const regions = await prisma.region.findMany({
-      where: {
-        ...(filters?.isActive !== undefined ? { isActive: filters.isActive } : {}),
-        ...(filters?.assignmentStatus === "ASSIGNED" ? { managerUserId: { not: null } } : {}),
-        ...(filters?.assignmentStatus === "UNASSIGNED" ? { managerUserId: null } : {}),
-        ...(search
-          ? {
-              OR: [
-                { name: { contains: search } },
-                { districtName: { contains: search } },
-                { stateName: { contains: search } },
-                { code: { contains: search } },
-                { slug: { contains: search } },
-                { primaryPincode: { contains: search } },
-                { additionalPincodes: { has: search } },
-                {
-                  manager: {
-                    is: {
-                      OR: [{ fullName: { contains: search } }, { email: { contains: search } }],
-                    },
-                  },
-                },
-              ],
-            }
-          : {}),
-      },
       select: regionAdminSelect,
       orderBy: [{ stateName: "asc" }, { districtName: "asc" }, { name: "asc" }],
     });
 
-    return Promise.all(regions.map((region) => toAdminRegion(region)));
+    const groupedRegions = new Map<string, RegionAdminRecord[]>();
+
+    for (const region of regions) {
+      const identityKey =
+        getRegionIdentityKeyFromRecord(region) ??
+        `${getRegionStateVariants(region.stateName)[0] ?? region.stateName}::${region.id}`;
+      const currentGroup = groupedRegions.get(identityKey) ?? [];
+      currentGroup.push(region);
+      groupedRegions.set(identityKey, currentGroup);
+    }
+
+    const adminRegions = await Promise.all(
+      [...groupedRegions.values()].map(async (duplicateGroup) => {
+        const primaryRegion = selectPrimaryRegion(duplicateGroup) ?? duplicateGroup[0];
+        const mergedRegionIds = duplicateGroup.map((region) => region.id);
+        const mergedPrimaryPincode =
+          duplicateGroup.map((region) => normalizePincode(region.primaryPincode)).find(Boolean) ?? null;
+        const mergedAdditionalPincodes = duplicateGroup.flatMap((region) => region.additionalPincodes ?? []);
+        const isActive = duplicateGroup.some((region) => region.isActive);
+        const counts = await getRegionCounts(mergedRegionIds);
+
+        return toAdminRegion(primaryRegion, {
+          mergedRegionIds,
+          mergedPrimaryPincode,
+          mergedAdditionalPincodes,
+          counts,
+          isActive,
+        });
+      }),
+    );
+
+    const statusFilteredRegions =
+      filters?.isActive === undefined
+        ? adminRegions
+        : adminRegions.filter((region) => region.isActive === filters.isActive);
+    const assignmentFilteredRegions =
+      filters?.assignmentStatus === "ASSIGNED"
+        ? statusFilteredRegions.filter((region) => Boolean(region.manager))
+        : filters?.assignmentStatus === "UNASSIGNED"
+          ? statusFilteredRegions.filter((region) => !region.manager)
+          : statusFilteredRegions;
+    const searchFilteredRegions = search
+      ? assignmentFilteredRegions.filter((region) =>
+          [
+            region.name,
+            region.districtName,
+            region.stateName,
+            region.code,
+            region.slug,
+            region.primaryPincode ?? "",
+            region.additionalPincodes.join(" "),
+            region.manager?.fullName ?? "",
+            region.manager?.email ?? "",
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(search),
+        )
+      : assignmentFilteredRegions;
+
+    return searchFilteredRegions.sort((left, right) =>
+      `${left.stateName}-${left.districtName}-${left.id}`.localeCompare(
+        `${right.stateName}-${right.districtName}-${right.id}`,
+        "en-IN",
+      ),
+    );
   },
 
   async create(input: {

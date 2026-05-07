@@ -4,7 +4,12 @@ import {
   isValidDistrictForState,
   isValidIndianState,
 } from "../../lib/india-region-data.js";
-import { normalizeRegionCode } from "../../utils/regions.js";
+import {
+  normalizeRegionCode,
+  normalizeRegionValue,
+  resolveCanonicalRegionDistrict,
+  resolveCanonicalRegionState,
+} from "../../utils/regions.js";
 
 const optionalRegionString = z.string().trim().min(2).max(120).optional();
 const optionalRegionCode = z.preprocess(
@@ -55,7 +60,12 @@ const addRegionLocationIssues = (
   context: z.RefinementCtx,
   mode: "create" | "update",
 ) => {
-  if (values.stateName && !isValidIndianState(values.stateName)) {
+  const normalizedState = resolveCanonicalRegionState(values.stateName) ?? normalizeRegionValue(values.stateName);
+  const normalizedDistrict =
+    resolveCanonicalRegionDistrict(normalizedState, values.districtName) ??
+    normalizeRegionValue(values.districtName);
+
+  if (normalizedState && !isValidIndianState(normalizedState)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["stateName"],
@@ -79,7 +89,7 @@ const addRegionLocationIssues = (
     });
   }
 
-  if (values.districtName && values.stateName && !isValidDistrictForState(values.stateName, values.districtName)) {
+  if (normalizedDistrict && normalizedState && !isValidDistrictForState(normalizedState, normalizedDistrict)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["districtName"],

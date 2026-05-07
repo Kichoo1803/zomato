@@ -11,20 +11,25 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Pagination } from "@/components/ui/pagination";
-import { SectionHeading, StatusPill } from "@/components/ui/page-shell";
+import { SectionHeading, StatusPill, SurfaceCard } from "@/components/ui/page-shell";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  createEventTemplate,
   createEvent,
+  deleteEventTemplate,
   deleteEvent,
   getEventAttendees,
+  getEventTemplates,
   getEvents,
   getRegionsAdmin,
   getRestaurants,
   markEventBookingAttended,
+  updateEventTemplate,
   updateEvent,
   type AdminEvent,
   type AdminEventAttendeeReport,
+  type AdminEventTemplate,
   type AdminRegion,
   type AdminRestaurant,
 } from "@/lib/admin";
@@ -63,8 +68,26 @@ type EventFormState = {
   status: EventStatusValue;
 };
 
+type EventTemplateStatusValue = "ACTIVE" | "INACTIVE";
+
+type EventTemplateFormState = {
+  title: string;
+  description: string;
+  imageUrl: string;
+  suggestedDurationMinutes: string;
+  suggestedBookingWindowHours: string;
+  suggestedSlotPrice: string;
+  suggestedMaxSlots: string;
+  suggestedMaxTicketsPerUser: string;
+  suggestedOfferLabel: string;
+  setupChecklist: string;
+  requiredItems: string;
+  status: EventTemplateStatusValue;
+};
+
 const EVENT_STATUS_OPTIONS = ["ACTIVE", "INACTIVE", "EXPIRED"] as const;
 const EVENT_FORM_STATUS_OPTIONS: EventStatusValue[] = ["ACTIVE", "INACTIVE"];
+const TEMPLATE_STATUS_OPTIONS: EventTemplateStatusValue[] = ["ACTIVE", "INACTIVE"];
 
 const emptyForm: EventFormState = {
   title: "",
@@ -82,6 +105,21 @@ const emptyForm: EventFormState = {
   totalSlots: "",
   slotPrice: "",
   maxTicketsPerUser: "",
+  status: "ACTIVE",
+};
+
+const emptyTemplateForm: EventTemplateFormState = {
+  title: "",
+  description: "",
+  imageUrl: "",
+  suggestedDurationMinutes: "",
+  suggestedBookingWindowHours: "",
+  suggestedSlotPrice: "",
+  suggestedMaxSlots: "",
+  suggestedMaxTicketsPerUser: "",
+  suggestedOfferLabel: "",
+  setupChecklist: "",
+  requiredItems: "",
   status: "ACTIVE",
 };
 
@@ -122,6 +160,14 @@ const toTimeValue = (value?: string | null) => {
 const combineDateAndTime = (dateValue: string, timeValue: string) =>
   new Date(`${dateValue}T${timeValue}:00`).toISOString();
 
+const splitLines = (value: string) =>
+  value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+const joinLines = (value?: string[]) => (value && value.length ? value.join("\n") : "");
+
 const getAssignmentType = (event: AdminEvent): AssignmentType =>
   event.restaurantId ? "RESTAURANT" : event.regionId ? "REGION" : "ALL";
 
@@ -140,8 +186,12 @@ const getAssignmentLabel = (event: AdminEvent) => {
 const getFormStatusValue = (event: AdminEvent): EventStatusValue =>
   event.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";
 
+const getTemplateFormStatusValue = (template: AdminEventTemplate): EventTemplateStatusValue =>
+  template.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";
+
 export const AdminEventsPage = () => {
   const [events, setEvents] = useState<AdminEvent[]>([]);
+  const [templates, setTemplates] = useState<AdminEventTemplate[]>([]);
   const [restaurants, setRestaurants] = useState<AdminRestaurant[]>([]);
   const [regions, setRegions] = useState<AdminRegion[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -154,22 +204,30 @@ export const AdminEventsPage = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<AdminEventTemplate | null>(null);
+  const [deleteTemplateTarget, setDeleteTemplateTarget] = useState<AdminEventTemplate | null>(null);
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [isTemplateSubmitting, setIsTemplateSubmitting] = useState(false);
+  const [isTemplateDeleting, setIsTemplateDeleting] = useState(false);
   const [togglingEventId, setTogglingEventId] = useState<number | null>(null);
   const [selectedAttendeeEvent, setSelectedAttendeeEvent] = useState<AdminEvent | null>(null);
   const [attendeeReport, setAttendeeReport] = useState<AdminEventAttendeeReport | null>(null);
   const [isLoadingAttendeeReport, setIsLoadingAttendeeReport] = useState(false);
   const [attendingBookingId, setAttendingBookingId] = useState<number | null>(null);
   const [form, setForm] = useState<EventFormState>(emptyForm);
+  const [templateForm, setTemplateForm] = useState<EventTemplateFormState>(emptyTemplateForm);
 
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const [eventRows, restaurantRows, regionRows] = await Promise.all([
+      const [eventRows, templateRows, restaurantRows, regionRows] = await Promise.all([
         getEvents(),
+        getEventTemplates(),
         getRestaurants(),
         getRegionsAdmin(),
       ]);
       setEvents(eventRows);
+      setTemplates(templateRows);
       setRestaurants(restaurantRows);
       setRegions(regionRows);
     } catch (error) {
@@ -187,6 +245,12 @@ export const AdminEventsPage = () => {
     setEditingEvent(null);
     setForm(emptyForm);
     setIsModalOpen(true);
+  };
+
+  const openCreateTemplateModal = () => {
+    setEditingTemplate(null);
+    setTemplateForm(emptyTemplateForm);
+    setIsTemplateModalOpen(true);
   };
 
   const openEditModal = (event: AdminEvent) => {
@@ -210,6 +274,33 @@ export const AdminEventsPage = () => {
       status: getFormStatusValue(event),
     });
     setIsModalOpen(true);
+  };
+
+  const openEditTemplateModal = (template: AdminEventTemplate) => {
+    setEditingTemplate(template);
+    setTemplateForm({
+      title: template.title,
+      description: template.description,
+      imageUrl: template.imageUrl ?? "",
+      suggestedDurationMinutes:
+        template.suggestedDurationMinutes != null ? String(template.suggestedDurationMinutes) : "",
+      suggestedBookingWindowHours:
+        template.suggestedBookingWindowHours != null
+          ? String(template.suggestedBookingWindowHours)
+          : "",
+      suggestedSlotPrice:
+        template.suggestedSlotPrice != null ? String(template.suggestedSlotPrice) : "",
+      suggestedMaxSlots: template.suggestedMaxSlots != null ? String(template.suggestedMaxSlots) : "",
+      suggestedMaxTicketsPerUser:
+        template.suggestedMaxTicketsPerUser != null
+          ? String(template.suggestedMaxTicketsPerUser)
+          : "",
+      suggestedOfferLabel: template.suggestedOfferLabel ?? "",
+      setupChecklist: joinLines(template.setupChecklist),
+      requiredItems: joinLines(template.requiredItems),
+      status: getTemplateFormStatusValue(template),
+    });
+    setIsTemplateModalOpen(true);
   };
 
   const filteredEvents = events.filter((event) => {
@@ -324,6 +415,71 @@ export const AdminEventsPage = () => {
       toast.error(getApiErrorMessage(error, "Unable to delete this event."));
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleTemplateSubmit = async (submitEvent: FormEvent<HTMLFormElement>) => {
+    submitEvent.preventDefault();
+
+    setIsTemplateSubmitting(true);
+    try {
+      const payload = {
+        title: templateForm.title.trim(),
+        description: templateForm.description.trim(),
+        imageUrl: templateForm.imageUrl.trim() || null,
+        suggestedDurationMinutes: templateForm.suggestedDurationMinutes.trim()
+          ? Number(templateForm.suggestedDurationMinutes)
+          : null,
+        suggestedBookingWindowHours: templateForm.suggestedBookingWindowHours.trim()
+          ? Number(templateForm.suggestedBookingWindowHours)
+          : null,
+        suggestedSlotPrice: templateForm.suggestedSlotPrice.trim()
+          ? Number(templateForm.suggestedSlotPrice)
+          : null,
+        suggestedMaxSlots: templateForm.suggestedMaxSlots.trim()
+          ? Number(templateForm.suggestedMaxSlots)
+          : null,
+        suggestedMaxTicketsPerUser: templateForm.suggestedMaxTicketsPerUser.trim()
+          ? Number(templateForm.suggestedMaxTicketsPerUser)
+          : null,
+        suggestedOfferLabel: templateForm.suggestedOfferLabel.trim() || null,
+        setupChecklist: splitLines(templateForm.setupChecklist),
+        requiredItems: splitLines(templateForm.requiredItems),
+        status: templateForm.status,
+      };
+
+      if (editingTemplate) {
+        await updateEventTemplate(editingTemplate.id, payload);
+        toast.success("Event template updated successfully.");
+      } else {
+        await createEventTemplate(payload);
+        toast.success("Event template created successfully.");
+      }
+
+      setIsTemplateModalOpen(false);
+      await loadData();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to save this event template."));
+    } finally {
+      setIsTemplateSubmitting(false);
+    }
+  };
+
+  const handleDeleteTemplate = async () => {
+    if (!deleteTemplateTarget) {
+      return;
+    }
+
+    setIsTemplateDeleting(true);
+    try {
+      await deleteEventTemplate(deleteTemplateTarget.id);
+      toast.success("Event template deleted successfully.");
+      setDeleteTemplateTarget(null);
+      await loadData();
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, "Unable to delete this event template."));
+    } finally {
+      setIsTemplateDeleting(false);
     }
   };
 
@@ -530,6 +686,102 @@ export const AdminEventsPage = () => {
         </>
       )}
 
+      <div className="space-y-4">
+        <SectionHeading
+          eyebrow="Event templates"
+          title="Reusable event formats for restaurant owners."
+          description="Create reusable starter templates for live music nights, buffet weekends, sports screenings, and other event formats owners can quickly adapt for their own restaurants."
+          action={<AddButton label="Add template" onClick={openCreateTemplateModal} />}
+        />
+
+        {templates.length ? (
+          <div className="grid gap-5 lg:grid-cols-2">
+            {templates.map((template) => (
+              <SurfaceCard key={template.id} className="space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-ink">{template.title}</p>
+                    <p className="mt-2 text-sm leading-7 text-ink-soft">{template.description}</p>
+                  </div>
+                  <StatusPill
+                    label={toLabel(template.status)}
+                    tone={template.status === "ACTIVE" ? "success" : "warning"}
+                  />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-[1.25rem] bg-cream px-4 py-4 text-sm text-ink-soft">
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Suggested pricing</p>
+                    <p className="mt-2 font-semibold text-ink">
+                      {template.suggestedSlotPrice != null
+                        ? formatCurrency(template.suggestedSlotPrice)
+                        : "Flexible"}
+                    </p>
+                    <p className="mt-1 text-xs text-ink-muted">
+                      {template.suggestedMaxSlots != null
+                        ? `${template.suggestedMaxSlots} max slots`
+                        : "Unlimited slots supported"}
+                    </p>
+                  </div>
+                  <div className="rounded-[1.25rem] bg-cream px-4 py-4 text-sm text-ink-soft">
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Suggested timing</p>
+                    <p className="mt-2 font-semibold text-ink">
+                      {template.suggestedDurationMinutes != null
+                        ? `${template.suggestedDurationMinutes} min duration`
+                        : "Owner chooses duration"}
+                    </p>
+                    <p className="mt-1 text-xs text-ink-muted">
+                      {template.suggestedBookingWindowHours != null
+                        ? `${template.suggestedBookingWindowHours} hr booking window`
+                        : "Owner chooses booking window"}
+                    </p>
+                  </div>
+                </div>
+                {template.suggestedOfferLabel ? (
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">
+                    {template.suggestedOfferLabel}
+                  </p>
+                ) : null}
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Setup checklist</p>
+                    <div className="mt-3 space-y-2 text-sm text-ink-soft">
+                      {template.setupChecklist.length ? (
+                        template.setupChecklist.map((item, index) => <p key={`${template.id}-check-${index}`}>- {item}</p>)
+                      ) : (
+                        <p>No checklist added yet.</p>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Required items</p>
+                    <div className="mt-3 space-y-2 text-sm text-ink-soft">
+                      {template.requiredItems.length ? (
+                        template.requiredItems.map((item, index) => <p key={`${template.id}-item-${index}`}>- {item}</p>)
+                      ) : (
+                        <p>No required items added yet.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap justify-end gap-3 border-t border-accent/10 pt-4">
+                  <Button type="button" variant="secondary" onClick={() => openEditTemplateModal(template)}>
+                    Edit template
+                  </Button>
+                  <Button type="button" variant="secondary" onClick={() => setDeleteTemplateTarget(template)}>
+                    Delete template
+                  </Button>
+                </div>
+              </SurfaceCard>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No event templates yet"
+            description="Create reusable event templates so restaurant owners can launch faster without rebuilding the same event setup every time."
+          />
+        )}
+      </div>
+
       <Modal
         open={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -695,6 +947,147 @@ export const AdminEventsPage = () => {
       </Modal>
 
       <Modal
+        open={isTemplateModalOpen}
+        onClose={() => setIsTemplateModalOpen(false)}
+        title={editingTemplate ? "Edit event template" : "Add event template"}
+        className="max-w-5xl"
+      >
+        <form className="space-y-4" onSubmit={handleTemplateSubmit}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Input
+              label="Template title"
+              value={templateForm.title}
+              onChange={(event) => setTemplateForm({ ...templateForm, title: event.target.value })}
+              required
+            />
+            <Select
+              label="Status"
+              value={templateForm.status}
+              onChange={(event) =>
+                setTemplateForm({
+                  ...templateForm,
+                  status: event.target.value as EventTemplateStatusValue,
+                })
+              }
+            >
+              {TEMPLATE_STATUS_OPTIONS.map((status) => (
+                <option key={status} value={status}>
+                  {toLabel(status)}
+                </option>
+              ))}
+            </Select>
+            <Input
+              label="Default image URL"
+              value={templateForm.imageUrl}
+              onChange={(event) => setTemplateForm({ ...templateForm, imageUrl: event.target.value })}
+              placeholder="https://"
+            />
+            <Input
+              label="Suggested duration (minutes)"
+              type="number"
+              min="1"
+              value={templateForm.suggestedDurationMinutes}
+              onChange={(event) =>
+                setTemplateForm({ ...templateForm, suggestedDurationMinutes: event.target.value })
+              }
+              placeholder="180"
+            />
+            <Input
+              label="Suggested booking window (hours)"
+              type="number"
+              min="1"
+              value={templateForm.suggestedBookingWindowHours}
+              onChange={(event) =>
+                setTemplateForm({
+                  ...templateForm,
+                  suggestedBookingWindowHours: event.target.value,
+                })
+              }
+              placeholder="24"
+            />
+            <Input
+              label="Suggested slot price"
+              type="number"
+              min="0"
+              step="0.01"
+              value={templateForm.suggestedSlotPrice}
+              onChange={(event) => setTemplateForm({ ...templateForm, suggestedSlotPrice: event.target.value })}
+              placeholder="0 for free events"
+            />
+            <Input
+              label="Suggested max slots"
+              type="number"
+              min="1"
+              value={templateForm.suggestedMaxSlots}
+              onChange={(event) => setTemplateForm({ ...templateForm, suggestedMaxSlots: event.target.value })}
+              placeholder="Optional"
+            />
+            <Input
+              label="Suggested max tickets per user"
+              type="number"
+              min="1"
+              value={templateForm.suggestedMaxTicketsPerUser}
+              onChange={(event) =>
+                setTemplateForm({
+                  ...templateForm,
+                  suggestedMaxTicketsPerUser: event.target.value,
+                })
+              }
+              placeholder="Optional"
+            />
+            <Input
+              label="Suggested offer label"
+              value={templateForm.suggestedOfferLabel}
+              onChange={(event) =>
+                setTemplateForm({ ...templateForm, suggestedOfferLabel: event.target.value })
+              }
+              placeholder="Weekend buffet offer"
+            />
+          </div>
+          <Textarea
+            label="Description"
+            value={templateForm.description}
+            onChange={(event) => setTemplateForm({ ...templateForm, description: event.target.value })}
+            required
+          />
+          <div className="grid gap-4 md:grid-cols-2">
+            <Textarea
+              label="Setup checklist"
+              value={templateForm.setupChecklist}
+              onChange={(event) => setTemplateForm({ ...templateForm, setupChecklist: event.target.value })}
+              placeholder={"Stage setup\nArtist sound check\nMenu briefing"}
+            />
+            <Textarea
+              label="Required items"
+              value={templateForm.requiredItems}
+              onChange={(event) => setTemplateForm({ ...templateForm, requiredItems: event.target.value })}
+              placeholder={"Speakers\nProjector\nBuffet warmers"}
+            />
+          </div>
+          <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
+            Templates stay hidden from customers and only help restaurant owners launch restaurant-specific events faster with prefilled details.
+          </div>
+          <div className="flex justify-end gap-3">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setIsTemplateModalOpen(false)}
+              disabled={isTemplateSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isTemplateSubmitting}>
+              {isTemplateSubmitting
+                ? "Saving..."
+                : editingTemplate
+                  ? "Save template"
+                  : "Create template"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
         open={Boolean(selectedAttendeeEvent)}
         onClose={() => {
           if (!isLoadingAttendeeReport && !attendingBookingId) {
@@ -711,7 +1104,15 @@ export const AdminEventsPage = () => {
           </div>
         ) : attendeeReport ? (
           <div className="space-y-5">
-            <div className="grid gap-4 md:grid-cols-6">
+            <div className="grid gap-4 md:grid-cols-8">
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Total bookings</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.bookingsCount}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Pending</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.pendingCount ?? 0}</p>
+              </div>
               <div className="rounded-[1.5rem] bg-cream px-4 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Confirmed</p>
                 <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.confirmedCount}</p>
@@ -729,6 +1130,10 @@ export const AdminEventsPage = () => {
                 <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.refundedCount}</p>
               </div>
               <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Failed</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{attendeeReport.summary.failedCount ?? 0}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Capacity</p>
                 <p className="mt-2 text-sm font-semibold text-ink">
                   {attendeeReport.summary.totalSlots != null
@@ -739,6 +1144,14 @@ export const AdminEventsPage = () => {
               <div className="rounded-[1.5rem] bg-cream px-4 py-4">
                 <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Revenue</p>
                 <p className="mt-2 text-sm font-semibold text-ink">{formatCurrency(attendeeReport.summary.revenue)}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Tax</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{formatCurrency(attendeeReport.summary.totalTax ?? 0)}</p>
+              </div>
+              <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refunded amount</p>
+                <p className="mt-2 text-sm font-semibold text-ink">{formatCurrency(attendeeReport.summary.refundedAmount ?? 0)}</p>
               </div>
             </div>
 
@@ -804,8 +1217,35 @@ export const AdminEventsPage = () => {
                         <StatusPill label={toLabel(booking.status)} tone={getToneForStatus(booking.status)} />
                         <StatusPill
                           label={toLabel(booking.paymentStatus)}
-                          tone={booking.paymentStatus === "PAID" ? "success" : "neutral"}
+                          tone={
+                            booking.paymentStatus === "PAID" || booking.paymentStatus === "REFUNDED"
+                              ? "success"
+                              : booking.paymentStatus === "FAILED"
+                                ? "warning"
+                                : "neutral"
+                          }
                         />
+                        <StatusPill
+                          label={toLabel(booking.refundStatus ?? "NOT_REQUESTED")}
+                          tone={
+                            booking.refundStatus === "REFUNDED"
+                              ? "success"
+                              : booking.refundStatus === "FAILED"
+                                ? "warning"
+                                : "neutral"
+                          }
+                        />
+                      </div>
+                    ),
+                  },
+                  {
+                    key: "amounts",
+                    label: "Amounts",
+                    render: (booking) => (
+                      <div className="space-y-1 text-xs text-ink-muted">
+                        <p>Total {formatCurrency(booking.totalAmount)}</p>
+                        <p>Tax {formatCurrency(booking.taxAmount ?? 0)}</p>
+                        <p>Refund {formatCurrency(booking.refundAmount ?? 0)}</p>
                       </div>
                     ),
                   },
@@ -852,6 +1292,16 @@ export const AdminEventsPage = () => {
         isSubmitting={isDeleting}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => void handleDeleteEvent()}
+      />
+
+      <ConfirmDangerModal
+        open={Boolean(deleteTemplateTarget)}
+        title="Delete event template"
+        description="This removes the reusable template but will not affect restaurant events that were already created from it."
+        confirmLabel="Delete template"
+        isSubmitting={isTemplateDeleting}
+        onClose={() => setDeleteTemplateTarget(null)}
+        onConfirm={() => void handleDeleteTemplate()}
       />
     </div>
   );

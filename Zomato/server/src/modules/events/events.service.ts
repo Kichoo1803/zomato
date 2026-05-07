@@ -4,6 +4,7 @@ import {
   EventStatus,
   PaymentMethod,
   PaymentStatus,
+  RefundStatus,
 } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
 import { logger } from "../../lib/logger.js";
@@ -15,12 +16,23 @@ const ACTIVE_BOOKING_STATUSES = [
   EventBookingStatus.CONFIRMED,
   EventBookingStatus.ATTENDED,
 ] as const;
+const SLOT_RESERVED_BOOKING_STATUSES = [
+  EventBookingStatus.PENDING,
+  EventBookingStatus.CONFIRMED,
+  EventBookingStatus.ATTENDED,
+] as const;
 const REBOOKABLE_BOOKING_STATUSES = [
   EventBookingStatus.CANCELLED,
   EventBookingStatus.REFUNDED,
+  EventBookingStatus.FAILED,
 ] as const;
-const OPEN_BOOKING_STATUSES = [EventBookingStatus.CONFIRMED] as const;
+const CANCELLABLE_BOOKING_STATUSES = [
+  EventBookingStatus.PENDING,
+  EventBookingStatus.CONFIRMED,
+] as const;
 const EVENT_PAYMENT_METHODS = [PaymentMethod.CARD, PaymentMethod.UPI] as const;
+const EVENT_PLATFORM_FEE = 20;
+const EVENT_GST_RATE = 0.05;
 
 const eventSelect = {
   id: true,
@@ -59,6 +71,25 @@ const eventSelect = {
   },
 } satisfies Prisma.EventSelect;
 
+const eventTemplateSelect = {
+  id: true,
+  title: true,
+  description: true,
+  imageUrl: true,
+  suggestedDurationMinutes: true,
+  suggestedBookingWindowHours: true,
+  suggestedSlotPrice: true,
+  suggestedMaxSlots: true,
+  suggestedMaxTicketsPerUser: true,
+  suggestedOfferLabel: true,
+  setupChecklist: true,
+  requiredItems: true,
+  status: true,
+  createdByAdminId: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.EventTemplateSelect;
+
 const attendeeUserSelect = {
   id: true,
   fullName: true,
@@ -72,7 +103,12 @@ const bookingSelect = {
   userId: true,
   eventId: true,
   restaurantId: true,
+  slotPrice: true,
   quantity: true,
+  subtotalAmount: true,
+  taxAmount: true,
+  platformFee: true,
+  discountAmount: true,
   totalAmount: true,
   bookingCode: true,
   status: true,
@@ -81,6 +117,10 @@ const bookingSelect = {
   paymentStatus: true,
   paymentMethod: true,
   paymentMethodId: true,
+  refundAmount: true,
+  refundStatus: true,
+  refundReason: true,
+  cancellationAllowedUntil: true,
   createdAt: true,
   updatedAt: true,
   event: {
@@ -100,6 +140,7 @@ const bookingSelect = {
 } satisfies Prisma.EventBookingSelect;
 
 type EventRecord = Prisma.EventGetPayload<{ select: typeof eventSelect }>;
+type EventTemplateRecord = Prisma.EventTemplateGetPayload<{ select: typeof eventTemplateSelect }>;
 type EventBookingRecord = Prisma.EventBookingGetPayload<{ select: typeof bookingSelect }>;
 type RestaurantContext = NonNullable<EventRecord["restaurant"]>;
 type SavedPaymentMethodLookupClient = Pick<Prisma.TransactionClient, "savedPaymentMethod">;
@@ -108,7 +149,12 @@ type CurrentUserBookingSummary = {
   id: number;
   eventId: number;
   restaurantId: number;
+  slotPrice: number | null;
   quantity: number;
+  subtotalAmount: number | null;
+  taxAmount: number | null;
+  platformFee: number | null;
+  discountAmount: number | null;
   totalAmount: number;
   bookingCode: string;
   status: string;
@@ -117,6 +163,10 @@ type CurrentUserBookingSummary = {
   paymentStatus: string;
   paymentMethod: string | null;
   paymentMethodId: number | null;
+  refundAmount: number | null;
+  refundStatus: string | null;
+  refundReason: string | null;
+  cancellationAllowedUntil: Date | null;
 };
 
 const isNamedError = (error: unknown, name: string): error is Error =>
@@ -356,10 +406,32 @@ const getEventById = async (eventId: number) => {
   return event;
 };
 
+const getEventTemplateById = async (
+  templateId: number,
+  options?: { activeOnly?: boolean },
+) => {
+  const template = await prisma.eventTemplate.findUnique({
+    where: { id: templateId },
+    select: eventTemplateSelect,
+  });
+
+  if (!template || (options?.activeOnly && template.status !== EventStatus.ACTIVE)) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "Event template not found.",
+      "EVENT_TEMPLATE_NOT_FOUND",
+    );
+  }
+
+  return template;
+};
+
 const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
   const bookedSlotsByEventId = new Map<number, number>();
   const confirmedBookingCountByEventId = new Map<number, number>();
   const revenueByEventId = new Map<number, number>();
+  const taxByEventId = new Map<number, number>();
+  const refundedAmountByEventId = new Map<number, number>();
   const currentUserBookingByEventId = new Map<number, CurrentUserBookingSummary>();
 
   if (!eventIds.length) {
@@ -367,6 +439,8 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
       bookedSlotsByEventId,
       confirmedBookingCountByEventId,
       revenueByEventId,
+      taxByEventId,
+      refundedAmountByEventId,
       currentUserBookingByEventId,
     };
   }
@@ -382,7 +456,12 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
       eventId: true,
       userId: true,
       restaurantId: true,
+      slotPrice: true,
       quantity: true,
+      subtotalAmount: true,
+      taxAmount: true,
+      platformFee: true,
+      discountAmount: true,
       totalAmount: true,
       bookingCode: true,
       status: true,
@@ -391,19 +470,29 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
       paymentStatus: true,
       paymentMethod: true,
       paymentMethodId: true,
+      refundAmount: true,
+      refundStatus: true,
+      refundReason: true,
+      cancellationAllowedUntil: true,
     },
   });
 
   bookings.forEach((booking) => {
+    const reservesSlots = SLOT_RESERVED_BOOKING_STATUSES.includes(
+      booking.status as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number],
+    );
     const isActiveBooking = ACTIVE_BOOKING_STATUSES.includes(
       booking.status as (typeof ACTIVE_BOOKING_STATUSES)[number],
     );
 
-    if (isActiveBooking) {
+    if (reservesSlots) {
       bookedSlotsByEventId.set(
         booking.eventId,
         (bookedSlotsByEventId.get(booking.eventId) ?? 0) + booking.quantity,
       );
+    }
+
+    if (isActiveBooking) {
       confirmedBookingCountByEventId.set(
         booking.eventId,
         (confirmedBookingCountByEventId.get(booking.eventId) ?? 0) + 1,
@@ -414,14 +503,29 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
           booking.eventId,
           Number(((revenueByEventId.get(booking.eventId) ?? 0) + booking.totalAmount).toFixed(2)),
         );
+        taxByEventId.set(
+          booking.eventId,
+          Number(((taxByEventId.get(booking.eventId) ?? 0) + (booking.taxAmount ?? 0)).toFixed(2)),
+        );
       }
+    }
+
+    if (
+      booking.paymentStatus === PaymentStatus.REFUNDED ||
+      booking.paymentStatus === PaymentStatus.REFUND_PENDING
+    ) {
+      refundedAmountByEventId.set(
+        booking.eventId,
+        Number(((refundedAmountByEventId.get(booking.eventId) ?? 0) + (booking.refundAmount ?? 0)).toFixed(2)),
+      );
     }
 
     if (
       userId &&
       booking.userId === userId &&
-      booking.status !== EventBookingStatus.CANCELLED &&
-      booking.status !== EventBookingStatus.REFUNDED
+      !REBOOKABLE_BOOKING_STATUSES.includes(
+        booking.status as (typeof REBOOKABLE_BOOKING_STATUSES)[number],
+      )
     ) {
       currentUserBookingByEventId.set(booking.eventId, booking);
     }
@@ -431,6 +535,8 @@ const getEventBookingMetrics = async (eventIds: number[], userId?: number) => {
     bookedSlotsByEventId,
     confirmedBookingCountByEventId,
     revenueByEventId,
+    taxByEventId,
+    refundedAmountByEventId,
     currentUserBookingByEventId,
   };
 };
@@ -449,6 +555,16 @@ const getRestaurantBookingContext = async (restaurantId: number) => {
   });
 
   if (!restaurant || !restaurant.isActive) {
+    throw new AppError(StatusCodes.NOT_FOUND, "Restaurant not found", "RESTAURANT_NOT_FOUND");
+  }
+
+  return restaurant;
+};
+
+const assertOwnerCanManageRestaurant = async (userId: number, restaurantId: number) => {
+  const restaurant = await getRestaurantBookingContext(restaurantId);
+
+  if (restaurant.ownerId !== userId) {
     throw new AppError(StatusCodes.NOT_FOUND, "Restaurant not found", "RESTAURANT_NOT_FOUND");
   }
 
@@ -539,6 +655,78 @@ const buildBookingCode = (bookingId: number, bookedAt: Date) =>
 
 const roundCurrency = (value: number) => Number(value.toFixed(2));
 
+const getBookingPricing = (event: Pick<EventRecord, "slotPrice" | "startsAt">, quantity: number) => {
+  const slotPrice = roundCurrency(event.slotPrice ?? 0);
+  const subtotalAmount = roundCurrency(slotPrice * quantity);
+  const discountAmount = 0;
+  const platformFee = subtotalAmount > 0 ? EVENT_PLATFORM_FEE : 0;
+  const taxAmount = subtotalAmount > 0 ? roundCurrency(subtotalAmount * EVENT_GST_RATE) : 0;
+  const totalAmount = roundCurrency(subtotalAmount + platformFee + taxAmount - discountAmount);
+
+  return {
+    slotPrice,
+    quantity,
+    subtotalAmount,
+    taxAmount,
+    platformFee,
+    discountAmount,
+    totalAmount,
+    refundPolicyNote:
+      "Full refund is available until the event starts. Refunds are returned to the original payment method.",
+    cancellationAllowedUntil: event.startsAt,
+  };
+};
+
+const normalizeBookingAmounts = (
+  booking: Pick<
+    EventBookingRecord | CurrentUserBookingSummary,
+    | "slotPrice"
+    | "quantity"
+    | "subtotalAmount"
+    | "taxAmount"
+    | "platformFee"
+    | "discountAmount"
+    | "totalAmount"
+    | "refundAmount"
+  >,
+  eventSlotPrice?: number | null,
+) => {
+  const slotPrice = roundCurrency(booking.slotPrice ?? eventSlotPrice ?? 0);
+  const subtotalAmount = roundCurrency(booking.subtotalAmount ?? slotPrice * booking.quantity);
+  const taxAmount = roundCurrency(booking.taxAmount ?? 0);
+  const platformFee = roundCurrency(booking.platformFee ?? (subtotalAmount > 0 ? 0 : 0));
+  const discountAmount = roundCurrency(booking.discountAmount ?? 0);
+
+  return {
+    slotPrice,
+    subtotalAmount,
+    taxAmount,
+    platformFee,
+    discountAmount,
+    totalAmount: roundCurrency(booking.totalAmount),
+    refundAmount: roundCurrency(booking.refundAmount ?? 0),
+  };
+};
+
+const getRefundStatusForBooking = (
+  paymentStatus: string,
+  refundStatus?: string | null,
+) => {
+  if (refundStatus) {
+    return refundStatus;
+  }
+
+  if (paymentStatus === PaymentStatus.REFUNDED) {
+    return RefundStatus.REFUNDED;
+  }
+
+  if (paymentStatus === PaymentStatus.REFUND_PENDING) {
+    return RefundStatus.PENDING;
+  }
+
+  return RefundStatus.NOT_REQUESTED;
+};
+
 const reserveSequentialId = async (model: string) => {
   const counter = await prisma.idCounter.upsert({
     where: { id: model },
@@ -558,6 +746,7 @@ const reserveSequentialId = async (model: string) => {
 
 const buildEventBookingLogContext = (
   input: {
+    bookingId?: number | null;
     eventId: number;
     userId: number;
     requestedQuantity: number;
@@ -567,6 +756,7 @@ const buildEventBookingLogContext = (
   },
   error?: unknown,
 ) => ({
+  bookingId: input.bookingId ?? null,
   eventId: input.eventId,
   userId: input.userId,
   requestedQuantity: input.requestedQuantity,
@@ -598,9 +788,77 @@ const rollbackBookedSlotsIncrement = async (eventId: number, quantity: number, u
         {
           eventId,
           userId,
+          bookingId: null,
           requestedQuantity: quantity,
         },
         rollbackError,
+      ),
+    );
+  }
+};
+
+const releaseReservedSlots = async (
+  eventId: number,
+  quantity: number,
+  userId: number,
+  bookingId?: number,
+) => {
+  try {
+    await prisma.event.updateMany({
+      where: {
+        id: eventId,
+        bookedSlots: {
+          gte: quantity,
+        },
+      },
+      data: {
+        bookedSlots: {
+          decrement: quantity,
+        },
+      },
+    });
+  } catch (releaseError) {
+    logger.error(
+      "Event slot release failed",
+      buildEventBookingLogContext(
+        {
+          bookingId,
+          eventId,
+          userId,
+          requestedQuantity: quantity,
+        },
+        releaseError,
+      ),
+    );
+  }
+};
+
+const restoreReleasedSlots = async (
+  eventId: number,
+  quantity: number,
+  userId: number,
+  bookingId?: number,
+) => {
+  try {
+    await prisma.event.update({
+      where: { id: eventId },
+      data: {
+        bookedSlots: {
+          increment: quantity,
+        },
+      },
+    });
+  } catch (restoreError) {
+    logger.error(
+      "Event slot restore failed",
+      buildEventBookingLogContext(
+        {
+          bookingId,
+          eventId,
+          userId,
+          requestedQuantity: quantity,
+        },
+        restoreError,
       ),
     );
   }
@@ -693,7 +951,7 @@ const validateSavedPaymentMethod = async (
   }
 
   return {
-    paymentStatus: PaymentStatus.PAID,
+    paymentStatus: PaymentStatus.PENDING,
     paymentMethod: paymentMethod.type,
     paymentMethodId: paymentMethod.id,
   };
@@ -710,15 +968,25 @@ const mapBookingSummary = (
     id: booking.id,
     eventId: booking.eventId,
     restaurantId: booking.restaurantId,
+    slotPrice: booking.slotPrice ?? null,
     quantity: booking.quantity,
+    subtotalAmount: booking.subtotalAmount ?? null,
+    taxAmount: booking.taxAmount ?? null,
+    platformFee: booking.platformFee ?? null,
+    discountAmount: booking.discountAmount ?? null,
     totalAmount: booking.totalAmount,
     bookingCode: booking.bookingCode,
+    bookingStatus: booking.status,
     status: booking.status,
     bookedAt: booking.bookedAt,
     cancelledAt: booking.cancelledAt ?? null,
     paymentStatus: booking.paymentStatus,
     paymentMethod: booking.paymentMethod ?? null,
     paymentMethodId: booking.paymentMethodId ?? null,
+    refundAmount: booking.refundAmount ?? null,
+    refundStatus: booking.refundStatus ?? null,
+    refundReason: booking.refundReason ?? null,
+    cancellationAllowedUntil: booking.cancellationAllowedUntil ?? null,
   };
 };
 
@@ -776,28 +1044,48 @@ const mapEventBooking = (
   },
 ) => {
   const activeStatuses = new Set(ACTIVE_BOOKING_STATUSES);
+  const reservedStatuses = new Set(SLOT_RESERVED_BOOKING_STATUSES);
+  const cancellableStatuses = new Set(CANCELLABLE_BOOKING_STATUSES);
+  const normalizedAmounts = normalizeBookingAmounts(booking, booking.event.slotPrice ?? null);
+  const cancellationAllowedUntil = booking.cancellationAllowedUntil ?? booking.event.startsAt;
+  const refundStatus = getRefundStatusForBooking(booking.paymentStatus, booking.refundStatus);
 
   return {
     id: booking.id,
     userId: booking.userId,
     eventId: booking.eventId,
     restaurantId: booking.restaurantId,
+    slotPrice: normalizedAmounts.slotPrice,
     quantity: booking.quantity,
-    totalAmount: booking.totalAmount,
+    subtotalAmount: normalizedAmounts.subtotalAmount,
+    taxAmount: normalizedAmounts.taxAmount,
+    platformFee: normalizedAmounts.platformFee,
+    discountAmount: normalizedAmounts.discountAmount,
+    totalAmount: normalizedAmounts.totalAmount,
     bookingCode: booking.bookingCode,
+    bookingStatus: booking.status,
     status: booking.status,
     bookedAt: booking.bookedAt,
     cancelledAt: booking.cancelledAt,
     paymentStatus: booking.paymentStatus,
     paymentMethod: booking.paymentMethod,
     paymentMethodId: booking.paymentMethodId,
+    refundAmount: normalizedAmounts.refundAmount,
+    refundStatus,
+    refundReason: booking.refundReason,
+    cancellationAllowedUntil,
+    refundPolicyNote:
+      "Full refund is available until the event starts. Refunds are returned to the original payment method.",
     createdAt: booking.createdAt,
     updatedAt: booking.updatedAt,
     canCancel:
-      booking.status === EventBookingStatus.CONFIRMED &&
-      booking.event.startsAt.getTime() > Date.now(),
+      cancellableStatuses.has(
+        booking.status as (typeof CANCELLABLE_BOOKING_STATUSES)[number],
+      ) && cancellationAllowedUntil.getTime() > Date.now(),
     isUpcoming:
-      booking.status === EventBookingStatus.CONFIRMED &&
+      reservedStatuses.has(
+        booking.status as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number],
+      ) &&
       booking.event.endsAt.getTime() >= Date.now(),
     isPastEvent: booking.event.endsAt.getTime() < Date.now(),
     hasActiveBooking: activeStatuses.has(
@@ -822,10 +1110,15 @@ const sortMyEventBookings = <T extends { event: { startsAt: Date; endsAt: Date }
   left: T,
   right: T,
 ) => {
+  const upcomingStatuses = new Set<string>([
+    EventBookingStatus.PENDING,
+    EventBookingStatus.CONFIRMED,
+    EventBookingStatus.ATTENDED,
+  ]);
   const leftUpcoming =
-    left.status === EventBookingStatus.CONFIRMED && left.event.endsAt.getTime() >= Date.now();
+    upcomingStatuses.has(left.status) && left.event.endsAt.getTime() >= Date.now();
   const rightUpcoming =
-    right.status === EventBookingStatus.CONFIRMED && right.event.endsAt.getTime() >= Date.now();
+    upcomingStatuses.has(right.status) && right.event.endsAt.getTime() >= Date.now();
 
   if (leftUpcoming !== rightUpcoming) {
     return leftUpcoming ? -1 : 1;
@@ -871,6 +1164,53 @@ const buildEventPayload = (
   slotPrice: input.slotPrice != null ? roundCurrency(input.slotPrice) : null,
   maxTicketsPerUser: input.maxTicketsPerUser ?? null,
   status: input.status,
+});
+
+const buildEventTemplatePayload = (
+  input: {
+    title: string;
+    description: string;
+    imageUrl?: string | null;
+    suggestedDurationMinutes?: number | null;
+    suggestedBookingWindowHours?: number | null;
+    suggestedSlotPrice?: number | null;
+    suggestedMaxSlots?: number | null;
+    suggestedMaxTicketsPerUser?: number | null;
+    suggestedOfferLabel?: string | null;
+    setupChecklist?: string[];
+    requiredItems?: string[];
+    status: string;
+    createdByAdminId: number;
+  },
+) => ({
+  title: input.title,
+  description: input.description,
+  imageUrl: input.imageUrl ?? null,
+  suggestedDurationMinutes: input.suggestedDurationMinutes ?? null,
+  suggestedBookingWindowHours: input.suggestedBookingWindowHours ?? null,
+  suggestedSlotPrice:
+    input.suggestedSlotPrice != null ? roundCurrency(input.suggestedSlotPrice) : null,
+  suggestedMaxSlots: input.suggestedMaxSlots ?? null,
+  suggestedMaxTicketsPerUser: input.suggestedMaxTicketsPerUser ?? null,
+  suggestedOfferLabel: input.suggestedOfferLabel ?? null,
+  setupChecklist: input.setupChecklist ?? [],
+  requiredItems: input.requiredItems ?? [],
+  status: input.status,
+  createdByAdminId: input.createdByAdminId,
+});
+
+const mapEventTemplate = (template: EventTemplateRecord) => ({
+  ...template,
+  imageUrl: template.imageUrl ?? null,
+  suggestedDurationMinutes: template.suggestedDurationMinutes ?? null,
+  suggestedBookingWindowHours: template.suggestedBookingWindowHours ?? null,
+  suggestedSlotPrice:
+    template.suggestedSlotPrice != null ? roundCurrency(template.suggestedSlotPrice) : null,
+  suggestedMaxSlots: template.suggestedMaxSlots ?? null,
+  suggestedMaxTicketsPerUser: template.suggestedMaxTicketsPerUser ?? null,
+  suggestedOfferLabel: template.suggestedOfferLabel ?? null,
+  setupChecklist: template.setupChecklist ?? [],
+  requiredItems: template.requiredItems ?? [],
 });
 
 export const eventsService = {
@@ -971,6 +1311,27 @@ export const eventsService = {
         },
       }),
     );
+  },
+
+  async listTemplatesAdmin() {
+    const templates = await prisma.eventTemplate.findMany({
+      select: eventTemplateSelect,
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    });
+
+    return templates.map(mapEventTemplate);
+  },
+
+  async listTemplatesForOwner() {
+    const templates = await prisma.eventTemplate.findMany({
+      where: {
+        status: EventStatus.ACTIVE,
+      },
+      select: eventTemplateSelect,
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    });
+
+    return templates.map(mapEventTemplate);
   },
 
   async create(input: {
@@ -1159,6 +1520,193 @@ export const eventsService = {
     });
   },
 
+  async createTemplate(
+    adminId: number,
+    input: {
+      title: string;
+      description: string;
+      imageUrl?: string | null;
+      suggestedDurationMinutes?: number | null;
+      suggestedBookingWindowHours?: number | null;
+      suggestedSlotPrice?: number | null;
+      suggestedMaxSlots?: number | null;
+      suggestedMaxTicketsPerUser?: number | null;
+      suggestedOfferLabel?: string | null;
+      setupChecklist?: string[];
+      requiredItems?: string[];
+      status: string;
+    },
+  ) {
+    const template = await prisma.eventTemplate.create({
+      data: buildEventTemplatePayload({
+        ...input,
+        createdByAdminId: adminId,
+      }),
+      select: eventTemplateSelect,
+    });
+
+    return mapEventTemplate(template);
+  },
+
+  async updateTemplate(
+    templateId: number,
+    input: Partial<{
+      title: string;
+      description: string;
+      imageUrl: string | null;
+      suggestedDurationMinutes: number | null;
+      suggestedBookingWindowHours: number | null;
+      suggestedSlotPrice: number | null;
+      suggestedMaxSlots: number | null;
+      suggestedMaxTicketsPerUser: number | null;
+      suggestedOfferLabel: string | null;
+      setupChecklist: string[];
+      requiredItems: string[];
+      status: string;
+    }>,
+  ) {
+    await getEventTemplateById(templateId);
+
+    const template = await prisma.eventTemplate.update({
+      where: { id: templateId },
+      data: {
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.imageUrl !== undefined ? { imageUrl: input.imageUrl ?? null } : {}),
+        ...(input.suggestedDurationMinutes !== undefined
+          ? { suggestedDurationMinutes: input.suggestedDurationMinutes ?? null }
+          : {}),
+        ...(input.suggestedBookingWindowHours !== undefined
+          ? { suggestedBookingWindowHours: input.suggestedBookingWindowHours ?? null }
+          : {}),
+        ...(input.suggestedSlotPrice !== undefined
+          ? {
+              suggestedSlotPrice:
+                input.suggestedSlotPrice != null ? roundCurrency(input.suggestedSlotPrice) : null,
+            }
+          : {}),
+        ...(input.suggestedMaxSlots !== undefined
+          ? { suggestedMaxSlots: input.suggestedMaxSlots ?? null }
+          : {}),
+        ...(input.suggestedMaxTicketsPerUser !== undefined
+          ? { suggestedMaxTicketsPerUser: input.suggestedMaxTicketsPerUser ?? null }
+          : {}),
+        ...(input.suggestedOfferLabel !== undefined
+          ? { suggestedOfferLabel: input.suggestedOfferLabel ?? null }
+          : {}),
+        ...(input.setupChecklist !== undefined ? { setupChecklist: input.setupChecklist } : {}),
+        ...(input.requiredItems !== undefined ? { requiredItems: input.requiredItems } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+      },
+      select: eventTemplateSelect,
+    });
+
+    return mapEventTemplate(template);
+  },
+
+  async removeTemplate(templateId: number) {
+    await getEventTemplateById(templateId);
+
+    await prisma.eventTemplate.delete({
+      where: { id: templateId },
+    });
+  },
+
+  async createForOwnerFromTemplate(
+    userId: number,
+    input: {
+      restaurantId: number;
+      templateId?: number;
+      title?: string;
+      description?: string;
+      imageUrl?: string | null;
+      startsAt: Date;
+      endsAt?: Date;
+      bookingStartTime?: Date | null;
+      bookingEndTime?: Date | null;
+      discountLabel?: string | null;
+      totalSlots?: number | null;
+      maxAttendees?: number | null;
+      slotPrice?: number | null;
+      maxTicketsPerUser?: number | null;
+      status?: string;
+    },
+  ) {
+    await assertOwnerCanManageRestaurant(userId, input.restaurantId);
+
+    const template =
+      typeof input.templateId === "number"
+        ? await getEventTemplateById(input.templateId, { activeOnly: true })
+        : null;
+
+    const resolvedEndsAt =
+      input.endsAt ??
+      (template?.suggestedDurationMinutes != null
+        ? new Date(input.startsAt.getTime() + template.suggestedDurationMinutes * 60_000)
+        : null);
+
+    if (!resolvedEndsAt) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Add the event end time before saving.",
+        "EVENT_END_TIME_REQUIRED",
+      );
+    }
+
+    const resolvedBookingStartTime =
+      input.bookingStartTime !== undefined
+        ? input.bookingStartTime
+        : template?.suggestedBookingWindowHours != null
+          ? new Date(input.startsAt.getTime() - template.suggestedBookingWindowHours * 60 * 60 * 1000)
+          : null;
+    const resolvedBookingEndTime =
+      input.bookingEndTime !== undefined
+        ? input.bookingEndTime
+        : template?.suggestedBookingWindowHours != null
+          ? input.startsAt
+          : null;
+
+    const resolvedTitle = input.title?.trim() || template?.title;
+    const resolvedDescription = input.description?.trim() || template?.description;
+
+    if (!resolvedTitle || !resolvedDescription) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "Event title and description are required.",
+        "EVENT_TEMPLATE_FIELDS_REQUIRED",
+      );
+    }
+
+    return this.create({
+      restaurantId: input.restaurantId,
+      regionId: null,
+      title: resolvedTitle,
+      description: resolvedDescription,
+      imageUrl: input.imageUrl !== undefined ? input.imageUrl ?? null : template?.imageUrl ?? null,
+      startsAt: input.startsAt,
+      endsAt: resolvedEndsAt,
+      bookingStartTime: resolvedBookingStartTime ?? null,
+      bookingEndTime: resolvedBookingEndTime ?? null,
+      discountLabel:
+        input.discountLabel !== undefined
+          ? input.discountLabel ?? null
+          : template?.suggestedOfferLabel ?? null,
+      totalSlots:
+        input.totalSlots !== undefined
+          ? input.totalSlots
+          : input.maxAttendees !== undefined
+            ? input.maxAttendees
+            : template?.suggestedMaxSlots ?? null,
+      slotPrice:
+        input.slotPrice !== undefined ? input.slotPrice : template?.suggestedSlotPrice ?? null,
+      maxTicketsPerUser:
+        input.maxTicketsPerUser !== undefined
+          ? input.maxTicketsPerUser
+          : template?.suggestedMaxTicketsPerUser ?? null,
+      status: input.status ?? EventStatus.ACTIVE,
+    });
+  },
+
   async book(
     userId: number,
     eventId: number,
@@ -1187,6 +1735,8 @@ export const eventsService = {
     );
 
     let slotsReserved = false;
+    let bookingId: number | null = null;
+    const paymentPricing = getBookingPricing(event, input.quantity);
     const result = await (async () => {
       try {
         validateEventBookingWindow(event, event.bookedSlots);
@@ -1250,20 +1800,31 @@ export const eventsService = {
         }
 
         const bookedAt = new Date();
-        const totalAmount = roundCurrency((event.slotPrice ?? 0) * input.quantity);
-        const bookingId = existingBooking?.id ?? (await reserveSequentialId("EventBooking"));
+        bookingId = existingBooking?.id ?? (await reserveSequentialId("EventBooking"));
         const bookingCode = buildBookingCode(bookingId, bookedAt);
         const bookingWriteData = {
           restaurantId: input.restaurantId,
+          slotPrice: paymentPricing.slotPrice,
           quantity: input.quantity,
-          totalAmount,
+          subtotalAmount: paymentPricing.subtotalAmount,
+          taxAmount: paymentPricing.taxAmount,
+          platformFee: paymentPricing.platformFee,
+          discountAmount: paymentPricing.discountAmount,
+          totalAmount: paymentPricing.totalAmount,
           bookingCode,
-          status: EventBookingStatus.CONFIRMED,
+          status:
+            paymentDetails.paymentStatus === PaymentStatus.FREE
+              ? EventBookingStatus.CONFIRMED
+              : EventBookingStatus.PENDING,
           bookedAt,
           cancelledAt: null,
           paymentStatus: paymentDetails.paymentStatus,
           paymentMethod: paymentDetails.paymentMethod,
           paymentMethodId: paymentDetails.paymentMethodId,
+          refundAmount: 0,
+          refundStatus: RefundStatus.NOT_REQUESTED,
+          refundReason: null,
+          cancellationAllowedUntil: paymentPricing.cancellationAllowedUntil,
         };
 
         const booking =
@@ -1325,6 +1886,7 @@ export const eventsService = {
         return {
           booking,
           bookedSlots: nextBookedSlots,
+          requiresPayment: paymentDetails.paymentStatus === PaymentStatus.PENDING,
         };
       } catch (error) {
         if (slotsReserved) {
@@ -1341,6 +1903,7 @@ export const eventsService = {
           "Event booking failed",
           buildEventBookingLogContext(
             {
+              bookingId,
               eventId,
               userId,
               requestedQuantity: input.quantity,
@@ -1368,26 +1931,36 @@ export const eventsService = {
       }
     })();
 
-    await notificationsService.createForUser({
-      userId,
-      title: "Event booking confirmed",
-      message: `You successfully booked ${input.quantity} slot${input.quantity === 1 ? "" : "s"} for ${event.title} at ${restaurant.name}. Booking code ${result.booking.bookingCode}.`,
-      meta: {
-        eventId,
-        restaurantId: input.restaurantId,
-        bookingId: result.booking.id,
-        bookingCode: result.booking.bookingCode,
-        path: "/my-events",
-        eventKey: `event:booking:${result.booking.id}`,
-      },
-      dedupeWindowMinutes: 1,
-    });
+    if (!result.requiresPayment) {
+      await notificationsService.createForUser({
+        userId,
+        title: "Event booking confirmed",
+        message: `You successfully booked ${input.quantity} slot${input.quantity === 1 ? "" : "s"} for ${event.title} at ${restaurant.name}. Booking code ${result.booking.bookingCode}.`,
+        meta: {
+          eventId,
+          restaurantId: input.restaurantId,
+          bookingId: result.booking.id,
+          bookingCode: result.booking.bookingCode,
+          path: "/my-events",
+          eventKey: `event:booking:${result.booking.id}`,
+        },
+        dedupeWindowMinutes: 1,
+      });
+    }
 
-    const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
+    const {
+      bookedSlotsByEventId,
+      confirmedBookingCountByEventId,
+      revenueByEventId,
+      taxByEventId,
+      refundedAmountByEventId,
+    } =
       await getEventBookingMetrics([eventId], userId);
     const bookedSlots = bookedSlotsByEventId.get(eventId) ?? result.bookedSlots;
     const confirmedBookingCount = confirmedBookingCountByEventId.get(eventId) ?? 0;
     const revenue = revenueByEventId.get(eventId) ?? 0;
+    void taxByEventId;
+    void refundedAmountByEventId;
 
     return {
       booking: mapEventBooking(result.booking, {
@@ -1401,7 +1974,295 @@ export const eventsService = {
         revenue,
         currentUserBooking: mapBookingSummary(result.booking),
       }),
+      requiresPayment: result.requiresPayment,
     };
+  },
+
+  async pay(
+    userId: number,
+    bookingId: number,
+    input: {
+      paymentMethod?: string;
+      paymentMethodId?: number;
+      savedPaymentMethodId?: number;
+    },
+  ) {
+    const booking = await prisma.eventBooking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
+      },
+      select: bookingSelect,
+    });
+
+    if (!booking) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "Event booking not found.",
+        "EVENT_BOOKING_NOT_FOUND",
+      );
+    }
+
+    if (booking.paymentStatus === PaymentStatus.FREE) {
+      return {
+        booking: mapEventBooking(booking, {
+          bookedSlots: booking.event.bookedSlots,
+          confirmedBookingCount: booking.status === EventBookingStatus.CONFIRMED ? 1 : 0,
+          revenue: 0,
+        }),
+        event: mapEvent(booking.event, {
+          bookedSlots: booking.event.bookedSlots,
+          confirmedBookingCount: booking.status === EventBookingStatus.CONFIRMED ? 1 : 0,
+          revenue: 0,
+          currentUserBooking: mapBookingSummary(booking),
+        }),
+      };
+    }
+
+    if (booking.status === EventBookingStatus.CONFIRMED && booking.paymentStatus === PaymentStatus.PAID) {
+      const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
+        await getEventBookingMetrics([booking.eventId], userId);
+
+      return {
+        booking: mapEventBooking(booking, {
+          bookedSlots: bookedSlotsByEventId.get(booking.eventId) ?? booking.event.bookedSlots,
+          confirmedBookingCount: confirmedBookingCountByEventId.get(booking.eventId) ?? 0,
+          revenue: revenueByEventId.get(booking.eventId) ?? 0,
+        }),
+        event: mapEvent(booking.event, {
+          bookedSlots: bookedSlotsByEventId.get(booking.eventId) ?? booking.event.bookedSlots,
+          confirmedBookingCount: confirmedBookingCountByEventId.get(booking.eventId) ?? 0,
+          revenue: revenueByEventId.get(booking.eventId) ?? 0,
+          currentUserBooking: mapBookingSummary(booking),
+        }),
+      };
+    }
+
+    if (booking.status !== EventBookingStatus.PENDING || booking.paymentStatus !== PaymentStatus.PENDING) {
+      throw new AppError(
+        StatusCodes.BAD_REQUEST,
+        "This booking is not waiting for payment anymore.",
+        "EVENT_BOOKING_PAYMENT_NOT_PENDING",
+      );
+    }
+
+    validateEventBookingWindow(booking.event, booking.event.bookedSlots);
+
+    logger.info(
+      "Event booking payment requested",
+      buildEventBookingLogContext({
+        bookingId,
+        eventId: booking.eventId,
+        userId,
+        requestedQuantity: booking.quantity,
+        totalSlots: booking.event.totalSlots,
+        bookedSlots: booking.event.bookedSlots,
+        remainingSlots:
+          booking.event.totalSlots != null
+            ? Math.max(booking.event.totalSlots - booking.event.bookedSlots, 0)
+            : null,
+      }),
+    );
+
+    let paymentCaptured = false;
+
+    try {
+      const paymentDetails = await validateSavedPaymentMethod(prisma, {
+        userId,
+        slotPrice: booking.slotPrice ?? booking.event.slotPrice ?? 0,
+        paymentMethod: input.paymentMethod ?? booking.paymentMethod ?? undefined,
+        paymentMethodId: input.paymentMethodId ?? booking.paymentMethodId ?? undefined,
+        savedPaymentMethodId: input.savedPaymentMethodId,
+      });
+
+      const confirmedBookingCount = await prisma.eventBooking.updateMany({
+        where: {
+          id: bookingId,
+          userId,
+          status: EventBookingStatus.PENDING,
+          paymentStatus: PaymentStatus.PENDING,
+        },
+        data: {
+          status: EventBookingStatus.CONFIRMED,
+          paymentStatus: PaymentStatus.PAID,
+          paymentMethod: paymentDetails.paymentMethod,
+          paymentMethodId: paymentDetails.paymentMethodId,
+          refundStatus: RefundStatus.NOT_REQUESTED,
+          refundReason: null,
+        },
+      });
+
+      if (!confirmedBookingCount.count) {
+        const latestBooking = await prisma.eventBooking.findFirst({
+          where: {
+            id: bookingId,
+            userId,
+          },
+          select: bookingSelect,
+        });
+
+        if (latestBooking?.status === EventBookingStatus.CONFIRMED && latestBooking.paymentStatus === PaymentStatus.PAID) {
+          const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
+            await getEventBookingMetrics([latestBooking.eventId], userId);
+
+          return {
+            booking: mapEventBooking(latestBooking, {
+              bookedSlots: bookedSlotsByEventId.get(latestBooking.eventId) ?? latestBooking.event.bookedSlots,
+              confirmedBookingCount: confirmedBookingCountByEventId.get(latestBooking.eventId) ?? 0,
+              revenue: revenueByEventId.get(latestBooking.eventId) ?? 0,
+            }),
+            event: mapEvent(latestBooking.event, {
+              bookedSlots: bookedSlotsByEventId.get(latestBooking.eventId) ?? latestBooking.event.bookedSlots,
+              confirmedBookingCount: confirmedBookingCountByEventId.get(latestBooking.eventId) ?? 0,
+              revenue: revenueByEventId.get(latestBooking.eventId) ?? 0,
+              currentUserBooking: mapBookingSummary(latestBooking),
+            }),
+          };
+        }
+
+        throw new AppError(
+          StatusCodes.CONFLICT,
+          "This booking payment could not be completed safely right now.",
+          "EVENT_BOOKING_PAYMENT_CONFLICT",
+        );
+      }
+
+      paymentCaptured = true;
+
+      const confirmedBooking = await prisma.eventBooking.findFirst({
+        where: {
+          id: bookingId,
+          userId,
+        },
+        select: bookingSelect,
+      });
+
+      if (!confirmedBooking) {
+        throw new AppError(
+          StatusCodes.NOT_FOUND,
+          "Event booking not found.",
+          "EVENT_BOOKING_NOT_FOUND",
+        );
+      }
+
+      await notificationsService.createForUser({
+        userId,
+        title: "Event booking confirmed",
+        message: `Payment received for ${confirmedBooking.event.title}. Booking code ${confirmedBooking.bookingCode}.`,
+        meta: {
+          eventId: confirmedBooking.eventId,
+          restaurantId: confirmedBooking.restaurantId,
+          bookingId: confirmedBooking.id,
+          bookingCode: confirmedBooking.bookingCode,
+          path: "/my-events",
+          eventKey: `event:booking:${confirmedBooking.id}:paid`,
+        },
+        dedupeWindowMinutes: 1,
+      });
+
+      const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
+        await getEventBookingMetrics([confirmedBooking.eventId], userId);
+
+      return {
+        booking: mapEventBooking(confirmedBooking, {
+          bookedSlots: bookedSlotsByEventId.get(confirmedBooking.eventId) ?? confirmedBooking.event.bookedSlots,
+          confirmedBookingCount: confirmedBookingCountByEventId.get(confirmedBooking.eventId) ?? 0,
+          revenue: revenueByEventId.get(confirmedBooking.eventId) ?? 0,
+        }),
+        event: mapEvent(confirmedBooking.event, {
+          bookedSlots: bookedSlotsByEventId.get(confirmedBooking.eventId) ?? confirmedBooking.event.bookedSlots,
+          confirmedBookingCount: confirmedBookingCountByEventId.get(confirmedBooking.eventId) ?? 0,
+          revenue: revenueByEventId.get(confirmedBooking.eventId) ?? 0,
+          currentUserBooking: mapBookingSummary(confirmedBooking),
+        }),
+      };
+    } catch (error) {
+      if (!paymentCaptured) {
+        const latestBooking = await prisma.eventBooking.findFirst({
+          where: {
+            id: bookingId,
+            userId,
+          },
+          select: {
+            id: true,
+            status: true,
+            paymentStatus: true,
+          },
+        });
+
+        const shouldReleaseSlots =
+          latestBooking?.status === EventBookingStatus.PENDING &&
+          latestBooking.paymentStatus === PaymentStatus.PENDING;
+
+        if (shouldReleaseSlots && booking.event.totalSlots != null) {
+          await releaseReservedSlots(booking.eventId, booking.quantity, userId, bookingId);
+        }
+
+        try {
+          await prisma.eventBooking.updateMany({
+            where: {
+              id: bookingId,
+              userId,
+              status: EventBookingStatus.PENDING,
+              paymentStatus: PaymentStatus.PENDING,
+            },
+            data: {
+              status: EventBookingStatus.FAILED,
+              paymentStatus: PaymentStatus.FAILED,
+              refundAmount: 0,
+              refundStatus: RefundStatus.NOT_REQUESTED,
+              refundReason: "Payment could not be completed.",
+            },
+          });
+        } catch (bookingFailureError) {
+          logger.error(
+            "Event booking payment failure update failed",
+            buildEventBookingLogContext(
+              {
+                bookingId,
+                eventId: booking.eventId,
+                userId,
+                requestedQuantity: booking.quantity,
+                totalSlots: booking.event.totalSlots,
+                bookedSlots: booking.event.bookedSlots,
+                remainingSlots:
+                  booking.event.totalSlots != null
+                    ? Math.max(booking.event.totalSlots - booking.event.bookedSlots, 0)
+                    : null,
+              },
+              bookingFailureError,
+            ),
+          );
+        }
+      }
+
+      const mappedError = mapEventBookingWriteError(error);
+      const logLevel =
+        mappedError instanceof AppError && mappedError.statusCode < StatusCodes.INTERNAL_SERVER_ERROR
+          ? "warn"
+          : "error";
+
+      logger[logLevel](
+        "Event booking payment failed",
+        buildEventBookingLogContext(
+          {
+            bookingId,
+            eventId: booking.eventId,
+            userId,
+            requestedQuantity: booking.quantity,
+            totalSlots: booking.event.totalSlots,
+            bookedSlots: booking.event.bookedSlots,
+            remainingSlots:
+              booking.event.totalSlots != null
+                ? Math.max(booking.event.totalSlots - booking.event.bookedSlots, 0)
+                : null,
+          },
+          error,
+        ),
+      );
+
+      throw mappedError;
+    }
   },
 
   async join(
@@ -1442,7 +2303,11 @@ export const eventsService = {
       );
     }
 
-    if (!OPEN_BOOKING_STATUSES.includes(booking.status as (typeof OPEN_BOOKING_STATUSES)[number])) {
+    if (
+      !CANCELLABLE_BOOKING_STATUSES.includes(
+        booking.status as (typeof CANCELLABLE_BOOKING_STATUSES)[number],
+      )
+    ) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
         "This booking cannot be cancelled anymore.",
@@ -1450,79 +2315,114 @@ export const eventsService = {
       );
     }
 
-    if (booking.event.startsAt.getTime() <= Date.now()) {
+    const cancellationAllowedUntil = booking.cancellationAllowedUntil ?? booking.event.startsAt;
+
+    if (cancellationAllowedUntil.getTime() <= Date.now()) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
-        "Bookings can only be cancelled before the event starts.",
+        "Cancellation closed because the event has started.",
         "EVENT_CANNOT_BE_CANCELLED",
       );
     }
 
-    const nextStatus =
-      booking.paymentStatus === PaymentStatus.PAID
-        ? EventBookingStatus.REFUNDED
-        : EventBookingStatus.CANCELLED;
-    const nextPaymentStatus =
-      booking.paymentStatus === PaymentStatus.PAID ? PaymentStatus.REFUNDED : booking.paymentStatus;
+    const wasPaid = booking.paymentStatus === PaymentStatus.PAID;
+    const wasPendingPayment = booking.paymentStatus === PaymentStatus.PENDING;
+    const nextPaymentStatus = wasPaid
+      ? PaymentStatus.REFUNDED
+      : wasPendingPayment
+        ? PaymentStatus.FAILED
+        : booking.paymentStatus;
+    const refundAmount = wasPaid ? booking.totalAmount : 0;
+    const refundStatus = wasPaid ? RefundStatus.REFUNDED : RefundStatus.NOT_REQUESTED;
+    const refundReason = wasPaid
+      ? "Full refund processed because the booking was cancelled before the event started."
+      : booking.paymentStatus === PaymentStatus.FREE
+        ? "Free booking cancelled."
+        : "Pending payment booking cancelled before payment capture.";
 
-    const result =
-      booking.event.totalSlots == null
-        ? {
-            booking: await prisma.eventBooking.update({
-              where: { id: booking.id },
-              data: {
-                status: nextStatus,
-                cancelledAt: new Date(),
-                paymentStatus: nextPaymentStatus,
-              },
-              select: bookingSelect,
-            }),
-          }
-        : await prisma.$transaction(async (tx) => {
-            const updatedEventCounter = await tx.event.updateMany({
-              where: {
-                id: booking.eventId,
-                bookedSlots: {
-                  gte: booking.quantity,
-                },
-              },
-              data: {
-                bookedSlots: {
-                  decrement: booking.quantity,
-                },
-              },
-            });
+    let slotsReleased = false;
 
-            if (!updatedEventCounter.count) {
-              throw new AppError(
-                StatusCodes.CONFLICT,
-                "This booking could not be cancelled safely right now.",
-                "EVENT_CANCEL_CONFLICT",
-              );
-            }
+    if (booking.event.totalSlots != null) {
+      const updatedEventCounter = await prisma.event.updateMany({
+        where: {
+          id: booking.eventId,
+          bookedSlots: {
+            gte: booking.quantity,
+          },
+        },
+        data: {
+          bookedSlots: {
+            decrement: booking.quantity,
+          },
+        },
+      });
 
-            const cancelledBooking = await tx.eventBooking.update({
-              where: { id: booking.id },
-              data: {
-                status: nextStatus,
-                cancelledAt: new Date(),
-                paymentStatus: nextPaymentStatus,
-              },
-              select: bookingSelect,
-            });
+      if (!updatedEventCounter.count) {
+        throw new AppError(
+          StatusCodes.CONFLICT,
+          "This booking could not be cancelled safely right now.",
+          "EVENT_CANCEL_CONFLICT",
+        );
+      }
 
-            return {
-              booking: cancelledBooking,
-            };
-          });
+      slotsReleased = true;
+    }
+
+    const updateResult = await prisma.eventBooking.updateMany({
+      where: {
+        id: booking.id,
+        userId,
+        status: {
+          in: [...CANCELLABLE_BOOKING_STATUSES],
+        },
+      },
+      data: {
+        status: EventBookingStatus.CANCELLED,
+        cancelledAt: new Date(),
+        paymentStatus: nextPaymentStatus,
+        refundAmount,
+        refundStatus,
+        refundReason,
+      },
+    });
+
+    if (!updateResult.count) {
+      if (slotsReleased && booking.event.totalSlots != null) {
+        await restoreReleasedSlots(booking.eventId, booking.quantity, userId, booking.id);
+      }
+
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "This booking could not be cancelled safely right now.",
+        "EVENT_CANCEL_CONFLICT",
+      );
+    }
+
+    const updatedBooking = await prisma.eventBooking.findFirst({
+      where: {
+        id: booking.id,
+        userId,
+      },
+      select: bookingSelect,
+    });
+
+    if (!updatedBooking) {
+      throw new AppError(
+        StatusCodes.NOT_FOUND,
+        "Event booking not found.",
+        "EVENT_BOOKING_NOT_FOUND",
+      );
+    }
 
     await notificationsService.createForUser({
       userId,
       title: "Event booking cancelled",
       message:
-        booking.paymentStatus === PaymentStatus.PAID
-          ? `Your booking for ${booking.event.title} was cancelled and marked for refund.`
-          : `Your booking for ${booking.event.title} was cancelled successfully.`,
+        wasPaid
+          ? `Your booking for ${booking.event.title} was cancelled and refunded to the original payment method.`
+          : booking.paymentStatus === PaymentStatus.FREE
+            ? `Your free booking for ${booking.event.title} was cancelled successfully.`
+            : `Your booking for ${booking.event.title} was cancelled before payment capture.`,
       meta: {
         eventId: booking.eventId,
         restaurantId: booking.restaurantId,
@@ -1537,7 +2437,7 @@ export const eventsService = {
       await getEventBookingMetrics([booking.eventId], userId);
 
     return {
-      booking: mapEventBooking(result.booking, {
+      booking: mapEventBooking(updatedBooking, {
         bookedSlots: bookedSlotsByEventId.get(booking.eventId) ?? 0,
         confirmedBookingCount: confirmedBookingCountByEventId.get(booking.eventId) ?? 0,
         revenue: revenueByEventId.get(booking.eventId) ?? 0,
@@ -1555,6 +2455,9 @@ export const eventsService = {
       where: {
         eventId,
         userId,
+        status: {
+          in: [...CANCELLABLE_BOOKING_STATUSES],
+        },
       },
       select: {
         id: true,
@@ -1576,9 +2479,6 @@ export const eventsService = {
     const bookings = await prisma.eventBooking.findMany({
       where: {
         userId,
-        status: {
-          notIn: [EventBookingStatus.CANCELLED, EventBookingStatus.REFUNDED],
-        },
       },
       select: bookingSelect,
       orderBy: [{ bookedAt: "desc" }],
@@ -1608,15 +2508,18 @@ export const eventsService = {
       orderBy: [{ bookedAt: "desc" }],
     });
 
+    const pendingCount = bookings.filter((booking) => booking.status === EventBookingStatus.PENDING).length;
     const confirmedCount = bookings.filter((booking) => booking.status === EventBookingStatus.CONFIRMED).length;
     const attendedCount = bookings.filter((booking) => booking.status === EventBookingStatus.ATTENDED).length;
     const cancelledCount = bookings.filter((booking) => booking.status === EventBookingStatus.CANCELLED).length;
-    const refundedCount = bookings.filter((booking) => booking.status === EventBookingStatus.REFUNDED).length;
+    const failedCount = bookings.filter((booking) => booking.status === EventBookingStatus.FAILED).length;
+    const refundedCount = bookings.filter(
+      (booking) =>
+        booking.paymentStatus === PaymentStatus.REFUNDED ||
+        booking.paymentStatus === PaymentStatus.REFUND_PENDING,
+    ).length;
     const bookedSlots = bookings.reduce((total, booking) => {
-      if (
-        booking.status === EventBookingStatus.CONFIRMED ||
-        booking.status === EventBookingStatus.ATTENDED
-      ) {
+      if (SLOT_RESERVED_BOOKING_STATUSES.includes(booking.status as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number])) {
         return total + booking.quantity;
       }
 
@@ -1630,6 +2533,31 @@ export const eventsService = {
           booking.paymentStatus === PaymentStatus.PAID
         ) {
           return total + booking.totalAmount;
+        }
+
+        return total;
+      }, 0),
+    );
+    const totalTax = roundCurrency(
+      bookings.reduce((total, booking) => {
+        if (
+          (booking.status === EventBookingStatus.CONFIRMED ||
+            booking.status === EventBookingStatus.ATTENDED) &&
+          booking.paymentStatus === PaymentStatus.PAID
+        ) {
+          return total + (booking.taxAmount ?? 0);
+        }
+
+        return total;
+      }, 0),
+    );
+    const refundedAmount = roundCurrency(
+      bookings.reduce((total, booking) => {
+        if (
+          booking.paymentStatus === PaymentStatus.REFUNDED ||
+          booking.paymentStatus === PaymentStatus.REFUND_PENDING
+        ) {
+          return total + (booking.refundAmount ?? 0);
         }
 
         return total;
@@ -1653,11 +2581,14 @@ export const eventsService = {
 
     bookings.forEach((booking) => {
       const current = restaurantBreakdownMap.get(booking.restaurant.id);
-      const isActiveBooking =
-        booking.status === EventBookingStatus.CONFIRMED ||
-        booking.status === EventBookingStatus.ATTENDED;
+      const isActiveBooking = SLOT_RESERVED_BOOKING_STATUSES.includes(
+        booking.status as (typeof SLOT_RESERVED_BOOKING_STATUSES)[number],
+      );
       const nextRevenue =
-        booking.paymentStatus === PaymentStatus.PAID && isActiveBooking ? booking.totalAmount : 0;
+        booking.paymentStatus === PaymentStatus.PAID &&
+        ACTIVE_BOOKING_STATUSES.includes(booking.status as (typeof ACTIVE_BOOKING_STATUSES)[number])
+          ? booking.totalAmount
+          : 0;
 
       restaurantBreakdownMap.set(booking.restaurant.id, {
         restaurant: {
@@ -1686,10 +2617,12 @@ export const eventsService = {
         revenue,
       }),
       summary: {
-        bookingsCount: confirmedCount + attendedCount,
+        bookingsCount: bookings.length,
+        pendingCount,
         confirmedCount,
         attendedCount,
         cancelledCount,
+        failedCount,
         refundedCount,
         bookedSlots,
         totalSlots: availability.totalSlots,
@@ -1698,6 +2631,8 @@ export const eventsService = {
         isFullyBooked: availability.isSoldOut,
         isBookingClosed: availability.isBookingClosed,
         revenue,
+        totalTax,
+        refundedAmount,
       },
       restaurantBreakdown: [...restaurantBreakdownMap.values()].sort(
         (left, right) => right.bookedSlots - left.bookedSlots,

@@ -30,7 +30,6 @@ import {
   RefreshButton,
   RowActions,
   ToggleField,
-  matchesSearch,
   paginate,
   getToneForStatus,
 } from "./admin-shared";
@@ -208,26 +207,7 @@ export const AdminRegionsPage = () => {
     setIsModalOpen(true);
   };
 
-  const filteredRegions = useMemo(() => {
-    if (!search.trim()) {
-      return regions;
-    }
-
-    return regions.filter((region) =>
-      matchesSearch(
-        [
-          region.name,
-          region.districtName,
-          region.stateName,
-          region.primaryPincode ?? "",
-          region.additionalPincodes.join(" "),
-          region.code,
-          region.slug,
-        ].join(" "),
-        search,
-      ),
-    );
-  }, [regions, search]);
+  const filteredRegions = regions;
 
   const pagedRegions = paginate(filteredRegions, page);
 

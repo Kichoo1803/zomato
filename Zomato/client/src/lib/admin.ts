@@ -569,18 +569,46 @@ export type AdminEvent = {
   } | null;
 };
 
+export type AdminEventTemplate = {
+  id: number;
+  title: string;
+  description: string;
+  imageUrl?: string | null;
+  suggestedDurationMinutes?: number | null;
+  suggestedBookingWindowHours?: number | null;
+  suggestedSlotPrice?: number | null;
+  suggestedMaxSlots?: number | null;
+  suggestedMaxTicketsPerUser?: number | null;
+  suggestedOfferLabel?: string | null;
+  setupChecklist: string[];
+  requiredItems: string[];
+  status: "ACTIVE" | "INACTIVE";
+  createdByAdminId: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AdminEventAttendee = {
   id: number;
   userId: number;
   eventId: number;
   restaurantId: number;
+  slotPrice?: number | null;
   quantity: number;
+  subtotalAmount?: number | null;
+  taxAmount?: number | null;
+  platformFee?: number | null;
+  discountAmount?: number | null;
   totalAmount: number;
   bookingCode: string;
   bookedAt: string;
   cancelledAt?: string | null;
-  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING";
-  status: "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED";
+  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING";
+  refundAmount?: number | null;
+  refundStatus?: "NOT_REQUESTED" | "PENDING" | "REFUNDED" | "FAILED" | null;
+  refundReason?: string | null;
+  bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
+  status: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
   canCancel: boolean;
   isUpcoming: boolean;
   isPastEvent: boolean;
@@ -603,10 +631,12 @@ export type AdminEventAttendeeReport = {
   event: AdminEvent;
   summary: {
     bookingsCount: number;
+    pendingCount?: number;
     bookedSlots: number;
     confirmedCount: number;
     attendedCount: number;
     cancelledCount: number;
+    failedCount?: number;
     refundedCount: number;
     totalSlots?: number | null;
     remainingSlots?: number | null;
@@ -614,6 +644,8 @@ export type AdminEventAttendeeReport = {
     isFullyBooked: boolean;
     isBookingClosed: boolean;
     revenue: number;
+    totalTax?: number;
+    refundedAmount?: number;
   };
   restaurantBreakdown: Array<{
     restaurant: {
@@ -928,9 +960,32 @@ export const getOffers = async () =>
 export const getEvents = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ events: AdminEvent[] }>>("/events")).events;
 
+export const getEventTemplates = async () =>
+  unwrapData(await apiClient.get<ApiEnvelope<{ templates: AdminEventTemplate[] }>>("/admin/event-templates"))
+    .templates;
+
+export const createEventTemplate = async (payload: Record<string, unknown>) =>
+  unwrapData(
+    await apiClient.post<ApiEnvelope<{ template: AdminEventTemplate }>>(
+      "/admin/event-templates",
+      payload,
+    ),
+  ).template;
+
+export const updateEventTemplate = async (templateId: number, payload: Record<string, unknown>) =>
+  unwrapData(
+    await apiClient.patch<ApiEnvelope<{ template: AdminEventTemplate }>>(
+      `/admin/event-templates/${templateId}`,
+      payload,
+    ),
+  ).template;
+
+export const deleteEventTemplate = async (templateId: number) =>
+  unwrapData(await apiClient.delete<ApiEnvelope<void>>(`/admin/event-templates/${templateId}`));
+
 export const getEventAttendees = async (eventId: number) =>
   unwrapData(
-    await apiClient.get<ApiEnvelope<AdminEventAttendeeReport>>(`/admin/events/${eventId}/attendees`),
+    await apiClient.get<ApiEnvelope<AdminEventAttendeeReport>>(`/admin/events/${eventId}/bookings`),
   );
 
 export const markEventBookingAttended = async (eventId: number, bookingId: number) =>

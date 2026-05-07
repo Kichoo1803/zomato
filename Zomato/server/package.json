@@ -26,6 +26,8 @@
     "prisma:repair:demo-users": "tsx prisma/repair-demo-users.ts",
     "preprisma:migrate:operations-manager-role": "npm run mongo:ensure",
     "prisma:migrate:operations-manager-role": "tsx prisma/migrate-operations-manager-role.ts",
+    "preprisma:cleanup:duplicate-regions": "npm run mongo:ensure",
+    "prisma:cleanup:duplicate-regions": "tsx prisma/cleanup-duplicate-regions.ts",
     "prisma:migrate:sqlite-to-mongo": "tsx prisma/migrate-sqlite-to-mongo.ts",
     "prisma:validate:sqlite-to-mongo": "tsx prisma/validate-sqlite-to-mongo.ts"
   },

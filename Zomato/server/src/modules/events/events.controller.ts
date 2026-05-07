@@ -58,11 +58,56 @@ export const deleteEvent = asyncHandler(async (req, res) => {
   });
 });
 
+export const listEventTemplatesAdmin = asyncHandler(async (_req, res) => {
+  const templates = await eventsService.listTemplatesAdmin();
+
+  return sendSuccess(res, {
+    message: "Event templates fetched successfully",
+    data: { templates },
+  });
+});
+
+export const createEventTemplateAdmin = asyncHandler(async (req, res) => {
+  const template = await eventsService.createTemplate(req.user!.id, req.body);
+
+  return sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: "Event template created successfully",
+    data: { template },
+  });
+});
+
+export const updateEventTemplateAdmin = asyncHandler(async (req, res) => {
+  const template = await eventsService.updateTemplate(Number(req.params.id), req.body);
+
+  return sendSuccess(res, {
+    message: "Event template updated successfully",
+    data: { template },
+  });
+});
+
+export const deleteEventTemplateAdmin = asyncHandler(async (req, res) => {
+  await eventsService.removeTemplate(Number(req.params.id));
+
+  return sendSuccess(res, {
+    message: "Event template deleted successfully",
+  });
+});
+
 export const bookEvent = asyncHandler(async (req, res) => {
   const result = await eventsService.book(req.user!.id, Number(req.params.eventId), req.body);
 
   return sendSuccess(res, {
     statusCode: StatusCodes.CREATED,
+    message: "Event booking created successfully",
+    data: result,
+  });
+});
+
+export const payEventBooking = asyncHandler(async (req, res) => {
+  const result = await eventsService.pay(req.user!.id, Number(req.params.bookingId), req.body);
+
+  return sendSuccess(res, {
     message: "Event booking confirmed successfully",
     data: result,
   });
@@ -148,5 +193,24 @@ export const markOwnerEventBookingAttended = asyncHandler(async (req, res) => {
   return sendSuccess(res, {
     message: "Event booking marked as attended successfully",
     data: result,
+  });
+});
+
+export const listOwnerEventTemplates = asyncHandler(async (_req, res) => {
+  const templates = await eventsService.listTemplatesForOwner();
+
+  return sendSuccess(res, {
+    message: "Owner event templates fetched successfully",
+    data: { templates },
+  });
+});
+
+export const createOwnerEventFromTemplate = asyncHandler(async (req, res) => {
+  const event = await eventsService.createForOwnerFromTemplate(req.user!.id, req.body);
+
+  return sendSuccess(res, {
+    statusCode: StatusCodes.CREATED,
+    message: "Owner event created successfully",
+    data: { event },
   });
 });

@@ -43,6 +43,7 @@ import {
   getPublicRestaurantBySlug,
   getRestaurantEvents,
   bookCustomerEvent,
+  payCustomerEventBooking,
   readPendingCustomerCouponSelection,
   removeCustomerFavorite,
   removeCustomerCartOffer,
@@ -65,6 +66,8 @@ import { membershipBenefits } from "@/lib/demo-data";
 
 const linkButtonClassName =
   "inline-flex items-center justify-center rounded-full bg-accent px-5 py-3 text-sm font-semibold text-white shadow-soft";
+const EVENT_BOOKING_PLATFORM_FEE = 20;
+const EVENT_BOOKING_GST_RATE = 0.05;
 const SEARCH_FOOD_FILTERS = [
   "Biryani",
   "Pizza",
@@ -160,6 +163,26 @@ const formatEventPriceLabel = (value?: number | null) =>
   value && value > 0 ? formatCurrency(value) : "Free";
 
 const formatPriceForOne = (costForTwo: number) => formatCurrency(Math.max(1, Math.round(costForTwo / 2)));
+
+const getEventBookingPaymentSummary = (slotPrice: number, quantity: number) => {
+  const normalizedSlotPrice = Math.max(0, Number(slotPrice) || 0);
+  const normalizedQuantity = Math.max(1, Number(quantity) || 1);
+  const subtotalAmount = Number((normalizedSlotPrice * normalizedQuantity).toFixed(2));
+  const discountAmount = 0;
+  const platformFee = subtotalAmount > 0 ? EVENT_BOOKING_PLATFORM_FEE : 0;
+  const taxAmount = subtotalAmount > 0 ? Number((subtotalAmount * EVENT_BOOKING_GST_RATE).toFixed(2)) : 0;
+  const totalAmount = Number((subtotalAmount + taxAmount + platformFee - discountAmount).toFixed(2));
+
+  return {
+    slotPrice: normalizedSlotPrice,
+    quantity: normalizedQuantity,
+    subtotalAmount,
+    taxAmount,
+    platformFee,
+    discountAmount,
+    totalAmount,
+  };
+};
 
 const formatLocationText = (...parts: Array<string | null | undefined>) =>
   parts
@@ -2078,22 +2101,39 @@ export const RestaurantDetailsPage = () => {
 
     setBookingEventId(selectedBookingEvent.id);
     try {
-      const result = await bookCustomerEvent(selectedBookingEvent.id, {
+      const selectedSavedPaymentMethodId = selectedPaymentMethod?.id;
+      let result = await bookCustomerEvent(selectedBookingEvent.id, {
         restaurantId: liveRestaurant.id,
         quantity: requestedQuantity,
         ...(selectedPaymentMethod
           ? {
               paymentMethod: selectedPaymentMethod.type,
               paymentMethodId: selectedPaymentMethod.id,
+              savedPaymentMethodId: selectedPaymentMethod.id,
             }
           : {}),
       });
+      if (selectedBookingEvent.slotPrice > 0 && result.booking.paymentStatus === "PENDING") {
+        result = await payCustomerEventBooking(result.booking.id, {
+          ...(selectedPaymentMethod
+            ? {
+                paymentMethod: selectedPaymentMethod.type,
+                paymentMethodId: selectedSavedPaymentMethodId,
+                savedPaymentMethodId: selectedSavedPaymentMethodId,
+              }
+            : {}),
+        });
+      }
       setRestaurantEvents((currentEvents) =>
         currentEvents.map((event) =>
           event.id === selectedBookingEvent.id ? { ...event, ...result.event } : event,
         ),
       );
-      toast.success(`Booking confirmed. Code: ${result.booking.bookingCode}`);
+      toast.success(
+        result.booking.paymentStatus === "PAID"
+          ? `Payment successful. Booking confirmed. Code: ${result.booking.bookingCode}`
+          : `Booking confirmed. Code: ${result.booking.bookingCode}`,
+      );
       setSelectedBookingEvent(null);
       setBookingQuantity("1");
       setEventPaymentMethods([]);
@@ -2151,10 +2191,10 @@ export const RestaurantDetailsPage = () => {
       : null;
     const selectedBookingPaymentMethod =
       eventPaymentMethods.find((paymentMethod) => paymentMethod.id === selectedEventPaymentMethodId) ?? null;
-    const selectedBookingTotalAmount =
+    const selectedBookingPaymentSummary =
       selectedBookingEvent && Number.isFinite(selectedBookingQuantityValue) && selectedBookingQuantityValue > 0
-        ? (selectedBookingEvent.slotPrice ?? 0) * selectedBookingQuantityValue
-        : 0;
+        ? getEventBookingPaymentSummary(selectedBookingEvent.slotPrice ?? 0, selectedBookingQuantityValue)
+        : getEventBookingPaymentSummary(0, 1);
 
     return (
       <>
@@ -2418,7 +2458,9 @@ export const RestaurantDetailsPage = () => {
                           <div className="space-y-1">
                             <p className="text-sm font-semibold text-ink">
                               {event.hasUserBooking
-                                ? `Booked ${event.userBooking?.quantity ?? 0} slot${event.userBooking?.quantity === 1 ? "" : "s"} for this event.`
+                                ? event.userBooking?.paymentStatus === "PENDING"
+                                  ? `Payment is pending for ${event.userBooking?.quantity ?? 0} reserved slot${event.userBooking?.quantity === 1 ? "" : "s"}.`
+                                  : `Booked ${event.userBooking?.quantity ?? 0} slot${event.userBooking?.quantity === 1 ? "" : "s"} for this event.`
                                 : event.availabilityStatus === "SOLD_OUT"
                                   ? "This event is sold out right now."
                                   : event.availabilityStatus === "BOOKING_CLOSED"
@@ -2429,7 +2471,15 @@ export const RestaurantDetailsPage = () => {
                             </p>
                             <p className="text-sm text-ink-soft">
                               {event.hasUserBooking
-                                ? `Booking code ${event.userBooking?.bookingCode ?? "--"}${event.userBooking?.paymentStatus === "PAID" ? ` • Paid ${formatCurrency(event.userBooking.totalAmount)}` : ""}`
+                                ? `Booking code ${event.userBooking?.bookingCode ?? "--"}${
+                                    event.userBooking?.paymentStatus === "PAID"
+                                      ? ` | Paid ${formatCurrency(event.userBooking.totalAmount)}`
+                                      : event.userBooking?.paymentStatus === "PENDING"
+                                        ? ` | Payment pending ${formatCurrency(event.userBooking.totalAmount)}`
+                                        : event.userBooking?.paymentStatus === "FREE"
+                                          ? " | Free booking"
+                                          : ""
+                                  }`
                                 : event.totalSlots != null
                                   ? `${event.bookedSlots} of ${event.totalSlots} slots booked`
                                   : "This event is running without a fixed seat cap."}
@@ -2560,14 +2610,54 @@ export const RestaurantDetailsPage = () => {
                   value={bookingQuantity}
                   onChange={(event) => setBookingQuantity(event.target.value)}
                 />
-                <div className="rounded-[1.5rem] bg-cream px-5 py-4">
-                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Amount to pay</p>
-                  <p className="mt-2 text-sm font-semibold text-ink">
-                    {selectedBookingEvent.slotPrice > 0
-                      ? formatCurrency(selectedBookingTotalAmount)
-                      : "Free event"}
-                  </p>
-                  <p className="mt-2 text-sm text-ink-soft">
+                <div className="space-y-3 rounded-[1.5rem] bg-cream px-5 py-4 text-sm text-ink-soft">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Payment summary</p>
+                    <p className="font-semibold text-ink">
+                      {selectedBookingEvent.slotPrice > 0
+                        ? formatCurrency(selectedBookingPaymentSummary.totalAmount)
+                        : "Free event"}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Slot price</span>
+                      <span>{formatCurrency(selectedBookingPaymentSummary.slotPrice)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Slots</span>
+                      <span>{selectedBookingPaymentSummary.quantity}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Subtotal</span>
+                      <span>{formatCurrency(selectedBookingPaymentSummary.subtotalAmount)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Taxes / GST</span>
+                      <span>{formatCurrency(selectedBookingPaymentSummary.taxAmount)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Platform fee</span>
+                      <span>{formatCurrency(selectedBookingPaymentSummary.platformFee)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Discount / offer</span>
+                      <span>
+                        {selectedBookingPaymentSummary.discountAmount > 0
+                          ? `-${formatCurrency(selectedBookingPaymentSummary.discountAmount)}`
+                          : formatCurrency(0)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 border-t border-accent/10 pt-2 font-semibold text-ink">
+                      <span>Total payable</span>
+                      <span>
+                        {selectedBookingEvent.slotPrice > 0
+                          ? formatCurrency(selectedBookingPaymentSummary.totalAmount)
+                          : "Free"}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-xs leading-6 text-ink-muted">
                     {selectedBookingEvent.maxTicketsPerUser != null
                       ? `Maximum ${selectedBookingEvent.maxTicketsPerUser} slot${selectedBookingEvent.maxTicketsPerUser === 1 ? "" : "s"} per user.`
                       : "Choose the number of slots you want to reserve."}
@@ -2606,13 +2696,19 @@ export const RestaurantDetailsPage = () => {
                         ))}
                       </Select>
                       {selectedBookingPaymentMethod ? (
-                        <p className="text-sm text-ink-soft">
-                          Paying with {selectedBookingPaymentMethod.type === "CARD" ? "card" : "UPI"} using{" "}
-                          {selectedBookingPaymentMethod.type === "CARD"
-                            ? `${selectedBookingPaymentMethod.label ?? "saved card"} ending ${selectedBookingPaymentMethod.maskedEnding ?? selectedBookingPaymentMethod.cardLast4 ?? "0000"}`
-                            : selectedBookingPaymentMethod.upiId ?? "saved UPI ID"}
-                          .
-                        </p>
+                        <div className="space-y-2 text-sm text-ink-soft">
+                          <p>
+                            Payment method:{" "}
+                            <span className="font-semibold text-ink">
+                              {selectedBookingPaymentMethod.type === "CARD"
+                                ? `${selectedBookingPaymentMethod.label ?? "saved card"} ending ${selectedBookingPaymentMethod.maskedEnding ?? selectedBookingPaymentMethod.cardLast4 ?? "0000"}`
+                                : selectedBookingPaymentMethod.upiId ?? "saved UPI ID"}
+                            </span>
+                          </p>
+                          <p className="text-xs leading-6 text-ink-muted">
+                            Refund policy: Full refund is available until the event starts. Refunds are processed to the original payment method.
+                          </p>
+                        </div>
                       ) : null}
                     </>
                   ) : (
@@ -2650,7 +2746,11 @@ export const RestaurantDetailsPage = () => {
                     (selectedBookingEvent.slotPrice > 0 && (!eventPaymentMethods.length || !selectedBookingPaymentMethod))
                   }
                 >
-                  {bookingEventId != null ? "Booking..." : "Confirm booking"}
+                  {bookingEventId != null
+                    ? "Booking..."
+                    : selectedBookingEvent.slotPrice > 0
+                      ? "Pay & confirm"
+                      : "Confirm booking"}
                 </Button>
               </div>
             </div>

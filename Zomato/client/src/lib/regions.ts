@@ -1,5 +1,5 @@
 export const normalizeRegionValue = (value?: string | null) => {
-  const trimmed = value?.trim();
+  const trimmed = value?.replace(/\s+/g, " ").trim();
   return trimmed ? trimmed : null;
 };
 

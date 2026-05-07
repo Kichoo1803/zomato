@@ -4,6 +4,8 @@ import {
   toSessionUser,
   type AdminAddon,
   type AdminCombo,
+  type AdminEvent,
+  type AdminEventTemplate,
   type AdminMenuItem,
   type AdminNotification,
   type AdminOrder,
@@ -318,13 +320,22 @@ export type OwnerEventInsight = {
     userId: number;
     eventId: number;
     restaurantId: number;
+    slotPrice?: number | null;
     quantity: number;
+    subtotalAmount?: number | null;
+    taxAmount?: number | null;
+    platformFee?: number | null;
+    discountAmount?: number | null;
     totalAmount: number;
     bookingCode: string;
     bookedAt: string;
     cancelledAt?: string | null;
-    paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING";
-    status: "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED";
+    paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING";
+    refundAmount?: number | null;
+    refundStatus?: "NOT_REQUESTED" | "PENDING" | "REFUNDED" | "FAILED" | null;
+    refundReason?: string | null;
+    bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
+    status: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
     canCancel: boolean;
     isUpcoming: boolean;
     isPastEvent: boolean;
@@ -338,6 +349,8 @@ export type OwnerEventInsight = {
     };
   }>;
 };
+
+export type OwnerEventTemplate = AdminEventTemplate;
 
 const unwrapData = <T>(response: AxiosResponse<ApiEnvelope<T>>) => response.data.data;
 
@@ -436,6 +449,31 @@ export const getOwnerOffers = async () =>
 
 export const getOwnerEventInsights = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ events: OwnerEventInsight[] }>>("/owner/events")).events;
+
+export const getOwnerEventTemplates = async () =>
+  unwrapData(
+    await apiClient.get<ApiEnvelope<{ templates: OwnerEventTemplate[] }>>("/owner/event-templates"),
+  ).templates;
+
+export const createOwnerEventFromTemplate = async (payload: {
+  restaurantId: number;
+  templateId?: number;
+  title?: string;
+  description?: string;
+  imageUrl?: string | null;
+  startsAt: string;
+  endsAt?: string;
+  bookingStartTime?: string | null;
+  bookingEndTime?: string | null;
+  discountLabel?: string | null;
+  totalSlots?: number | null;
+  slotPrice?: number | null;
+  maxTicketsPerUser?: number | null;
+  status?: "ACTIVE" | "INACTIVE";
+}) =>
+  unwrapData(
+    await apiClient.post<ApiEnvelope<{ event: AdminEvent }>>("/owner/events/from-template", payload),
+  ).event;
 
 export const markOwnerEventBookingAttended = async (bookingId: number) =>
   unwrapData(

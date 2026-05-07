@@ -395,6 +395,30 @@ model Event {
   @@map("events")
 }
 
+model EventTemplate {
+  mongoId                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  id                          Int      @unique @default(0)
+  title                       String
+  description                 String
+  imageUrl                    String?  @map("image_url")
+  suggestedDurationMinutes    Int?     @map("suggested_duration_minutes")
+  suggestedBookingWindowHours Int?     @map("suggested_booking_window_hours")
+  suggestedSlotPrice          Float?   @map("suggested_slot_price")
+  suggestedMaxSlots           Int?     @map("suggested_max_slots")
+  suggestedMaxTicketsPerUser  Int?     @map("suggested_max_tickets_per_user")
+  suggestedOfferLabel         String?  @map("suggested_offer_label")
+  setupChecklist              String[] @default([]) @map("setup_checklist")
+  requiredItems               String[] @default([]) @map("required_items")
+  status                      String   @default("ACTIVE")
+  createdByAdminId            Int      @map("created_by_admin_id")
+  createdAt                   DateTime @default(now()) @map("created_at")
+  updatedAt                   DateTime @updatedAt @map("updated_at")
+
+  @@index([status, updatedAt])
+  @@index([createdByAdminId])
+  @@map("event_templates")
+}
+
 model EventAttendance {
   mongoId      String     @id @default(auto()) @map("_id") @db.ObjectId
   id           Int        @unique @default(0)
@@ -422,7 +446,12 @@ model EventBooking {
   eventId         Int        @map("event_id")
   restaurantId    Int        @map("restaurant_id")
   userId          Int        @map("user_id")
+  slotPrice       Float?     @map("slot_price")
   quantity        Int
+  subtotalAmount  Float?     @map("subtotal_amount")
+  taxAmount       Float?     @map("tax_amount")
+  platformFee     Float?     @map("platform_fee")
+  discountAmount  Float?     @map("discount_amount")
   totalAmount     Float      @default(0) @map("total_amount")
   bookingCode     String     @unique @map("booking_code")
   status          String     @default("CONFIRMED")
@@ -431,6 +460,10 @@ model EventBooking {
   paymentStatus   String     @default("FREE") @map("payment_status")
   paymentMethod   String?    @map("payment_method")
   paymentMethodId Int?       @map("payment_method_id")
+  refundAmount    Float?     @map("refund_amount")
+  refundStatus    String?    @map("refund_status")
+  refundReason    String?    @map("refund_reason")
+  cancellationAllowedUntil DateTime? @map("cancellation_allowed_until")
   createdAt       DateTime   @default(now()) @map("created_at")
   updatedAt       DateTime   @updatedAt @map("updated_at")
   event           Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
@@ -817,7 +850,7 @@ model Region {
   events           Event[]
   users            User[]                 @relation("RegionUsers")
 
-  @@index([stateName, districtName])
+  @@unique([stateName, districtName])
   @@index([isActive])
   @@index([managerUserId])
   @@map("regions")

@@ -159,12 +159,46 @@ const getEventBookingTone = (status?: string | null) => {
   switch (status) {
     case "ATTENDED":
       return "success" as const;
+    case "PENDING":
+      return "info" as const;
+    case "FAILED":
+      return "warning" as const;
     case "REFUNDED":
     case "CANCELLED":
       return "warning" as const;
     case "CONFIRMED":
     default:
       return "info" as const;
+  }
+};
+
+const getEventPaymentTone = (status?: string | null) => {
+  switch (status) {
+    case "PAID":
+    case "REFUNDED":
+      return "success" as const;
+    case "FAILED":
+      return "warning" as const;
+    case "PENDING":
+    case "REFUND_PENDING":
+      return "info" as const;
+    case "FREE":
+    default:
+      return "neutral" as const;
+  }
+};
+
+const getEventRefundTone = (status?: string | null) => {
+  switch (status) {
+    case "REFUNDED":
+      return "success" as const;
+    case "PENDING":
+      return "info" as const;
+    case "FAILED":
+      return "warning" as const;
+    case "NOT_REQUESTED":
+    default:
+      return "neutral" as const;
   }
 };
 
@@ -1661,6 +1695,7 @@ export const MyEventsPage = () => {
   const [events, setEvents] = useState<CustomerMyEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [cancelingBookingId, setCancelingBookingId] = useState<number | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<CustomerMyEvent | null>(null);
 
   const loadEvents = async ({ quietly = false }: { quietly?: boolean } = {}) => {
     if (!quietly) {
@@ -1686,15 +1721,28 @@ export const MyEventsPage = () => {
   const upcomingEvents = events.filter((event) => event.isUpcoming);
   const pastEvents = events.filter((event) => !event.isUpcoming);
 
-  const handleCancelEvent = async (eventItem: CustomerMyEvent) => {
-    setCancelingBookingId(eventItem.id);
+  const handleCancelEvent = async () => {
+    if (!cancelTarget) {
+      return;
+    }
+
+    setCancelingBookingId(cancelTarget.id);
 
     try {
-      await cancelCustomerEventBooking(eventItem.id);
+      const result = await cancelCustomerEventBooking(cancelTarget.id);
       setEvents((currentEvents) =>
-        currentEvents.filter((currentEvent) => currentEvent.id !== eventItem.id),
+        currentEvents.map((currentEvent) =>
+          currentEvent.id === result.booking.id ? result.booking : currentEvent,
+        ),
       );
-      toast.success("Event booking cancelled successfully.");
+      toast.success(
+        result.booking.paymentStatus === "REFUNDED"
+          ? `Booking cancelled. Refund ${formatCurrency(result.booking.refundAmount ?? result.booking.totalAmount)} has been marked to the original payment method.`
+          : result.booking.paymentStatus === "FREE"
+            ? "Free booking cancelled."
+            : "Event booking cancelled successfully.",
+      );
+      setCancelTarget(null);
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to cancel this event booking right now."));
     } finally {
@@ -1702,148 +1750,272 @@ export const MyEventsPage = () => {
     }
   };
 
-  const renderEventCard = (eventItem: CustomerMyEvent, mode: "upcoming" | "past") => (
-    <SurfaceCard
-      key={eventItem.id}
-      className={cn(
-        "space-y-5",
-        mode === "upcoming" && "border border-accent/10 bg-accent/[0.03]",
-      )}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-2">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent/10 text-accent">
-              <CalendarDays className="h-5 w-5" />
+  const renderEventCard = (eventItem: CustomerMyEvent, mode: "upcoming" | "past") => {
+    const cancellationClosed =
+      !eventItem.canCancel &&
+      (eventItem.status === "CONFIRMED" || eventItem.status === "PENDING") &&
+      new Date(eventItem.event.startsAt).getTime() <= Date.now();
+
+    return (
+      <SurfaceCard
+        key={eventItem.id}
+        className={cn(
+          "space-y-5",
+          mode === "upcoming" && "border border-accent/10 bg-accent/[0.03]",
+        )}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-2">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent/10 text-accent">
+                <CalendarDays className="h-5 w-5" />
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">{eventItem.restaurant.name}</p>
+                <h2 className="font-display text-3xl font-semibold text-ink">{eventItem.event.title}</h2>
+              </div>
             </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">{eventItem.restaurant.name}</p>
-              <h2 className="font-display text-3xl font-semibold text-ink">{eventItem.event.title}</h2>
-            </div>
+            <p className="text-sm leading-7 text-ink-soft">{eventItem.event.description}</p>
           </div>
-          <p className="text-sm leading-7 text-ink-soft">{eventItem.event.description}</p>
+          <div className="flex flex-wrap gap-2">
+            <StatusPill
+              label={formatEventBookingStatus(eventItem.status)}
+              tone={getEventBookingTone(eventItem.status)}
+            />
+            <StatusPill
+              label={formatEventBookingStatus(eventItem.paymentStatus)}
+              tone={getEventPaymentTone(eventItem.paymentStatus)}
+            />
+            <StatusPill
+              label={formatEventBookingStatus(eventItem.refundStatus ?? "NOT_REQUESTED")}
+              tone={getEventRefundTone(eventItem.refundStatus)}
+            />
+          </div>
         </div>
-        <StatusPill
-          label={formatEventBookingStatus(eventItem.status)}
-          tone={getEventBookingTone(eventItem.status)}
-        />
-      </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-        <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Start</p>
-          <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.event.startsAt)}</p>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Start</p>
+            <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.event.startsAt)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">End</p>
+            <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.event.endsAt)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Slots booked</p>
+            <p className="mt-2 text-sm text-ink-soft">{eventItem.quantity}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Booking code</p>
+            <p className="mt-2 text-sm text-ink-soft">{eventItem.bookingCode}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Amount paid</p>
+            <p className="mt-2 text-sm text-ink-soft">
+              {eventItem.paymentStatus === "FREE" ? "Free event booking" : formatCurrency(eventItem.totalAmount)}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Tax amount</p>
+            <p className="mt-2 text-sm text-ink-soft">{formatCurrency(eventItem.taxAmount ?? 0)}</p>
+          </div>
         </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">End</p>
-          <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.event.endsAt)}</p>
-        </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Booked</p>
-          <p className="mt-2 text-sm text-ink-soft">{formatEventDateTime(eventItem.bookedAt)}</p>
-        </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Offer</p>
-          <p className="mt-2 text-sm text-ink-soft">
-            {eventItem.event.discountLabel ?? "No offer attached"}
-          </p>
-        </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Slots booked</p>
-          <p className="mt-2 text-sm text-ink-soft">{eventItem.quantity}</p>
-        </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Booking code</p>
-          <p className="mt-2 text-sm text-ink-soft">{eventItem.bookingCode}</p>
-        </div>
-      </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-accent/10 pt-4">
-        <div className="space-y-1">
-          <p className="text-sm font-semibold text-ink">{eventItem.restaurant.name}</p>
-          <p className="text-sm text-ink-soft">
-            {eventItem.paymentStatus === "PAID"
-              ? `Paid ${formatCurrency(eventItem.totalAmount)}`
-              : "Free event booking"}
-          </p>
+        <div className="grid gap-4 rounded-[1.5rem] bg-cream px-5 py-4 text-sm text-ink-soft md:grid-cols-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Subtotal</p>
+            <p className="mt-2">{formatCurrency(eventItem.subtotalAmount ?? eventItem.totalAmount)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Platform fee</p>
+            <p className="mt-2">{formatCurrency(eventItem.platformFee ?? 0)}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund amount</p>
+            <p className="mt-2">
+              {eventItem.refundAmount && eventItem.refundAmount > 0
+                ? formatCurrency(eventItem.refundAmount)
+                : "No refund"}
+            </p>
+          </div>
         </div>
-        <div className="flex flex-wrap gap-3">
-          <Link
-            to={`/restaurants/${eventItem.restaurant.slug}`}
-            className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
-          >
-            Open restaurant
-          </Link>
-          {mode === "upcoming" && eventItem.canCancel ? (
-            <Button
-              type="button"
-              variant="secondary"
-              className="px-4 py-2 text-xs"
-              onClick={() => void handleCancelEvent(eventItem)}
-              disabled={cancelingBookingId === eventItem.id}
+
+        {cancellationClosed ? (
+          <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
+            Cancellation closed because the event has started.
+          </div>
+        ) : null}
+
+        {eventItem.refundStatus && eventItem.refundStatus !== "NOT_REQUESTED" ? (
+          <div className="rounded-[1.25rem] border border-accent/10 bg-white px-4 py-4 text-sm text-ink-soft">
+            <p className="font-semibold text-ink">
+              Refund {formatEventBookingStatus(eventItem.refundStatus)}
+              {eventItem.refundAmount ? ` • ${formatCurrency(eventItem.refundAmount)}` : ""}
+            </p>
+            <p className="mt-2">
+              {eventItem.refundReason ?? "Your refund will be processed to the original payment method."}
+            </p>
+          </div>
+        ) : null}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-accent/10 pt-4">
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-ink">{eventItem.restaurant.name}</p>
+            <p className="text-sm text-ink-soft">
+              {eventItem.paymentMethod ? `Payment method: ${eventItem.paymentMethod}` : "No payment method needed"}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Link
+              to={`/restaurants/${eventItem.restaurant.slug}`}
+              className="inline-flex items-center justify-center rounded-full border border-accent/15 bg-white px-4 py-2 text-xs font-semibold text-ink shadow-soft"
             >
-              {cancelingBookingId === eventItem.id ? "Cancelling..." : "Cancel booking"}
-            </Button>
-          ) : null}
+              Open restaurant
+            </Link>
+            {eventItem.canCancel ? (
+              <Button
+                type="button"
+                variant="secondary"
+                className="px-4 py-2 text-xs"
+                onClick={() => setCancelTarget(eventItem)}
+                disabled={cancelingBookingId === eventItem.id}
+              >
+                {cancelingBookingId === eventItem.id ? "Cancelling..." : "Cancel booking"}
+              </Button>
+            ) : null}
+            {cancellationClosed ? (
+              <span className="inline-flex items-center justify-center rounded-full border border-accent/10 bg-white px-4 py-2 text-xs font-semibold text-ink-soft shadow-soft">
+                Cancellation closed.
+              </span>
+            ) : null}
+          </div>
         </div>
-      </div>
-    </SurfaceCard>
-  );
+      </SurfaceCard>
+    );
+  };
 
   return (
-    <PageShell
-      eyebrow="My events"
-      title="Your restaurant event bookings, all in one place."
-      description="Upcoming reservations, booking codes, and completed event experiences stay grouped beside the rest of your customer account surfaces."
-      actions={
-        <div className="flex flex-wrap gap-3">
-          <Link to="/restaurants" className={linkButtonClassName}>
-            Browse restaurants
-          </Link>
-          <Button type="button" variant="secondary" onClick={() => void loadEvents()} disabled={isLoading}>
-            Refresh
-          </Button>
-        </div>
-      }
-    >
-      {isLoading ? (
-        <SurfaceCard>
-          <p className="text-sm leading-7 text-ink-soft">Loading your event bookings.</p>
-        </SurfaceCard>
-      ) : (
-        <div className="space-y-8">
-          <div className="space-y-4">
-            <SectionHeading
-              title="Upcoming booked events"
-              description="Reserved slots for live music nights, buffets, chef specials, and other upcoming dining moments."
-            />
-            {upcomingEvents.length ? (
-              <div className="grid gap-5">{upcomingEvents.map((eventItem) => renderEventCard(eventItem, "upcoming"))}</div>
-            ) : (
-              <EmptyState
-                title="No upcoming event bookings"
-                description="Book an event from any restaurant page to see your upcoming reservations here."
-              />
-            )}
+    <>
+      <PageShell
+        eyebrow="My events"
+        title="Your restaurant event bookings, all in one place."
+        description="Upcoming reservations, booking codes, refund details, and completed event experiences stay grouped beside the rest of your customer account surfaces."
+        actions={
+          <div className="flex flex-wrap gap-3">
+            <Link to="/restaurants" className={linkButtonClassName}>
+              Browse restaurants
+            </Link>
+            <Button type="button" variant="secondary" onClick={() => void loadEvents()} disabled={isLoading}>
+              Refresh
+            </Button>
           </div>
+        }
+      >
+        {isLoading ? (
+          <SurfaceCard>
+            <p className="text-sm leading-7 text-ink-soft">Loading your event bookings.</p>
+          </SurfaceCard>
+        ) : (
+          <div className="space-y-8">
+            <div className="space-y-4">
+              <SectionHeading
+                title="Upcoming booked events"
+                description="Reserved slots for live music nights, buffets, chef specials, and other upcoming dining moments."
+              />
+              {upcomingEvents.length ? (
+                <div className="grid gap-5">{upcomingEvents.map((eventItem) => renderEventCard(eventItem, "upcoming"))}</div>
+              ) : (
+                <EmptyState
+                  title="No upcoming event bookings"
+                  description="Book an event from any restaurant page to see your upcoming reservations here."
+                />
+              )}
+            </div>
 
-          <div className="space-y-4">
-            <SectionHeading
-              title="Past event activity"
-              description="Completed or previously booked event activity stays visible here after each event ends."
-            />
-            {pastEvents.length ? (
-              <div className="grid gap-5">{pastEvents.map((eventItem) => renderEventCard(eventItem, "past"))}</div>
-            ) : (
-              <EmptyState
-                title="No past event activity yet"
-                description="Past event experiences will appear here automatically after your booked events conclude."
+            <div className="space-y-4">
+              <SectionHeading
+                title="Past event activity"
+                description="Completed, cancelled, refunded, or previously booked event activity stays visible here after each event ends."
               />
-            )}
+              {pastEvents.length ? (
+                <div className="grid gap-5">{pastEvents.map((eventItem) => renderEventCard(eventItem, "past"))}</div>
+              ) : (
+                <EmptyState
+                  title="No past event activity yet"
+                  description="Past event experiences will appear here automatically after your booked events conclude."
+                />
+              )}
+            </div>
           </div>
-        </div>
-      )}
-    </PageShell>
+        )}
+      </PageShell>
+
+      <Modal
+        open={Boolean(cancelTarget)}
+        onClose={() => {
+          if (cancelingBookingId == null) {
+            setCancelTarget(null);
+          }
+        }}
+        title={cancelTarget ? `Cancel ${cancelTarget.event.title}` : "Cancel booking"}
+        className="max-w-2xl"
+      >
+        {cancelTarget ? (
+          <div className="space-y-5">
+            <div className="grid gap-4 rounded-[1.5rem] bg-cream px-5 py-5 text-sm text-ink-soft md:grid-cols-2">
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Event</p>
+                <p className="mt-2 font-semibold text-ink">{cancelTarget.event.title}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Slots booked</p>
+                <p className="mt-2 font-semibold text-ink">{cancelTarget.quantity}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Amount paid</p>
+                <p className="mt-2 font-semibold text-ink">
+                  {cancelTarget.paymentStatus === "FREE" ? "Free booking" : formatCurrency(cancelTarget.totalAmount)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund amount</p>
+                <p className="mt-2 font-semibold text-ink">
+                  {cancelTarget.paymentStatus === "FREE"
+                    ? "No refund needed"
+                    : formatCurrency(cancelTarget.refundAmount ?? cancelTarget.totalAmount)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Refund method</p>
+                <p className="mt-2 font-semibold text-ink">
+                  {cancelTarget.paymentMethod ? cancelTarget.paymentMethod : "No refund required"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Cancellation allowed until</p>
+                <p className="mt-2 font-semibold text-ink">
+                  {formatEventDateTime(cancelTarget.cancellationAllowedUntil ?? cancelTarget.event.startsAt)}
+                </p>
+              </div>
+            </div>
+            <p className="text-sm leading-7 text-ink-soft">
+              {cancelTarget.paymentStatus === "FREE"
+                ? "Free booking cancelled."
+                : "Your refund will be processed to the original payment method."}
+            </p>
+            <div className="flex justify-end gap-3">
+              <Button type="button" variant="secondary" onClick={() => setCancelTarget(null)} disabled={cancelingBookingId != null}>
+                Keep booking
+              </Button>
+              <Button type="button" onClick={() => void handleCancelEvent()} disabled={cancelingBookingId != null}>
+                {cancelingBookingId != null ? "Cancelling..." : "Confirm cancellation"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+    </>
   );
 };
 

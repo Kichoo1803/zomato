@@ -65,10 +65,12 @@ export type EventAttendanceStatus =
   (typeof EventAttendanceStatus)[keyof typeof EventAttendanceStatus];
 
 export const EventBookingStatus = {
+  PENDING: "PENDING",
   CONFIRMED: "CONFIRMED",
   CANCELLED: "CANCELLED",
   REFUNDED: "REFUNDED",
   ATTENDED: "ATTENDED",
+  FAILED: "FAILED",
 } as const;
 export type EventBookingStatus =
   (typeof EventBookingStatus)[keyof typeof EventBookingStatus];
@@ -97,9 +99,18 @@ export const PaymentStatus = {
   PENDING: "PENDING",
   PAID: "PAID",
   FAILED: "FAILED",
+  REFUND_PENDING: "REFUND_PENDING",
   REFUNDED: "REFUNDED",
 } as const;
 export type PaymentStatus = (typeof PaymentStatus)[keyof typeof PaymentStatus];
+
+export const RefundStatus = {
+  NOT_REQUESTED: "NOT_REQUESTED",
+  PENDING: "PENDING",
+  REFUNDED: "REFUNDED",
+  FAILED: "FAILED",
+} as const;
+export type RefundStatus = (typeof RefundStatus)[keyof typeof RefundStatus];
 
 export const PaymentMethod = {
   COD: "COD",

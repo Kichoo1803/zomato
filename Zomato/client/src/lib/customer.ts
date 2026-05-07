@@ -410,15 +410,26 @@ export type CustomerEventBookingSummary = {
   id: number;
   eventId: number;
   restaurantId: number;
+  slotPrice?: number | null;
   quantity: number;
+  subtotalAmount?: number | null;
+  taxAmount?: number | null;
+  platformFee?: number | null;
+  discountAmount?: number | null;
   totalAmount: number;
   bookingCode: string;
-  status: "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED";
+  bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
+  status: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
   bookedAt: string;
   cancelledAt?: string | null;
-  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING";
+  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING";
   paymentMethod?: "CARD" | "UPI" | null;
   paymentMethodId?: number | null;
+  refundAmount?: number | null;
+  refundStatus?: "NOT_REQUESTED" | "PENDING" | "REFUNDED" | "FAILED" | null;
+  refundReason?: string | null;
+  cancellationAllowedUntil?: string | null;
+  refundPolicyNote?: string | null;
 };
 
 export type CustomerRestaurantEvent = {
@@ -477,15 +488,26 @@ export type CustomerMyEvent = {
   userId: number;
   eventId: number;
   restaurantId: number;
+  slotPrice?: number | null;
   quantity: number;
+  subtotalAmount?: number | null;
+  taxAmount?: number | null;
+  platformFee?: number | null;
+  discountAmount?: number | null;
   totalAmount: number;
   bookingCode: string;
-  status: "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED";
+  bookingStatus?: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
+  status: "PENDING" | "CONFIRMED" | "CANCELLED" | "REFUNDED" | "ATTENDED" | "FAILED";
   bookedAt: string;
   cancelledAt?: string | null;
-  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING";
+  paymentStatus: "FREE" | "PAID" | "REFUNDED" | "PENDING" | "FAILED" | "REFUND_PENDING";
   paymentMethod?: "CARD" | "UPI" | null;
   paymentMethodId?: number | null;
+  refundAmount?: number | null;
+  refundStatus?: "NOT_REQUESTED" | "PENDING" | "REFUNDED" | "FAILED" | null;
+  refundReason?: string | null;
+  cancellationAllowedUntil?: string | null;
+  refundPolicyNote?: string | null;
   canCancel: boolean;
   isUpcoming: boolean;
   isPastEvent: boolean;
@@ -802,14 +824,33 @@ export const bookCustomerEvent = async (eventId: number, payload: {
   quantity: number;
   paymentMethod?: "CARD" | "UPI";
   paymentMethodId?: number;
+  savedPaymentMethodId?: number;
 }) =>
   unwrapData(
     await apiClient.post<
       ApiEnvelope<{
         booking: CustomerMyEvent;
         event: CustomerRestaurantEvent;
+        requiresPayment?: boolean;
       }>
     >(`/events/${eventId}/book`, payload),
+  );
+
+export const payCustomerEventBooking = async (
+  bookingId: number,
+  payload?: {
+    paymentMethod?: "CARD" | "UPI";
+    paymentMethodId?: number;
+    savedPaymentMethodId?: number;
+  },
+) =>
+  unwrapData(
+    await apiClient.post<
+      ApiEnvelope<{
+        booking: CustomerMyEvent;
+        event: CustomerRestaurantEvent;
+      }>
+    >(`/event-bookings/${bookingId}/pay`, payload ?? {}),
   );
 
 export const joinCustomerEvent = async (eventId: number, restaurantId: number) =>
@@ -826,7 +867,7 @@ export const joinCustomerEvent = async (eventId: number, restaurantId: number) =
 
 export const cancelCustomerEventBooking = async (bookingId: number) =>
   unwrapData(
-    await apiClient.delete<
+    await apiClient.post<
       ApiEnvelope<{
         booking: CustomerMyEvent;
         event: CustomerRestaurantEvent;
