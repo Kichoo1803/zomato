@@ -6,6 +6,7 @@ import {
   PaymentStatus,
 } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
+import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 import { notificationsService } from "../notifications/notifications.service.js";
@@ -13,6 +14,10 @@ import { notificationsService } from "../notifications/notifications.service.js"
 const ACTIVE_BOOKING_STATUSES = [
   EventBookingStatus.CONFIRMED,
   EventBookingStatus.ATTENDED,
+] as const;
+const REBOOKABLE_BOOKING_STATUSES = [
+  EventBookingStatus.CANCELLED,
+  EventBookingStatus.REFUNDED,
 ] as const;
 const OPEN_BOOKING_STATUSES = [EventBookingStatus.CONFIRMED] as const;
 const EVENT_PAYMENT_METHODS = [PaymentMethod.CARD, PaymentMethod.UPI] as const;
@@ -97,6 +102,7 @@ const bookingSelect = {
 type EventRecord = Prisma.EventGetPayload<{ select: typeof eventSelect }>;
 type EventBookingRecord = Prisma.EventBookingGetPayload<{ select: typeof bookingSelect }>;
 type RestaurantContext = NonNullable<EventRecord["restaurant"]>;
+type SavedPaymentMethodLookupClient = Pick<Prisma.TransactionClient, "savedPaymentMethod">;
 
 type CurrentUserBookingSummary = {
   id: number;
@@ -111,6 +117,69 @@ type CurrentUserBookingSummary = {
   paymentStatus: string;
   paymentMethod: string | null;
   paymentMethodId: number | null;
+};
+
+const isNamedError = (error: unknown, name: string): error is Error =>
+  error instanceof Error && error.name === name;
+
+const isPrismaKnownRequestError = (
+  error: unknown,
+  code?: string,
+): error is Error & { code: string; meta?: unknown } =>
+  isNamedError(error, "PrismaClientKnownRequestError") &&
+  typeof (error as { code?: unknown }).code === "string" &&
+  (code ? Reflect.get(error, "code") === code : true);
+
+const getDatabaseErrorMessage = (error: unknown) => {
+  if (!isPrismaKnownRequestError(error)) {
+    return error instanceof Error ? error.message : "";
+  }
+
+  if (!error.meta || typeof error.meta !== "object") {
+    return error.message;
+  }
+
+  const metaMessage = Reflect.get(error.meta, "message");
+  return typeof metaMessage === "string" && metaMessage.trim() ? metaMessage : error.message;
+};
+
+const bookingDatabaseBusyFragments = [
+  "transaction api error",
+  "expired transaction",
+  "unable to start a transaction",
+  "transaction not found",
+  "could not keep this write request open long enough",
+];
+
+const includesAnyFragment = (value: string, fragments: string[]) =>
+  fragments.some((fragment) => value.includes(fragment));
+
+const isTransientBookingDatabaseError = (error: unknown) => {
+  const message = getDatabaseErrorMessage(error).toLowerCase();
+
+  return (
+    isPrismaKnownRequestError(error, "P2028") &&
+    includesAnyFragment(message, bookingDatabaseBusyFragments)
+  );
+};
+
+const serializeDatabaseError = (error: unknown) => {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      ...(isPrismaKnownRequestError(error)
+        ? {
+            code: error.code,
+            meta: error.meta,
+          }
+        : {}),
+    };
+  }
+
+  return {
+    value: error,
+  };
 };
 
 const getEffectiveEventStatus = (event: Pick<EventRecord, "status" | "endsAt">) => {
@@ -408,57 +477,48 @@ const assertEventMatchesRestaurant = async (event: EventRecord, restaurantId: nu
   return restaurant;
 };
 
-const validateBookableEvent = (
+const validateEventBookingWindow = (
+  event: EventRecord,
+  bookedSlotsOverride?: number,
+) => {
+  const availability = getEventAvailability(event, bookedSlotsOverride ?? event.bookedSlots);
+
+  if (availability.effectiveStatus !== EventStatus.ACTIVE) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Booking closed.", "EVENT_NOT_ACTIVE");
+  }
+
+  if (availability.isEventEnded) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Booking closed.", "EVENT_ENDED");
+  }
+
+  if (Date.now() < availability.bookingStartTime.getTime()) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Booking closed.", "EVENT_BOOKING_NOT_OPEN");
+  }
+
+  if (Date.now() > availability.bookingEndTime.getTime()) {
+    throw new AppError(StatusCodes.BAD_REQUEST, "Booking closed.", "EVENT_BOOKING_CLOSED");
+  }
+
+  return availability;
+};
+
+const validateEventSlotAvailability = (
   event: EventRecord,
   quantity: number,
   bookedSlotsOverride?: number,
 ) => {
   const availability = getEventAvailability(event, bookedSlotsOverride ?? event.bookedSlots);
 
-  if (availability.effectiveStatus !== EventStatus.ACTIVE) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "Only active events can be booked right now.",
-      "EVENT_NOT_ACTIVE",
-    );
-  }
-
-  if (availability.isEventEnded) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "This event has already ended.",
-      "EVENT_ENDED",
-    );
-  }
-
-  if (Date.now() < availability.bookingStartTime.getTime()) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "Booking has not opened for this event yet.",
-      "EVENT_BOOKING_NOT_OPEN",
-    );
-  }
-
-  if (Date.now() > availability.bookingEndTime.getTime()) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "Booking is closed for this event.",
-      "EVENT_BOOKING_CLOSED",
-    );
-  }
-
   if (availability.isSoldOut) {
-    throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "This event is sold out right now.",
-      "EVENT_SOLD_OUT",
-    );
+    throw new AppError(StatusCodes.CONFLICT, "Event sold out.", "EVENT_SOLD_OUT");
   }
 
   if (availability.remainingSlots != null && quantity > availability.remainingSlots) {
     throw new AppError(
-      StatusCodes.BAD_REQUEST,
-      "Requested tickets exceed the remaining event slots.",
+      StatusCodes.CONFLICT,
+      availability.remainingSlots <= 0
+        ? "Event sold out."
+        : `Only ${availability.remainingSlots} slot${availability.remainingSlots === 1 ? "" : "s"} left for this event.`,
       "EVENT_SLOT_LIMIT_EXCEEDED",
     );
   }
@@ -479,8 +539,95 @@ const buildBookingCode = (bookingId: number, bookedAt: Date) =>
 
 const roundCurrency = (value: number) => Number(value.toFixed(2));
 
+const reserveSequentialId = async (model: string) => {
+  const counter = await prisma.idCounter.upsert({
+    where: { id: model },
+    create: {
+      id: model,
+      value: 1,
+    },
+    update: {
+      value: {
+        increment: 1,
+      },
+    },
+  });
+
+  return counter.value;
+};
+
+const buildEventBookingLogContext = (
+  input: {
+    eventId: number;
+    userId: number;
+    requestedQuantity: number;
+    totalSlots?: number | null;
+    bookedSlots?: number | null;
+    remainingSlots?: number | null;
+  },
+  error?: unknown,
+) => ({
+  eventId: input.eventId,
+  userId: input.userId,
+  requestedQuantity: input.requestedQuantity,
+  totalSlots: input.totalSlots ?? null,
+  bookedSlots: input.bookedSlots ?? null,
+  remainingSlots: input.remainingSlots ?? null,
+  ...(error ? { databaseError: serializeDatabaseError(error) } : {}),
+});
+
+const rollbackBookedSlotsIncrement = async (eventId: number, quantity: number, userId: number) => {
+  try {
+    await prisma.event.updateMany({
+      where: {
+        id: eventId,
+        bookedSlots: {
+          gte: quantity,
+        },
+      },
+      data: {
+        bookedSlots: {
+          decrement: quantity,
+        },
+      },
+    });
+  } catch (rollbackError) {
+    logger.error(
+      "Event booking rollback failed",
+      buildEventBookingLogContext(
+        {
+          eventId,
+          userId,
+          requestedQuantity: quantity,
+        },
+        rollbackError,
+      ),
+    );
+  }
+};
+
+const mapEventBookingWriteError = (error: unknown) => {
+  if (error instanceof AppError) {
+    return error;
+  }
+
+  if (isPrismaKnownRequestError(error, "P2002")) {
+    return new AppError(StatusCodes.CONFLICT, "Already booked.", "EVENT_ALREADY_BOOKED");
+  }
+
+  if (isTransientBookingDatabaseError(error)) {
+    return new AppError(
+      StatusCodes.SERVICE_UNAVAILABLE,
+      "Database busy, please try again.",
+      "EVENT_BOOKING_DATABASE_BUSY",
+    );
+  }
+
+  return error;
+};
+
 const validateSavedPaymentMethod = async (
-  tx: Prisma.TransactionClient,
+  client: SavedPaymentMethodLookupClient,
   input: {
     userId: number;
     slotPrice: number;
@@ -518,7 +665,7 @@ const validateSavedPaymentMethod = async (
     );
   }
 
-  const paymentMethod = await tx.savedPaymentMethod.findFirst({
+  const paymentMethod = await client.savedPaymentMethod.findFirst({
     where: {
       id: selectedSavedPaymentMethodId,
       userId: input.userId,
@@ -884,6 +1031,8 @@ export const eventsService = {
     }>,
   ) {
     const existingEvent = await getEventById(eventId);
+    const { bookedSlotsByEventId: currentBookedSlotsByEventId } = await getEventBookingMetrics([eventId]);
+    const actualBookedSlots = currentBookedSlotsByEventId.get(eventId) ?? existingEvent.bookedSlots;
     const nextRestaurantId =
       input.restaurantId !== undefined ? input.restaurantId : existingEvent.restaurantId;
     const nextRegionId = input.regionId !== undefined ? input.regionId : existingEvent.regionId;
@@ -954,7 +1103,7 @@ export const eventsService = {
       );
     }
 
-    if (nextTotalSlots != null && nextTotalSlots < existingEvent.bookedSlots) {
+    if (nextTotalSlots != null && nextTotalSlots < actualBookedSlots) {
       throw new AppError(
         StatusCodes.BAD_REQUEST,
         "Total slots cannot be set below the slots that are already booked.",
@@ -965,6 +1114,7 @@ export const eventsService = {
     const event = await prisma.event.update({
       where: { id: eventId },
       data: {
+        ...(existingEvent.bookedSlots !== actualBookedSlots ? { bookedSlots: actualBookedSlots } : {}),
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.description !== undefined ? { description: input.description } : {}),
         ...(input.restaurantId !== undefined ? { restaurantId: input.restaurantId } : {}),
@@ -1022,139 +1172,201 @@ export const eventsService = {
   ) {
     const event = await getEventById(eventId);
     const restaurant = await assertEventMatchesRestaurant(event, input.restaurantId);
-    validateBookableEvent(event, input.quantity, event.bookedSlots);
+    const initialAvailability = getEventAvailability(event, event.bookedSlots);
 
-    const result = await prisma.$transaction(async (tx) => {
-      const latestEvent = await tx.event.findUnique({
-        where: { id: eventId },
-        select: eventSelect,
-      });
-
-      if (!latestEvent) {
-        throw new AppError(StatusCodes.NOT_FOUND, "Event not found", "EVENT_NOT_FOUND");
-      }
-
-      validateBookableEvent(latestEvent, input.quantity, latestEvent.bookedSlots);
-
-      const existingBooking = await tx.eventBooking.findFirst({
-        where: {
-          eventId,
-          userId,
-        },
-        select: {
-          id: true,
-          status: true,
-        },
-      });
-
-      if (
-        existingBooking &&
-        existingBooking.status !== EventBookingStatus.CANCELLED &&
-        existingBooking.status !== EventBookingStatus.REFUNDED
-      ) {
-        throw new AppError(
-          StatusCodes.CONFLICT,
-          "You have already booked this event.",
-          "EVENT_ALREADY_BOOKED",
-        );
-      }
-
-      const paymentDetails = await validateSavedPaymentMethod(tx, {
+    logger.info(
+      "Event booking requested",
+      buildEventBookingLogContext({
+        eventId,
         userId,
-        slotPrice: latestEvent.slotPrice ?? 0,
-        paymentMethod: input.paymentMethod,
-        paymentMethodId: input.paymentMethodId,
-        savedPaymentMethodId: input.savedPaymentMethodId,
-      });
+        requestedQuantity: input.quantity,
+        totalSlots: initialAvailability.totalSlots,
+        bookedSlots: initialAvailability.bookedSlots,
+        remainingSlots: initialAvailability.remainingSlots,
+      }),
+    );
 
-      const nextBookedSlots = latestEvent.bookedSlots + input.quantity;
+    let slotsReserved = false;
+    const result = await (async () => {
+      try {
+        validateEventBookingWindow(event, event.bookedSlots);
 
-      if (latestEvent.totalSlots != null) {
-        const updatedEventCounter = await tx.event.updateMany({
+        const existingBooking = await prisma.eventBooking.findUnique({
           where: {
-            id: eventId,
-            bookedSlots: {
-              lte: latestEvent.totalSlots - input.quantity,
+            userId_eventId: {
+              userId,
+              eventId,
             },
           },
-          data: {
-            bookedSlots: {
-              increment: input.quantity,
-            },
+          select: {
+            id: true,
+            status: true,
           },
         });
 
-        if (!updatedEventCounter.count) {
+        if (
+          existingBooking &&
+          !REBOOKABLE_BOOKING_STATUSES.includes(
+            existingBooking.status as (typeof REBOOKABLE_BOOKING_STATUSES)[number],
+          )
+        ) {
+          throw new AppError(StatusCodes.CONFLICT, "Already booked.", "EVENT_ALREADY_BOOKED");
+        }
+
+        validateEventSlotAvailability(event, input.quantity, event.bookedSlots);
+
+        const paymentDetails = await validateSavedPaymentMethod(prisma, {
+          userId,
+          slotPrice: event.slotPrice ?? 0,
+          paymentMethod: input.paymentMethod,
+          paymentMethodId: input.paymentMethodId,
+          savedPaymentMethodId: input.savedPaymentMethodId,
+        });
+
+        if (event.totalSlots != null) {
+          const updatedEventCounter = await prisma.event.updateMany({
+            where: {
+              id: eventId,
+              bookedSlots: {
+                lte: event.totalSlots - input.quantity,
+              },
+            },
+            data: {
+              bookedSlots: {
+                increment: input.quantity,
+              },
+            },
+          });
+
+          if (!updatedEventCounter.count) {
+            const latestEvent = await getEventById(eventId);
+            validateEventBookingWindow(latestEvent, latestEvent.bookedSlots);
+            validateEventSlotAvailability(latestEvent, input.quantity, latestEvent.bookedSlots);
+
+            throw new AppError(StatusCodes.CONFLICT, "Event sold out.", "EVENT_SOLD_OUT");
+          }
+
+          slotsReserved = true;
+        }
+
+        const bookedAt = new Date();
+        const totalAmount = roundCurrency((event.slotPrice ?? 0) * input.quantity);
+        const bookingId = existingBooking?.id ?? (await reserveSequentialId("EventBooking"));
+        const bookingCode = buildBookingCode(bookingId, bookedAt);
+        const bookingWriteData = {
+          restaurantId: input.restaurantId,
+          quantity: input.quantity,
+          totalAmount,
+          bookingCode,
+          status: EventBookingStatus.CONFIRMED,
+          bookedAt,
+          cancelledAt: null,
+          paymentStatus: paymentDetails.paymentStatus,
+          paymentMethod: paymentDetails.paymentMethod,
+          paymentMethodId: paymentDetails.paymentMethodId,
+        };
+
+        const booking =
+          existingBooking?.id != null
+            ? await (async () => {
+                const updatedBooking = await prisma.eventBooking.updateMany({
+                  where: {
+                    id: existingBooking.id,
+                    status: {
+                      in: [...REBOOKABLE_BOOKING_STATUSES],
+                    },
+                  },
+                  data: bookingWriteData,
+                });
+
+                if (!updatedBooking.count) {
+                  throw new AppError(StatusCodes.CONFLICT, "Already booked.", "EVENT_ALREADY_BOOKED");
+                }
+
+                return prisma.eventBooking.findUnique({
+                  where: { id: existingBooking.id },
+                  select: bookingSelect,
+                });
+              })()
+            : await prisma.eventBooking.create({
+                data: {
+                  id: bookingId,
+                  userId,
+                  eventId,
+                  ...bookingWriteData,
+                },
+                select: bookingSelect,
+              });
+
+        if (!booking) {
           throw new AppError(
-            StatusCodes.BAD_REQUEST,
-            "This event does not have enough remaining slots.",
-            "EVENT_SLOT_LIMIT_EXCEEDED",
+            StatusCodes.NOT_FOUND,
+            "Event booking not found.",
+            "EVENT_BOOKING_NOT_FOUND",
           );
         }
-      } else {
-        await tx.event.update({
-          where: { id: eventId },
-          data: {
-            bookedSlots: {
-              increment: input.quantity,
+
+        const nextBookedSlots =
+          event.bookedSlots + input.quantity;
+
+        logger.info(
+          "Event booking saved",
+          buildEventBookingLogContext({
+            eventId,
+            userId,
+            requestedQuantity: input.quantity,
+            totalSlots: event.totalSlots,
+            bookedSlots: nextBookedSlots,
+            remainingSlots:
+              event.totalSlots != null ? Math.max(event.totalSlots - nextBookedSlots, 0) : null,
+          }),
+        );
+
+        return {
+          booking,
+          bookedSlots: nextBookedSlots,
+        };
+      } catch (error) {
+        if (slotsReserved) {
+          await rollbackBookedSlotsIncrement(eventId, input.quantity, userId);
+        }
+
+        const mappedError = mapEventBookingWriteError(error);
+        const logLevel =
+          mappedError instanceof AppError && mappedError.statusCode < StatusCodes.INTERNAL_SERVER_ERROR
+            ? "warn"
+            : "error";
+
+        logger[logLevel](
+          "Event booking failed",
+          buildEventBookingLogContext(
+            {
+              eventId,
+              userId,
+              requestedQuantity: input.quantity,
+              totalSlots: event.totalSlots,
+              bookedSlots:
+                slotsReserved && event.totalSlots != null
+                  ? event.bookedSlots + input.quantity
+                  : event.bookedSlots,
+              remainingSlots:
+                event.totalSlots != null
+                  ? Math.max(
+                      event.totalSlots -
+                        (slotsReserved && event.totalSlots != null
+                          ? event.bookedSlots + input.quantity
+                          : event.bookedSlots),
+                      0,
+                    )
+                  : null,
             },
-          },
-        });
+            error,
+          ),
+        );
+
+        throw mappedError;
       }
-
-      const bookedAt = new Date();
-      const totalAmount = roundCurrency((latestEvent.slotPrice ?? 0) * input.quantity);
-      const temporaryBookingCode = `TEMP-${bookedAt.getTime()}-${userId}-${eventId}`;
-
-      const savedBooking =
-        existingBooking && existingBooking.status
-          ? await tx.eventBooking.update({
-              where: { id: existingBooking.id },
-              data: {
-                restaurantId: input.restaurantId,
-                quantity: input.quantity,
-                totalAmount,
-                bookingCode: temporaryBookingCode,
-                status: EventBookingStatus.CONFIRMED,
-                bookedAt,
-                cancelledAt: null,
-                paymentStatus: paymentDetails.paymentStatus,
-                paymentMethod: paymentDetails.paymentMethod,
-                paymentMethodId: paymentDetails.paymentMethodId,
-              },
-              select: bookingSelect,
-            })
-          : await tx.eventBooking.create({
-              data: {
-                userId,
-                eventId,
-                restaurantId: input.restaurantId,
-                quantity: input.quantity,
-                totalAmount,
-                bookingCode: temporaryBookingCode,
-                status: EventBookingStatus.CONFIRMED,
-                bookedAt,
-                paymentStatus: paymentDetails.paymentStatus,
-                paymentMethod: paymentDetails.paymentMethod,
-                paymentMethodId: paymentDetails.paymentMethodId,
-              },
-              select: bookingSelect,
-            });
-
-      const bookingCode = buildBookingCode(savedBooking.id, bookedAt);
-      const booking = await tx.eventBooking.update({
-        where: { id: savedBooking.id },
-        data: {
-          bookingCode,
-        },
-        select: bookingSelect,
-      });
-
-      return {
-        booking,
-        bookedSlots: nextBookedSlots,
-      };
-    });
+    })();
 
     await notificationsService.createForUser({
       userId,
@@ -1171,16 +1383,22 @@ export const eventsService = {
       dedupeWindowMinutes: 1,
     });
 
+    const { bookedSlotsByEventId, confirmedBookingCountByEventId, revenueByEventId } =
+      await getEventBookingMetrics([eventId], userId);
+    const bookedSlots = bookedSlotsByEventId.get(eventId) ?? result.bookedSlots;
+    const confirmedBookingCount = confirmedBookingCountByEventId.get(eventId) ?? 0;
+    const revenue = revenueByEventId.get(eventId) ?? 0;
+
     return {
       booking: mapEventBooking(result.booking, {
-        bookedSlots: result.bookedSlots,
-        confirmedBookingCount: 1,
-        revenue: result.booking.paymentStatus === PaymentStatus.PAID ? result.booking.totalAmount : 0,
+        bookedSlots,
+        confirmedBookingCount,
+        revenue,
       }),
       event: mapEvent(event, {
-        bookedSlots: result.bookedSlots,
-        confirmedBookingCount: 1,
-        revenue: result.booking.paymentStatus === PaymentStatus.PAID ? result.booking.totalAmount : 0,
+        bookedSlots,
+        confirmedBookingCount,
+        revenue,
         currentUserBooking: mapBookingSummary(result.booking),
       }),
     };
@@ -1240,52 +1458,63 @@ export const eventsService = {
       );
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const updatedEventCounter = await tx.event.updateMany({
-        where: {
-          id: booking.eventId,
-          bookedSlots: {
-            gte: booking.quantity,
-          },
-        },
-        data: {
-          bookedSlots: {
-            decrement: booking.quantity,
-          },
-        },
-      });
+    const nextStatus =
+      booking.paymentStatus === PaymentStatus.PAID
+        ? EventBookingStatus.REFUNDED
+        : EventBookingStatus.CANCELLED;
+    const nextPaymentStatus =
+      booking.paymentStatus === PaymentStatus.PAID ? PaymentStatus.REFUNDED : booking.paymentStatus;
 
-      if (!updatedEventCounter.count) {
-        throw new AppError(
-          StatusCodes.CONFLICT,
-          "This booking could not be cancelled safely right now.",
-          "EVENT_CANCEL_CONFLICT",
-        );
-      }
+    const result =
+      booking.event.totalSlots == null
+        ? {
+            booking: await prisma.eventBooking.update({
+              where: { id: booking.id },
+              data: {
+                status: nextStatus,
+                cancelledAt: new Date(),
+                paymentStatus: nextPaymentStatus,
+              },
+              select: bookingSelect,
+            }),
+          }
+        : await prisma.$transaction(async (tx) => {
+            const updatedEventCounter = await tx.event.updateMany({
+              where: {
+                id: booking.eventId,
+                bookedSlots: {
+                  gte: booking.quantity,
+                },
+              },
+              data: {
+                bookedSlots: {
+                  decrement: booking.quantity,
+                },
+              },
+            });
 
-      const nextStatus =
-        booking.paymentStatus === PaymentStatus.PAID
-          ? EventBookingStatus.REFUNDED
-          : EventBookingStatus.CANCELLED;
-      const nextPaymentStatus =
-        booking.paymentStatus === PaymentStatus.PAID
-          ? PaymentStatus.REFUNDED
-          : booking.paymentStatus;
+            if (!updatedEventCounter.count) {
+              throw new AppError(
+                StatusCodes.CONFLICT,
+                "This booking could not be cancelled safely right now.",
+                "EVENT_CANCEL_CONFLICT",
+              );
+            }
 
-      const cancelledBooking = await tx.eventBooking.update({
-        where: { id: booking.id },
-        data: {
-          status: nextStatus,
-          cancelledAt: new Date(),
-          paymentStatus: nextPaymentStatus,
-        },
-        select: bookingSelect,
-      });
+            const cancelledBooking = await tx.eventBooking.update({
+              where: { id: booking.id },
+              data: {
+                status: nextStatus,
+                cancelledAt: new Date(),
+                paymentStatus: nextPaymentStatus,
+              },
+              select: bookingSelect,
+            });
 
-      return {
-        booking: cancelledBooking,
-      };
-    });
+            return {
+              booking: cancelledBooking,
+            };
+          });
 
     await notificationsService.createForUser({
       userId,
