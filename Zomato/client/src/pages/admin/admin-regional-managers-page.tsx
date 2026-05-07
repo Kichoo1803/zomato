@@ -56,6 +56,7 @@ type RegionOption = {
   managerLabel: string;
   isAssignedToCurrentManager: boolean;
   requiresReplacement: boolean;
+  isSelectable?: boolean;
 };
 
 type RegionalManagerPayload = {
@@ -923,7 +924,7 @@ export const AdminRegionalManagersPage = () => {
                 <div className="space-y-3 rounded-[1.5rem] border border-accent/10 bg-cream-soft/60 p-4">
                   {filteredRegionOptions.map((region) => {
                     const isSelected = selectedRegion?.id === region.id;
-                    const isDisabled = !region.isSelectable;
+                    const isDisabled = region.isSelectable === false;
 
                     return (
                       <button
