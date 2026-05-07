@@ -2043,7 +2043,7 @@ export const RestaurantDetailsPage = () => {
   };
 
   const handleBookEvent = async () => {
-    if (!liveRestaurant || !selectedBookingEvent) {
+    if (bookingEventId != null || !liveRestaurant || !selectedBookingEvent) {
       return;
     }
 
