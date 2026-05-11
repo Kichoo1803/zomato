@@ -18,7 +18,6 @@ import {
   emitOrderStatusUpdate,
 } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
-import { calculateDistanceKm, hasCoordinates } from "../../utils/geo.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import { generateOrderNumber } from "../../utils/order-number.js";
 import { decimalToNumber, roundMoney } from "../../utils/pricing.js";
@@ -35,6 +34,12 @@ import {
   isDeliveryPartnerAvailableForOrdersStatus,
   previewOrderPlacementAvailability,
 } from "./order-assignment.service.js";
+import {
+  calculateRestaurantPickupDistanceKm,
+  getCurrentDeliveryPartnerCoordinates,
+  normalizeCoordinates,
+  notifyNearbyDeliveryPartnersForOrder,
+} from "../../services/delivery-partner-availability.service.js";
 
 const orderInclude = {
   address: true,
@@ -544,7 +549,12 @@ const createOrderNotification = async (
   return notification;
 };
 
-const notifyAvailableDeliveryPartners = async (order: OrderWithRealtimeContext) => {
+export const notifyAvailableDeliveryPartners = async (order: OrderWithRealtimeContext) => {
+  if (order.id > 0) {
+    await notifyNearbyDeliveryPartnersForOrder(order.id);
+    return;
+  }
+
   if (
     order.deliveryPartnerId ||
     !([OrderStatus.READY_FOR_PICKUP, OrderStatus.LOOKING_FOR_DELIVERY_PARTNER] as OrderStatus[]).includes(
@@ -924,6 +934,7 @@ export const ordersService = {
         },
       },
     );
+    await notifyNearbyDeliveryPartnersForOrder(placedOrder.id);
 
     emitOrderStatusUpdate({
       orderId: placedOrder.id,
@@ -1272,10 +1283,9 @@ export const ordersService = {
     }
 
     const now = new Date();
-    const deliveryPartnerHasCoordinates = hasCoordinates({
-      latitude: deliveryPartner.currentLatitude,
-      longitude: deliveryPartner.currentLongitude,
-    });
+    const deliveryPartnerHasCoordinates = Boolean(
+      getCurrentDeliveryPartnerCoordinates(deliveryPartner),
+    );
     const hasFreshOrLegacyLocation =
       (deliveryPartner.lastLocationUpdatedAt &&
         now.getTime() - new Date(deliveryPartner.lastLocationUpdatedAt).getTime() <=
@@ -1384,16 +1394,11 @@ export const ordersService = {
       );
     }
 
-    const restaurantCoordinates = {
-      latitude: order.restaurant.latitude,
-      longitude: order.restaurant.longitude,
-    };
-    const partnerCoordinates = {
-      latitude: deliveryPartner.currentLatitude,
-      longitude: deliveryPartner.currentLongitude,
-    };
+    const restaurantCoordinates = normalizeCoordinates(order.restaurant);
+    const partnerCoordinates =
+      getCurrentDeliveryPartnerCoordinates(deliveryPartner);
 
-    if (!hasCoordinates(restaurantCoordinates) || !hasCoordinates(partnerCoordinates)) {
+    if (!restaurantCoordinates || !partnerCoordinates) {
       throw new AppError(
         StatusCodes.CONFLICT,
         "Refresh your live location before accepting a delivery request",
@@ -1401,14 +1406,15 @@ export const ordersService = {
       );
     }
 
-    const pickupDistanceKm = calculateDistanceKm(
-      restaurantCoordinates.latitude,
-      restaurantCoordinates.longitude,
-      partnerCoordinates.latitude,
-      partnerCoordinates.longitude,
+    const pickupDistanceKm = calculateRestaurantPickupDistanceKm(
+      restaurantCoordinates,
+      {
+        currentLatitude: partnerCoordinates.latitude,
+        currentLongitude: partnerCoordinates.longitude,
+      },
     );
 
-    if (!Number.isFinite(pickupDistanceKm) || pickupDistanceKm > FALLBACK_ASSIGNMENT_RADIUS_KM) {
+    if (pickupDistanceKm == null || pickupDistanceKm > FALLBACK_ASSIGNMENT_RADIUS_KM) {
       throw new AppError(
         StatusCodes.CONFLICT,
         "This restaurant is no longer within your active delivery range",

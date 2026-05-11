@@ -15,15 +15,17 @@ import {
   emitOrderStatusUpdate,
 } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
-import { calculateDistanceKm, hasCoordinates } from "../../utils/geo.js";
 import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
 import {
   ORDER_ASSIGNMENT_RADII_KM,
   FALLBACK_ASSIGNMENT_RADIUS_KM,
   PRIMARY_ASSIGNMENT_RADIUS_KM,
-  getEligibleDeliveryPartnersForRestaurant,
   isDeliveryPartnerAvailableForOrdersStatus,
-} from "./order-assignment.service.js";
+} from "../../services/delivery-partner-availability.service.js";
+import {
+  calculateRestaurantPickupDistanceKm,
+  findAvailableDeliveryPartnersNearRestaurant,
+} from "../../services/delivery-partner-availability.service.js";
 
 const deliveryOfferOrderInclude = {
   user: {
@@ -205,39 +207,6 @@ const buildItemsSummary = (items: DispatchOrder["items"]) =>
     .slice(0, 3)
     .map((item) => `${item.quantity}x ${item.itemName}`)
     .join(", ");
-
-const calculateRestaurantDistanceKm = (
-  partner: {
-    currentLatitude?: number | null;
-    currentLongitude?: number | null;
-  },
-  restaurant: {
-    latitude?: number | null;
-    longitude?: number | null;
-  },
-) => {
-  const partnerCoordinates = {
-    latitude: partner.currentLatitude,
-    longitude: partner.currentLongitude,
-  };
-  const restaurantCoordinates = {
-    latitude: restaurant.latitude,
-    longitude: restaurant.longitude,
-  };
-
-  if (!hasCoordinates(partnerCoordinates) || !hasCoordinates(restaurantCoordinates)) {
-    return null;
-  }
-
-  const distanceKm = calculateDistanceKm(
-    restaurantCoordinates.latitude,
-    restaurantCoordinates.longitude,
-    partnerCoordinates.latitude,
-    partnerCoordinates.longitude,
-  );
-
-  return Number.isFinite(distanceKm) ? Number(distanceKm.toFixed(2)) : null;
-};
 
 const buildDispatchMeta = (
   order: DispatchOrder,
@@ -696,7 +665,7 @@ const syncOrderDispatch = async (orderId: number) => {
   const previouslyContactedPartnerIds = await getPreviouslyContactedPartnerIds(orderId);
 
   for (const radiusKm of nextRadii) {
-    const partners = await getEligibleDeliveryPartnersForRestaurant(
+    const partners = await findAvailableDeliveryPartnersNearRestaurant(
       order.restaurant,
       radiusKm,
       {
@@ -1269,7 +1238,10 @@ export const orderDispatchService = {
           }
         >
       >((visibleOrders, order) => {
-        const restaurantDistanceKm = calculateRestaurantDistanceKm(partner, order.restaurant);
+        const restaurantDistanceKm = calculateRestaurantPickupDistanceKm(
+          order.restaurant,
+          partner,
+        );
 
         if (
           restaurantDistanceKm == null ||

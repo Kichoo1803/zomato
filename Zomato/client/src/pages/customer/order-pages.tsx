@@ -2986,10 +2986,12 @@ export const PaymentPage = () => {
                     : placementAvailabilityError
                       ? "Unable to verify delivery coverage"
                     : placementAvailability?.coverageType === "FALLBACK" && isDeliveryPartnerAvailable
-                      ? "Nearby area order coverage confirmed"
+                      ? "Delivery partners available in the nearby service area"
                       : isDeliveryPartnerAvailable
-                        ? "Delivery partner available nearby"
-                        : "Delivery partner unavailable"}
+                        ? placementAvailability?.partnerCount === 1
+                          ? "Delivery partner available near this restaurant"
+                          : "Delivery partners available near this restaurant"
+                        : "No delivery partners available near this restaurant"}
                 </p>
                 <Button
                   type="button"

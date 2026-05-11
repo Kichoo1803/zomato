@@ -50,6 +50,14 @@ export type AppNotificationMeta = {
   estimatedDeliveryMinutes?: number | null;
   routeDistanceKm?: number | null;
   specialInstructions?: string | null;
+  pickupCoordinates?: {
+    latitude: number;
+    longitude: number;
+  } | null;
+  deliveryCoordinates?: {
+    latitude: number;
+    longitude: number;
+  } | null;
 };
 
 const isDeliveredOrderStatus = (status?: string | null) => status?.trim().toUpperCase() === "DELIVERED";

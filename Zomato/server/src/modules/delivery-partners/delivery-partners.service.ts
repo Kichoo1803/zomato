@@ -9,7 +9,6 @@ import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
 import { emitDeliveryLocationUpdate, emitOrderStatusUpdate } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
-import { calculateDistanceKm, hasCoordinates } from "../../utils/geo.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import {
   areIndianPhoneNumbersEqual,
@@ -25,7 +24,13 @@ import { orderDispatchService } from "../orders/order-dispatch.service.js";
 import {
   FALLBACK_ASSIGNMENT_RADIUS_KM,
   PRIMARY_ASSIGNMENT_RADIUS_KM,
-} from "../orders/order-assignment.service.js";
+} from "../../services/delivery-partner-availability.service.js";
+import {
+  PARTNER_NEARBY_RESTAURANT_RADIUS_KM,
+  calculateRestaurantPickupDistanceKm,
+  getCurrentDeliveryPartnerCoordinates,
+  getNearbyRestaurantsForDeliveryPartner,
+} from "../../services/delivery-partner-availability.service.js";
 import { resolveRegionIdForAssignment } from "../regions/regions.service.js";
 
 const ensureDeliveryPartnerUserUniqueness = async (input: {
@@ -181,7 +186,6 @@ const deliveryOrderInclude = {
   },
 } as const;
 
-const nearbyRestaurantRadiusKm = 2;
 const claimableDeliveryStatuses = [
   OrderStatus.READY_FOR_PICKUP,
   OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
@@ -198,42 +202,6 @@ const buildBoundingBox = (latitude: number, longitude: number, radiusKm: number)
     minLongitude: longitude - longitudeDelta,
     maxLongitude: longitude + longitudeDelta,
   };
-};
-
-const getCurrentPartnerCoordinates = (partner: {
-  currentLatitude?: number | null;
-  currentLongitude?: number | null;
-}) => {
-  const coordinates = {
-    latitude: partner.currentLatitude,
-    longitude: partner.currentLongitude,
-  };
-
-  return hasCoordinates(coordinates) ? coordinates : null;
-};
-
-const calculateRoundedDistanceKm = (
-  origin: {
-    latitude?: number | null;
-    longitude?: number | null;
-  },
-  destination: {
-    latitude?: number | null;
-    longitude?: number | null;
-  },
-) => {
-  if (!hasCoordinates(origin) || !hasCoordinates(destination)) {
-    return null;
-  }
-
-  const distanceKm = calculateDistanceKm(
-    origin.latitude,
-    origin.longitude,
-    destination.latitude,
-    destination.longitude,
-  );
-
-  return Number.isFinite(distanceKm) ? Number(distanceKm.toFixed(2)) : null;
 };
 
 const parseTimeToMinutes = (value?: string | null) => {
@@ -286,7 +254,7 @@ const syncNearbyDispatchOrdersForPartner = async (partner: {
   currentLatitude?: number | null;
   currentLongitude?: number | null;
 }) => {
-  const partnerCoordinates = getCurrentPartnerCoordinates(partner);
+  const partnerCoordinates = getCurrentDeliveryPartnerCoordinates(partner);
   if (!partnerCoordinates) {
     return;
   }
@@ -329,10 +297,10 @@ const syncNearbyDispatchOrdersForPartner = async (partner: {
 
   const nearbyOrderIds = candidateOrders
     .filter((order) => {
-      const restaurantDistanceKm = calculateRoundedDistanceKm(
-        partnerCoordinates,
-        order.restaurant,
-      );
+      const restaurantDistanceKm = calculateRestaurantPickupDistanceKm(order.restaurant, {
+        currentLatitude: partnerCoordinates.latitude,
+        currentLongitude: partnerCoordinates.longitude,
+      });
       return (
         restaurantDistanceKm != null &&
         restaurantDistanceKm <= FALLBACK_ASSIGNMENT_RADIUS_KM
@@ -353,51 +321,13 @@ const getNearbyRestaurantsForPartner = async (partner: {
   currentLatitude?: number | null;
   currentLongitude?: number | null;
 }) => {
-  const partnerCoordinates = getCurrentPartnerCoordinates(partner);
-  if (!partnerCoordinates) {
-    return [];
-  }
-
-  const boundingBox = buildBoundingBox(
-    partnerCoordinates.latitude,
-    partnerCoordinates.longitude,
-    nearbyRestaurantRadiusKm,
+  const restaurants = await getNearbyRestaurantsForDeliveryPartner(
+    partner,
+    PARTNER_NEARBY_RESTAURANT_RADIUS_KM,
   );
-  const restaurants = await prisma.restaurant.findMany({
-    where: {
-      isActive: true,
-      latitude: {
-        not: null,
-        gte: boundingBox.minLatitude,
-        lte: boundingBox.maxLatitude,
-      },
-      longitude: {
-        not: null,
-        gte: boundingBox.minLongitude,
-        lte: boundingBox.maxLongitude,
-      },
-    },
-    select: {
-      id: true,
-      name: true,
-      addressLine: true,
-      area: true,
-      city: true,
-      latitude: true,
-      longitude: true,
-      openingTime: true,
-      closingTime: true,
-    },
-  });
 
   return restaurants
     .map((restaurant) => {
-      const distanceKm = calculateRoundedDistanceKm(partnerCoordinates, restaurant);
-
-      if (distanceKm == null || distanceKm > nearbyRestaurantRadiusKm) {
-        return null;
-      }
-
       const isOpenNow = isRestaurantOpenNow(
         restaurant.openingTime,
         restaurant.closingTime,
@@ -409,7 +339,7 @@ const getNearbyRestaurantsForPartner = async (partner: {
         area: restaurant.area,
         addressLine: restaurant.addressLine,
         city: restaurant.city,
-        distanceKm,
+        distanceKm: restaurant.distanceKm,
         isOpenNow,
         openingTime: restaurant.openingTime,
         closingTime: restaurant.closingTime,
