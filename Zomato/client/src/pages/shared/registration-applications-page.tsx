@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AdminDataTable,
@@ -116,7 +116,7 @@ export const RegistrationApplicationsPage = ({ scope }: RegistrationApplications
   const [opsRegionOptions, setOpsRegionOptions] = useState<RegionOptions | null>(null);
   const [scopeMessage, setScopeMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isReviewing, setIsReviewing] = useState(false);
+  const [reviewAction, setReviewAction] = useState<"approve" | "reject" | null>(null);
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<"ALL" | RegistrationApplicationRoleType>("ALL");
   const [statusFilter, setStatusFilter] = useState<"ALL" | RegistrationApplicationStatus>("PENDING");
@@ -130,6 +130,8 @@ export const RegistrationApplicationsPage = ({ scope }: RegistrationApplications
   const [detailsApplication, setDetailsApplication] = useState<RegistrationApplication | null>(null);
   const [reviewRemarks, setReviewRemarks] = useState("");
   const isRegionalManager = user?.role === "REGIONAL_MANAGER";
+  const isReviewing = reviewAction !== null;
+  const reviewRequestInFlight = useRef(false);
 
   const mergedOpsRegions = useMemo(
     () =>
@@ -235,49 +237,53 @@ export const RegistrationApplicationsPage = ({ scope }: RegistrationApplications
   const pagedApplications = paginate(applications, page);
 
   const handleApprove = async (application: RegistrationApplication) => {
-    setIsReviewing(true);
+    if (reviewRequestInFlight.current) {
+      return;
+    }
+
+    reviewRequestInFlight.current = true;
+    setReviewAction("approve");
 
     try {
-      const updatedApplication = await approveRegistrationApplication(application.id, {
+      await approveRegistrationApplication(application.id, {
         remarks: reviewRemarks.trim() || undefined,
       });
-      setApplications((currentApplications) =>
-        currentApplications.map((currentApplication) =>
-          currentApplication.id === updatedApplication.id ? updatedApplication : currentApplication,
-        ),
-      );
-      setDetailsApplication(updatedApplication);
+      setDetailsApplication(null);
+      await loadApplications();
       toast.success("Application approved successfully.");
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to approve this application."));
     } finally {
-      setIsReviewing(false);
+      reviewRequestInFlight.current = false;
+      setReviewAction(null);
     }
   };
 
   const handleReject = async (application: RegistrationApplication) => {
+    if (reviewRequestInFlight.current) {
+      return;
+    }
+
     if (!reviewRemarks.trim()) {
       toast.error("Enter rejection remarks before rejecting this application.");
       return;
     }
 
-    setIsReviewing(true);
+    reviewRequestInFlight.current = true;
+    setReviewAction("reject");
 
     try {
-      const updatedApplication = await rejectRegistrationApplication(application.id, {
+      await rejectRegistrationApplication(application.id, {
         remarks: reviewRemarks.trim(),
       });
-      setApplications((currentApplications) =>
-        currentApplications.map((currentApplication) =>
-          currentApplication.id === updatedApplication.id ? updatedApplication : currentApplication,
-        ),
-      );
-      setDetailsApplication(updatedApplication);
+      setDetailsApplication(null);
+      await loadApplications();
       toast.success("Application rejected successfully.");
     } catch (error) {
       toast.error(getApiErrorMessage(error, "Unable to reject this application."));
     } finally {
-      setIsReviewing(false);
+      reviewRequestInFlight.current = false;
+      setReviewAction(null);
     }
   };
 
@@ -664,14 +670,14 @@ export const RegistrationApplicationsPage = ({ scope }: RegistrationApplications
                     onClick={() => void handleApprove(detailsApplication)}
                     disabled={isReviewing}
                   >
-                    {isReviewing ? "Working..." : "Approve application"}
+                    {reviewAction === "approve" ? "Approving..." : "Approve application"}
                   </Button>
                   <Button
                     type="button"
                     onClick={() => void handleReject(detailsApplication)}
                     disabled={isReviewing}
                   >
-                    {isReviewing ? "Working..." : "Reject application"}
+                    {reviewAction === "reject" ? "Rejecting..." : "Reject application"}
                   </Button>
                 </div>
               ) : (

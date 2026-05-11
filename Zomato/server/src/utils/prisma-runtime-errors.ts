@@ -76,6 +76,12 @@ const transactionTimeoutFragments = [
   "expired transaction",
   "unable to start a transaction",
   "transaction not found",
+  "could not keep this write request open long enough",
+  "write conflict",
+  "request expired",
+  "request timed out",
+  "operation exceeded time limit",
+  "timed out while waiting",
 ];
 
 export const getPrismaRuntimeErrorResponse = (
@@ -129,9 +135,15 @@ export const getPrismaRuntimeErrorResponse = (
   }
 
   if (
-    isPrismaKnownRequestError(error) &&
-    error.code === "P2028" &&
-    includesAnyFragment(errorMessage, transactionTimeoutFragments)
+    (isPrismaKnownRequestError(error) &&
+      error.code === "P2028" &&
+      includesAnyFragment(errorMessage, transactionTimeoutFragments)) ||
+    (isPrismaKnownRequestError(error) &&
+      error.code === "P2010" &&
+      includesAnyFragment(errorMessage, transactionTimeoutFragments)) ||
+    (isPrismaKnownRequestError(error) && error.code === "P2034") ||
+    (isPrismaUnknownRequestError(error) &&
+      includesAnyFragment(errorMessage, transactionTimeoutFragments))
   ) {
     return {
       statusCode: 503,

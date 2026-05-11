@@ -2,7 +2,9 @@ import { Prisma } from "@prisma/client";
 import bcrypt from "bcrypt";
 import { StatusCodes } from "http-status-codes";
 import path from "node:path";
+import { env } from "../../config/env.js";
 import { DeliveryAvailabilityStatus, NotificationType, Role } from "../../constants/enums.js";
+import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
 import { buildPublicUploadUrl } from "../../lib/uploads.js";
 import { notificationsService } from "../notifications/notifications.service.js";
@@ -39,6 +41,7 @@ type RequestContext = {
 };
 
 type RegistrationApplicationFiles = Record<string, Express.Multer.File[] | undefined>;
+type RegistrationApplicationClient = Prisma.TransactionClient | typeof prisma;
 
 type UploadedAsset = {
   fieldName: string;
@@ -148,9 +151,55 @@ const registrationApplicationSelect = {
 type RegistrationApplicationRecord = Prisma.RegistrationApplicationGetPayload<{
   select: typeof registrationApplicationSelect;
 }>;
-type RegistrationApplicationApprovalRecord = RegistrationApplicationRecord & {
-  passwordHash: string;
-};
+
+const registrationApplicationPermissionSelect = {
+  id: true,
+  roleType: true,
+  status: true,
+  regionId: true,
+  state: true,
+  district: true,
+  assignedRegionalManagerId: true,
+  approvedUserId: true,
+  region: {
+    select: {
+      managerUserId: true,
+    },
+  },
+} satisfies Prisma.RegistrationApplicationSelect;
+
+const registrationApplicationApprovalSelect = {
+  id: true,
+  roleType: true,
+  fullName: true,
+  email: true,
+  phone: true,
+  alternatePhone: true,
+  passwordHash: true,
+  addressLine: true,
+  state: true,
+  district: true,
+  pincode: true,
+  regionId: true,
+  restaurantName: true,
+  restaurantAddress: true,
+  fssaiCertificateNumber: true,
+  idProofType: true,
+  documents: true,
+  vehicleType: true,
+  vehicleNumber: true,
+  drivingLicenseNumber: true,
+  approvedUserId: true,
+  status: true,
+} satisfies Prisma.RegistrationApplicationSelect;
+
+type RegistrationApplicationPermissionRecord = Prisma.RegistrationApplicationGetPayload<{
+  select: typeof registrationApplicationPermissionSelect;
+}>;
+
+type RegistrationApplicationApprovalContext = Prisma.RegistrationApplicationGetPayload<{
+  select: typeof registrationApplicationApprovalSelect;
+}>;
 
 const parseSnapshot = <T>(value?: string | null): T | null => {
   if (!value?.trim()) {
@@ -461,6 +510,215 @@ const notifyAssignedRegionalManager = async (application: RegistrationApplicatio
   });
 };
 
+const getTargetRoleForApplication = (
+  roleType: string,
+): Role =>
+  roleType === RegistrationApplicationRoleType.RESTAURANT_OWNER
+    ? Role.RESTAURANT_OWNER
+    : Role.DELIVERY_PARTNER;
+
+const getApplicationPhoneCandidates = (application: {
+  phone: string;
+  alternatePhone?: string | null;
+}) =>
+  [
+    ...new Set(
+      [application.phone, application.alternatePhone ?? undefined]
+        .filter((value): value is string => Boolean(value))
+        .flatMap((value) => getIndianPhoneSearchVariants(value)),
+    ),
+  ];
+
+const loadRegistrationApplicationForResponse = async (applicationId: number) => {
+  const application = await prisma.registrationApplication.findUnique({
+    where: { id: applicationId },
+    select: registrationApplicationSelect,
+  });
+
+  if (!application) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "Registration application not found",
+      "REGISTRATION_APPLICATION_NOT_FOUND",
+    );
+  }
+
+  return application;
+};
+
+const loadRegistrationApplicationApprovalContext = async (
+  client: RegistrationApplicationClient,
+  applicationId: number,
+) => {
+  const application = await client.registrationApplication.findUnique({
+    where: { id: applicationId },
+    select: registrationApplicationApprovalSelect,
+  });
+
+  if (!application) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "Registration application not found",
+      "REGISTRATION_APPLICATION_NOT_FOUND",
+    );
+  }
+
+  return application;
+};
+
+const serializeReviewError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return {
+      message: "Unknown error",
+    };
+  }
+
+  const serialized = {
+    name: error.name,
+    message: error.message,
+    ...(error instanceof AppError ? { appCode: error.code } : {}),
+  } as {
+    name: string;
+    message: string;
+    appCode?: string;
+    prismaCode?: string;
+  };
+
+  if (
+    error.name === "PrismaClientKnownRequestError" &&
+    typeof (error as unknown as { code?: unknown }).code === "string"
+  ) {
+    serialized.prismaCode = (error as unknown as { code: string }).code;
+  }
+
+  return serialized;
+};
+
+const logApplicationReviewEvent = (
+  phase: "started" | "completed" | "failed",
+  payload: {
+    applicationId: number;
+    applicationType: string;
+    reviewerId: number;
+    reviewerRole: Role;
+    action: "APPROVE" | "REJECT";
+    previousStatus: string;
+    nextStatus?: string;
+    durationMs?: number;
+    error?: unknown;
+  },
+) => {
+  if (!env.isDevelopment) {
+    return;
+  }
+
+  const basePayload = {
+    applicationId: payload.applicationId,
+    applicationType: payload.applicationType,
+    reviewerId: payload.reviewerId,
+    reviewerRole: payload.reviewerRole,
+    action: payload.action,
+    previousStatus: payload.previousStatus,
+    nextStatus: payload.nextStatus ?? payload.previousStatus,
+    durationMs: payload.durationMs ?? null,
+  };
+
+  if (phase === "failed") {
+    logger.error("Registration application review failed", {
+      ...basePayload,
+      error: serializeReviewError(payload.error),
+    });
+    return;
+  }
+
+  logger.info(
+    phase === "started"
+      ? "Registration application review started"
+      : "Registration application review completed",
+    basePayload,
+  );
+};
+
+const runPostReviewNotification = async (
+  operation: () => Promise<void>,
+  context: {
+    applicationId: number;
+    action: "APPROVE" | "REJECT";
+  },
+) => {
+  try {
+    await operation();
+  } catch (error) {
+    if (env.isDevelopment) {
+      logger.warn("Registration application notification failed after review", {
+        applicationId: context.applicationId,
+        action: context.action,
+        error: serializeReviewError(error),
+      });
+    }
+  }
+};
+
+const notifyApplicantAboutApproval = async (application: RegistrationApplicationRecord) => {
+  if (!application.approvedUser?.id) {
+    return;
+  }
+
+  await runPostReviewNotification(
+    () =>
+      notificationsService.createForUser({
+        userId: application.approvedUser!.id,
+        title: "Registration approved",
+        message:
+          application.roleType === Role.RESTAURANT_OWNER
+            ? "Your restaurant owner onboarding has been approved. You can now sign in and complete your restaurant setup."
+            : "Your delivery partner onboarding has been approved. You can now sign in and start using the delivery dashboard.",
+        type: NotificationType.SYSTEM,
+        meta: {
+          eventKey: "registration-application:approved",
+          registrationApplicationId: application.id,
+          path:
+            application.roleType === Role.RESTAURANT_OWNER
+              ? "/owner/dashboard"
+              : "/delivery",
+        },
+        dedupeWindowMinutes: 15,
+      }).then(() => undefined),
+    {
+      applicationId: application.id,
+      action: "APPROVE",
+    },
+  );
+};
+
+const notifyApplicantAboutRejection = async (application: RegistrationApplicationRecord) => {
+  if (!application.approvedUser?.id) {
+    return;
+  }
+
+  await runPostReviewNotification(
+    () =>
+      notificationsService.createForUser({
+        userId: application.approvedUser!.id,
+        title: "Registration rejected",
+        message:
+          application.reviewRemarks?.trim() ||
+          "Your onboarding application was rejected. Review the remarks and contact support if needed.",
+        type: NotificationType.SYSTEM,
+        meta: {
+          eventKey: "registration-application:rejected",
+          registrationApplicationId: application.id,
+          path: "/support",
+        },
+        dedupeWindowMinutes: 15,
+      }).then(() => undefined),
+    {
+      applicationId: application.id,
+      action: "REJECT",
+    },
+  );
+};
+
 const buildScopedWhere = async (
   actor: ApplicationActor,
   filters?: {
@@ -578,7 +836,7 @@ const ensureApplicationVisibleToActor = async (
   const access = await getRegionalAccessState(actor);
   const application = await prisma.registrationApplication.findUnique({
     where: { id: applicationId },
-    select: registrationApplicationSelect,
+    select: registrationApplicationPermissionSelect,
   });
 
   if (!application) {
@@ -614,7 +872,11 @@ const ensureApplicationVisibleToActor = async (
     );
 
     if (application.region?.managerUserId !== actor.id) {
-      throw new AppError(StatusCodes.FORBIDDEN, "Access denied", "ACCESS_DENIED");
+      throw new AppError(
+        StatusCodes.FORBIDDEN,
+        "You can only review applications assigned to your region",
+        "ACCESS_DENIED",
+      );
     }
   }
 
@@ -622,7 +884,7 @@ const ensureApplicationVisibleToActor = async (
 };
 
 const generateUniqueRestaurantSlug = async (
-  client: Prisma.TransactionClient,
+  client: RegistrationApplicationClient,
   restaurantName: string,
 ) => {
   const baseSlug = slugify(restaurantName);
@@ -648,26 +910,189 @@ const generateUniqueRestaurantSlug = async (
   }
 };
 
-const approveRestaurantOwnerApplication = async (
-  client: Prisma.TransactionClient,
-  application: RegistrationApplicationApprovalRecord,
+const ensureNoOtherPendingApplicationConflicts = async (
+  client: RegistrationApplicationClient,
+  application: RegistrationApplicationApprovalContext,
 ) => {
-  await ensureFssaiNumberAvailable(client, application.fssaiCertificateNumber, application.id);
-  await ensureNoIdentityConflicts(client, {
-    email: application.email,
-    phone: application.phone,
-    alternatePhone: application.alternatePhone ?? undefined,
-    excludeApplicationId: application.id,
-  });
-  const phone = normalizeIndianPhoneNumber(application.phone) ?? application.phone;
+  const phoneCandidates = getApplicationPhoneCandidates(application);
 
-  const user = await client.user.create({
-    data: {
+  const conflictingApplication = await client.registrationApplication.findFirst({
+    where: {
+      status: RegistrationApplicationStatus.PENDING,
+      NOT: {
+        id: application.id,
+      },
+      OR: [
+        { email: application.email },
+        ...phoneCandidates.flatMap((value) => [{ phone: value }, { alternatePhone: value }]),
+      ],
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (conflictingApplication) {
+    throw new AppError(
+      StatusCodes.CONFLICT,
+      "A pending registration with the same email or phone still needs review",
+      "REGISTRATION_APPLICATION_ALREADY_EXISTS",
+    );
+  }
+
+  if (
+    application.roleType === RegistrationApplicationRoleType.RESTAURANT_OWNER &&
+    application.fssaiCertificateNumber?.trim()
+  ) {
+    const conflictingFssaiApplication = await client.registrationApplication.findFirst({
+      where: {
+        id: {
+          not: application.id,
+        },
+        roleType: RegistrationApplicationRoleType.RESTAURANT_OWNER,
+        status: RegistrationApplicationStatus.PENDING,
+        fssaiCertificateNumber: application.fssaiCertificateNumber.trim(),
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (conflictingFssaiApplication) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "This FSSAI certificate is already linked to another pending application",
+        "FSSAI_CERTIFICATE_ALREADY_USED",
+      );
+    }
+  }
+};
+
+const loadExistingApprovedUserForApplication = async (
+  client: RegistrationApplicationClient,
+  application: RegistrationApplicationApprovalContext,
+) => {
+  const targetRole = getTargetRoleForApplication(application.roleType);
+
+  if (application.approvedUserId) {
+    const approvedUser = await client.user.findUnique({
+      where: {
+        id: application.approvedUserId,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        isActive: true,
+      },
+    });
+
+    if (approvedUser) {
+      if (approvedUser.role !== targetRole) {
+        throw new AppError(
+          StatusCodes.CONFLICT,
+          "The approved account linked to this application uses a different role",
+          "REGISTRATION_APPLICATION_ACCOUNT_CONFLICT",
+        );
+      }
+
+      return approvedUser;
+    }
+  }
+
+  const phoneCandidates = getApplicationPhoneCandidates(application);
+  const existingUser = await client.user.findFirst({
+    where: {
+      OR: [
+        { email: application.email },
+        ...phoneCandidates.map((value) => ({ phone: value })),
+      ],
+    },
+    select: {
+      id: true,
+      email: true,
+      fullName: true,
+      role: true,
+      isActive: true,
+    },
+  });
+
+  if (!existingUser) {
+    return null;
+  }
+
+  if (existingUser.role !== targetRole) {
+    throw new AppError(
+      StatusCodes.CONFLICT,
+      "An account with this email or phone already exists under another role",
+      "ACCOUNT_ALREADY_EXISTS",
+    );
+  }
+
+  return existingUser;
+};
+
+const ensureApprovedUserForApplication = async (
+  client: RegistrationApplicationClient,
+  application: RegistrationApplicationApprovalContext,
+) => {
+  const targetRole = getTargetRoleForApplication(application.roleType);
+  const normalizedPhone = normalizeIndianPhoneNumber(application.phone) ?? application.phone;
+  const documents = parseSnapshot<ApplicationDocumentsSnapshot>(application.documents);
+  const profileImage =
+    application.roleType === RegistrationApplicationRoleType.DELIVERY_PARTNER
+      ? documents?.profilePhoto?.fileUrl ?? null
+      : null;
+  const existingUser = await loadExistingApprovedUserForApplication(client, application);
+
+  if (existingUser) {
+    return client.user.update({
+      where: {
+        id: existingUser.id,
+      },
+      data: {
+        fullName: application.fullName,
+        email: application.email,
+        phone: normalizedPhone,
+        ...(profileImage !== null ? { profileImage } : {}),
+        role: targetRole,
+        regionId: application.regionId,
+        opsState: application.state,
+        opsDistrict: application.district,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        isActive: true,
+      },
+    });
+  }
+
+  return client.user.upsert({
+    where: {
+      email: application.email,
+    },
+    update: {
+      fullName: application.fullName,
+      phone: normalizedPhone,
+      ...(profileImage !== null ? { profileImage } : {}),
+      role: targetRole,
+      regionId: application.regionId,
+      opsState: application.state,
+      opsDistrict: application.district,
+      isActive: true,
+    },
+    create: {
       fullName: application.fullName,
       email: application.email,
-      phone,
+      phone: normalizedPhone,
+      ...(profileImage !== null ? { profileImage } : {}),
       passwordHash: application.passwordHash,
-      role: Role.RESTAURANT_OWNER,
+      role: targetRole,
       regionId: application.regionId,
       opsState: application.state,
       opsDistrict: application.district,
@@ -683,77 +1108,129 @@ const approveRestaurantOwnerApplication = async (
       isActive: true,
     },
   });
+};
 
+const ensureApprovedRestaurantForApplication = async (
+  client: RegistrationApplicationClient,
+  application: RegistrationApplicationApprovalContext,
+  userId: number,
+) => {
+  const restaurantName =
+    application.restaurantName?.trim() || `${application.fullName}'s Kitchen`;
+  const restaurantAddress =
+    application.restaurantAddress?.trim() || application.addressLine.trim();
+  const normalizedPhone = normalizeIndianPhoneNumber(application.phone) ?? application.phone;
+  const normalizedLicenseNumber =
+    application.fssaiCertificateNumber?.trim() || null;
   const documents = parseSnapshot<ApplicationDocumentsSnapshot>(application.documents);
-  const restaurantName = application.restaurantName?.trim() || `${application.fullName}'s Kitchen`;
-  const restaurantSlug = await generateUniqueRestaurantSlug(client, restaurantName);
+  const matchingRestaurant = await client.restaurant.findFirst({
+    where: {
+      ownerId: userId,
+      OR: [
+        { name: restaurantName },
+        { addressLine: restaurantAddress },
+        ...(normalizedLicenseNumber ? [{ licenseNumber: normalizedLicenseNumber }] : []),
+      ],
+    },
+    select: {
+      id: true,
+      slug: true,
+    },
+  });
 
-  await client.restaurant.create({
+  if (normalizedLicenseNumber) {
+    const conflictingRestaurant = await client.restaurant.findFirst({
+      where: {
+        licenseNumber: normalizedLicenseNumber,
+        ownerId: {
+          not: userId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (conflictingRestaurant) {
+      throw new AppError(
+        StatusCodes.CONFLICT,
+        "This FSSAI certificate is already linked to another restaurant",
+        "FSSAI_CERTIFICATE_ALREADY_USED",
+      );
+    }
+  }
+
+  if (matchingRestaurant) {
+    await client.restaurant.update({
+      where: {
+        id: matchingRestaurant.id,
+      },
+      data: {
+        ownerId: userId,
+        regionId: application.regionId,
+        name: restaurantName,
+        description: "Created from a partner onboarding approval.",
+        email: application.email,
+        phone: normalizedPhone,
+        coverImage: documents?.restaurantImages?.[0]?.fileUrl ?? null,
+        licenseNumber: normalizedLicenseNumber,
+        addressLine: restaurantAddress,
+        area: application.district,
+        city: application.district,
+        state: application.state,
+        pincode: application.pincode,
+      },
+    });
+
+    return matchingRestaurant.id;
+  }
+
+  const restaurantSlug = await generateUniqueRestaurantSlug(client, restaurantName);
+  const createdRestaurant = await client.restaurant.create({
     data: {
-      ownerId: user.id,
+      ownerId: userId,
       regionId: application.regionId,
       name: restaurantName,
       slug: restaurantSlug,
       description: "Created from a partner onboarding approval.",
       email: application.email,
-      phone,
+      phone: normalizedPhone,
       coverImage: documents?.restaurantImages?.[0]?.fileUrl ?? null,
-      licenseNumber: application.fssaiCertificateNumber?.trim() || null,
-      addressLine: application.restaurantAddress?.trim() || application.addressLine,
+      licenseNumber: normalizedLicenseNumber,
+      addressLine: restaurantAddress,
       area: application.district,
       city: application.district,
       state: application.state,
       pincode: application.pincode,
       isActive: false,
     },
-  });
-
-  return user;
-};
-
-const approveDeliveryPartnerApplication = async (
-  client: Prisma.TransactionClient,
-  application: RegistrationApplicationApprovalRecord,
-) => {
-  await ensureNoIdentityConflicts(client, {
-    email: application.email,
-    phone: application.phone,
-    alternatePhone: application.alternatePhone ?? undefined,
-    excludeApplicationId: application.id,
-  });
-
-  const documents = parseSnapshot<ApplicationDocumentsSnapshot>(application.documents);
-  const profileImage = documents?.profilePhoto?.fileUrl ?? null;
-  const phone = normalizeIndianPhoneNumber(application.phone) ?? application.phone;
-  const vehicleNumber = normalizeVehicleNumber(application.vehicleNumber);
-  const licenseNumber = normalizeLicenseNumber(application.drivingLicenseNumber);
-  const user = await client.user.create({
-    data: {
-      fullName: application.fullName,
-      email: application.email,
-      phone,
-      passwordHash: application.passwordHash,
-      profileImage,
-      role: Role.DELIVERY_PARTNER,
-      regionId: application.regionId,
-      opsState: application.state,
-      opsDistrict: application.district,
-      isActive: true,
-      emailVerified: false,
-      phoneVerified: false,
-    },
     select: {
       id: true,
-      email: true,
-      fullName: true,
-      role: true,
-      isActive: true,
     },
   });
 
-  const partner = await client.deliveryPartner.create({
-    data: {
-      userId: user.id,
+  return createdRestaurant.id;
+};
+
+const ensureApprovedDeliveryPartnerProfile = async (
+  client: RegistrationApplicationClient,
+  application: RegistrationApplicationApprovalContext,
+  userId: number,
+) => {
+  const vehicleNumber = normalizeVehicleNumber(application.vehicleNumber);
+  const licenseNumber = normalizeLicenseNumber(application.drivingLicenseNumber);
+  const partner = await client.deliveryPartner.upsert({
+    where: {
+      userId,
+    },
+    update: {
+      vehicleType: application.vehicleType?.trim() || "BIKE",
+      vehicleNumber: vehicleNumber ?? null,
+      licenseNumber: licenseNumber ?? null,
+      isVerified: true,
+    },
+    create: {
+      userId,
       vehicleType: application.vehicleType?.trim() || "BIKE",
       vehicleNumber: vehicleNumber ?? null,
       licenseNumber: licenseNumber ?? null,
@@ -765,7 +1242,7 @@ const approveDeliveryPartnerApplication = async (
     },
   });
 
-  const approvalTimestamp = new Date();
+  const documents = parseSnapshot<ApplicationDocumentsSnapshot>(application.documents);
   const deliveryDocuments = [
     ...(documents?.drivingLicense
       ? [
@@ -786,29 +1263,110 @@ const approveDeliveryPartnerApplication = async (
   ];
 
   if (deliveryDocuments.length) {
-    await client.deliveryDocument.createMany({
-      data: deliveryDocuments.map((document) => ({
+    const existingDocuments = await client.deliveryDocument.findMany({
+      where: {
         deliveryPartnerId: partner.id,
-        name: document.name,
-        fileUrl: document.fileUrl,
-        status: RegistrationApplicationStatus.APPROVED,
-        reviewedAt: approvalTimestamp,
-      })),
+      },
+      select: {
+        name: true,
+        fileUrl: true,
+      },
+    });
+
+    const newDocuments = deliveryDocuments.filter(
+      (document) =>
+        !existingDocuments.some(
+          (existingDocument) =>
+            existingDocument.name === document.name &&
+            existingDocument.fileUrl === document.fileUrl,
+        ),
+    );
+
+    if (newDocuments.length) {
+      await client.deliveryDocument.createMany({
+        data: newDocuments.map((document) => ({
+          deliveryPartnerId: partner.id,
+          name: document.name,
+          fileUrl: document.fileUrl,
+          status: RegistrationApplicationStatus.APPROVED,
+          reviewedAt: new Date(),
+        })),
+      });
+    }
+  }
+
+  return partner.id;
+};
+
+const ensureApprovedAccountForApplication = async (
+  client: RegistrationApplicationClient,
+  application: RegistrationApplicationApprovalContext,
+  options?: {
+    skipPendingConflictChecks?: boolean;
+  },
+) => {
+  if (!options?.skipPendingConflictChecks) {
+    await ensureNoOtherPendingApplicationConflicts(client, application);
+  }
+
+  const approvedUser = await ensureApprovedUserForApplication(client, application);
+
+  if (application.roleType === RegistrationApplicationRoleType.RESTAURANT_OWNER) {
+    await ensureApprovedRestaurantForApplication(client, application, approvedUser.id);
+  } else {
+    await ensureApprovedDeliveryPartnerProfile(client, application, approvedUser.id);
+  }
+
+  return approvedUser;
+};
+
+const finalizeApprovedApplication = async (
+  applicationId: number,
+  options?: {
+    skipPendingConflictChecks?: boolean;
+  },
+) => {
+  const application = await loadRegistrationApplicationApprovalContext(prisma, applicationId);
+  const approvedUser = await ensureApprovedAccountForApplication(prisma, application, options);
+
+  if (application.approvedUserId !== approvedUser.id) {
+    await prisma.registrationApplication.update({
+      where: {
+        id: applicationId,
+      },
+      data: {
+        approvedUserId: approvedUser.id,
+      },
     });
   }
 
-  return user;
+  return loadRegistrationApplicationForResponse(applicationId);
 };
 
-const createApprovedAccountForApplication = async (
-  client: Prisma.TransactionClient,
-  application: RegistrationApplicationApprovalRecord,
-) => {
-  if (application.roleType === RegistrationApplicationRoleType.RESTAURANT_OWNER) {
-    return approveRestaurantOwnerApplication(client, application);
+const loadApprovedApplicationWithRepair = async (applicationId: number) => {
+  const application = await loadRegistrationApplicationForResponse(applicationId);
+
+  if (
+    application.status !== RegistrationApplicationStatus.APPROVED ||
+    application.approvedUserId
+  ) {
+    return application;
   }
 
-  return approveDeliveryPartnerApplication(client, application);
+  try {
+    return await finalizeApprovedApplication(applicationId, {
+      skipPendingConflictChecks: true,
+    });
+  } catch (error) {
+    if (env.isDevelopment) {
+      logger.warn("Registration application approval repair failed", {
+        applicationId,
+        error: serializeReviewError(error),
+      });
+    }
+
+    return application;
+  }
 };
 
 export const registrationApplicationsService = {
@@ -1031,62 +1589,105 @@ export const registrationApplicationsService = {
     },
     context?: RequestContext,
   ) {
+    const startedAt = Date.now();
+    const nextStatus = RegistrationApplicationStatus.APPROVED;
     const application = await ensureApplicationVisibleToActor(actor, applicationId, context);
+    const trimmedRemarks = input.remarks?.trim() || null;
 
-    if (application.status !== RegistrationApplicationStatus.PENDING) {
-      throw new AppError(
-        StatusCodes.CONFLICT,
-        "This registration application has already been reviewed",
-        "REGISTRATION_APPLICATION_ALREADY_REVIEWED",
-      );
-    }
+    logApplicationReviewEvent("started", {
+      applicationId,
+      applicationType: application.roleType,
+      reviewerId: actor.id,
+      reviewerRole: actor.role,
+      action: "APPROVE",
+      previousStatus: application.status,
+      nextStatus,
+    });
 
-    const reviewedApplication = await prisma.$transaction(async (tx) => {
-      const currentApplication = await tx.registrationApplication.findUniqueOrThrow({
-        where: { id: applicationId },
-        select: {
-          ...registrationApplicationSelect,
-          passwordHash: true,
+    try {
+      if (application.status === RegistrationApplicationStatus.REJECTED) {
+        const reviewedApplication = await loadRegistrationApplicationForResponse(applicationId);
+
+        logApplicationReviewEvent("completed", {
+          applicationId,
+          applicationType: application.roleType,
+          reviewerId: actor.id,
+          reviewerRole: actor.role,
+          action: "APPROVE",
+          previousStatus: application.status,
+          nextStatus: reviewedApplication.status,
+          durationMs: Date.now() - startedAt,
+        });
+
+        return mapRegistrationApplication(reviewedApplication);
+      }
+
+      if (application.status === RegistrationApplicationStatus.APPROVED) {
+        const reviewedApplication = await loadApprovedApplicationWithRepair(applicationId);
+
+        logApplicationReviewEvent("completed", {
+          applicationId,
+          applicationType: application.roleType,
+          reviewerId: actor.id,
+          reviewerRole: actor.role,
+          action: "APPROVE",
+          previousStatus: application.status,
+          nextStatus: reviewedApplication.status,
+          durationMs: Date.now() - startedAt,
+        });
+
+        return mapRegistrationApplication(reviewedApplication);
+      }
+
+      const approvalUpdate = await prisma.registrationApplication.updateMany({
+        where: {
+          id: applicationId,
+          status: RegistrationApplicationStatus.PENDING,
         },
-      });
-
-      const approvedUser = await createApprovedAccountForApplication(
-        tx,
-        currentApplication as RegistrationApplicationApprovalRecord,
-      );
-
-      return tx.registrationApplication.update({
-        where: { id: applicationId },
         data: {
-          status: RegistrationApplicationStatus.APPROVED,
-          approvedUserId: approvedUser.id,
+          status: nextStatus,
           reviewedById: actor.id,
-          reviewRemarks: input.remarks?.trim() || null,
+          reviewRemarks: trimmedRemarks,
           reviewedAt: new Date(),
         },
-        select: registrationApplicationSelect,
       });
-    });
 
-    await notificationsService.createForUser({
-      userId: reviewedApplication.approvedUser!.id,
-      title: "Registration approved",
-      message:
-        reviewedApplication.roleType === Role.RESTAURANT_OWNER
-          ? "Your restaurant owner onboarding has been approved. You can now sign in and complete your restaurant setup."
-          : "Your delivery partner onboarding has been approved. You can now sign in and start using the delivery dashboard.",
-      type: NotificationType.SYSTEM,
-      meta: {
-        eventKey: "registration-application:approved",
-        registrationApplicationId: reviewedApplication.id,
-        path:
-          reviewedApplication.roleType === Role.RESTAURANT_OWNER
-            ? "/owner/dashboard"
-            : "/delivery",
-      },
-    });
+      let reviewedApplication: RegistrationApplicationRecord;
 
-    return mapRegistrationApplication(reviewedApplication);
+      if (approvalUpdate.count === 0) {
+        reviewedApplication = await loadApprovedApplicationWithRepair(applicationId);
+      } else {
+        reviewedApplication = await finalizeApprovedApplication(applicationId);
+        await notifyApplicantAboutApproval(reviewedApplication);
+      }
+
+      logApplicationReviewEvent("completed", {
+        applicationId,
+        applicationType: application.roleType,
+        reviewerId: actor.id,
+        reviewerRole: actor.role,
+        action: "APPROVE",
+        previousStatus: application.status,
+        nextStatus: reviewedApplication.status,
+        durationMs: Date.now() - startedAt,
+      });
+
+      return mapRegistrationApplication(reviewedApplication);
+    } catch (error) {
+      logApplicationReviewEvent("failed", {
+        applicationId,
+        applicationType: application.roleType,
+        reviewerId: actor.id,
+        reviewerRole: actor.role,
+        action: "APPROVE",
+        previousStatus: application.status,
+        nextStatus,
+        durationMs: Date.now() - startedAt,
+        error,
+      });
+
+      throw error;
+    }
   },
 
   async reject(
@@ -1097,27 +1698,84 @@ export const registrationApplicationsService = {
     },
     context?: RequestContext,
   ) {
+    const startedAt = Date.now();
+    const nextStatus = RegistrationApplicationStatus.REJECTED;
     const application = await ensureApplicationVisibleToActor(actor, applicationId, context);
+    const trimmedRemarks = input.remarks.trim();
 
-    if (application.status !== RegistrationApplicationStatus.PENDING) {
-      throw new AppError(
-        StatusCodes.CONFLICT,
-        "This registration application has already been reviewed",
-        "REGISTRATION_APPLICATION_ALREADY_REVIEWED",
-      );
-    }
-
-    const reviewedApplication = await prisma.registrationApplication.update({
-      where: { id: applicationId },
-      data: {
-        status: RegistrationApplicationStatus.REJECTED,
-        reviewedById: actor.id,
-        reviewRemarks: input.remarks.trim(),
-        reviewedAt: new Date(),
-      },
-      select: registrationApplicationSelect,
+    logApplicationReviewEvent("started", {
+      applicationId,
+      applicationType: application.roleType,
+      reviewerId: actor.id,
+      reviewerRole: actor.role,
+      action: "REJECT",
+      previousStatus: application.status,
+      nextStatus,
     });
 
-    return mapRegistrationApplication(reviewedApplication);
+    try {
+      if (application.status !== RegistrationApplicationStatus.PENDING) {
+        const reviewedApplication = await loadRegistrationApplicationForResponse(applicationId);
+
+        logApplicationReviewEvent("completed", {
+          applicationId,
+          applicationType: application.roleType,
+          reviewerId: actor.id,
+          reviewerRole: actor.role,
+          action: "REJECT",
+          previousStatus: application.status,
+          nextStatus: reviewedApplication.status,
+          durationMs: Date.now() - startedAt,
+        });
+
+        return mapRegistrationApplication(reviewedApplication);
+      }
+
+      const rejectionUpdate = await prisma.registrationApplication.updateMany({
+        where: {
+          id: applicationId,
+          status: RegistrationApplicationStatus.PENDING,
+        },
+        data: {
+          status: nextStatus,
+          reviewedById: actor.id,
+          reviewRemarks: trimmedRemarks,
+          reviewedAt: new Date(),
+        },
+      });
+
+      const reviewedApplication = await loadRegistrationApplicationForResponse(applicationId);
+
+      if (rejectionUpdate.count > 0) {
+        await notifyApplicantAboutRejection(reviewedApplication);
+      }
+
+      logApplicationReviewEvent("completed", {
+        applicationId,
+        applicationType: application.roleType,
+        reviewerId: actor.id,
+        reviewerRole: actor.role,
+        action: "REJECT",
+        previousStatus: application.status,
+        nextStatus: reviewedApplication.status,
+        durationMs: Date.now() - startedAt,
+      });
+
+      return mapRegistrationApplication(reviewedApplication);
+    } catch (error) {
+      logApplicationReviewEvent("failed", {
+        applicationId,
+        applicationType: application.roleType,
+        reviewerId: actor.id,
+        reviewerRole: actor.role,
+        action: "REJECT",
+        previousStatus: application.status,
+        nextStatus,
+        durationMs: Date.now() - startedAt,
+        error,
+      });
+
+      throw error;
+    }
   },
 };
