@@ -46,12 +46,29 @@ export type OrderPlacementAvailability = {
   eligiblePartners: EligibleDeliveryPartner[];
 };
 
+export type PublicOrderPlacementAvailability = {
+  available: boolean;
+  canPlaceOrder: boolean;
+  coverageType: "PRIMARY" | "FALLBACK" | "NONE";
+  matchedRadiusKm: number | null;
+  partnerCount: number;
+  primaryRadiusKm: number;
+  fallbackRadiusKm: number;
+  message: string;
+  nearestPartner: {
+    id: number;
+    name: string;
+    distanceKm: number;
+  } | null;
+};
+
 export const PRIMARY_ASSIGNMENT_RADIUS_KM = 5;
 export const FALLBACK_ASSIGNMENT_RADIUS_KM = 7;
 export const ORDER_ASSIGNMENT_RADII_KM = [
   PRIMARY_ASSIGNMENT_RADIUS_KM,
   FALLBACK_ASSIGNMENT_RADIUS_KM,
 ] as const;
+export const DELIVERY_PARTNER_AVAILABLE_MESSAGE = "Delivery partner available";
 export const NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE =
   "No delivery partner available near this restaurant right now. Please try again later.";
 
@@ -67,6 +84,19 @@ const eligibleAvailabilityStatuses = new Set<string>([
   DeliveryAvailabilityStatus.ONLINE,
   "AVAILABLE",
 ]);
+
+const buildFreshLocationWhere = (staleLocationCutoff: Date) => ({
+  OR: [
+    {
+      lastLocationUpdatedAt: {
+        gte: staleLocationCutoff,
+      },
+    },
+    {
+      lastLocationUpdatedAt: null,
+    },
+  ],
+});
 
 const buildBoundingBox = (latitude: number, longitude: number, radiusKm: number) => {
   const latitudeDelta = radiusKm / 111;
@@ -116,7 +146,7 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
     excludePartnerIds?: number[];
     maxPartners?: number;
   },
-) => {
+): Promise<EligibleDeliveryPartner[]> => {
   const restaurantCoordinates = {
     latitude: restaurant.latitude,
     longitude: restaurant.longitude,
@@ -153,9 +183,7 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
         gte: boundingBox.minLongitude,
         lte: boundingBox.maxLongitude,
       },
-      lastLocationUpdatedAt: {
-        gte: staleLocationCutoff,
-      },
+      ...buildFreshLocationWhere(staleLocationCutoff),
       ...(options?.excludePartnerIds?.length
         ? {
             id: {
@@ -193,8 +221,8 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
     candidates.map((partner) => partner.id),
   );
 
-  return candidates
-    .map((partner) => {
+  const eligiblePartners = candidates.map(
+    (partner): EligibleDeliveryPartner | null => {
       const partnerCoordinates = {
         latitude: partner.currentLatitude,
         longitude: partner.currentLongitude,
@@ -236,9 +264,12 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
         activeOrderCount: activeOrderCountMap.get(partner.id) ?? 0,
         distanceKm: Number(distanceKm.toFixed(2)),
         user: partner.user,
-      } satisfies EligibleDeliveryPartner;
-    })
-    .filter((partner): partner is EligibleDeliveryPartner => Boolean(partner))
+      };
+    },
+  );
+
+  return eligiblePartners
+    .filter((partner): partner is EligibleDeliveryPartner => partner !== null)
     .filter((partner) => {
       if (partner.activeOrderCount > 0) {
         return false;
@@ -295,4 +326,32 @@ export const previewOrderPlacementAvailability = async (
     message: NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
     eligiblePartners: [],
   } satisfies OrderPlacementAvailability;
+};
+
+export const serializeOrderPlacementAvailability = (
+  availability: OrderPlacementAvailability,
+): PublicOrderPlacementAvailability => {
+  const nearestPartner = availability.eligiblePartners[0]
+    ? {
+        id: availability.eligiblePartners[0].id,
+        name: availability.eligiblePartners[0].user.fullName,
+        distanceKm: availability.eligiblePartners[0].distanceKm,
+      }
+    : null;
+
+  return {
+    available: availability.canPlaceOrder,
+    canPlaceOrder: availability.canPlaceOrder,
+    coverageType: availability.coverageType,
+    matchedRadiusKm: availability.matchedRadiusKm,
+    partnerCount: availability.partnerCount,
+    primaryRadiusKm: availability.primaryRadiusKm,
+    fallbackRadiusKm: availability.fallbackRadiusKm,
+    message: availability.canPlaceOrder
+      ? nearestPartner
+        ? `${DELIVERY_PARTNER_AVAILABLE_MESSAGE}. ${nearestPartner.name} is ${nearestPartner.distanceKm.toFixed(1)} km from the restaurant.`
+        : DELIVERY_PARTNER_AVAILABLE_MESSAGE
+      : NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
+    nearestPartner,
+  };
 };

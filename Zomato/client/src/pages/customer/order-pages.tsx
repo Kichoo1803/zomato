@@ -192,6 +192,67 @@ const formatEtaMinutes = (value?: number | null) =>
 const formatDistanceKm = (value?: number | null) =>
   value != null ? `${value.toFixed(1)} km` : "Pending";
 
+type CustomerCartSummary = CustomerCart["summary"];
+
+const formatDiscountAmount = (value: number) =>
+  value > 0 ? `-${formatCurrency(value)}` : formatCurrency(0);
+
+const OrderTotalsBreakdown = ({
+  summary,
+  tipAmount = 0,
+  className,
+}: {
+  summary: CustomerCartSummary;
+  tipAmount?: number;
+  className?: string;
+}) => {
+  const totalWithTip = summary.payableTotal + tipAmount;
+
+  return (
+    <div className={cn("space-y-3 text-sm text-ink-soft", className)}>
+      <div className="flex items-center justify-between">
+        <span>Subtotal</span>
+        <span>{formatCurrency(summary.subtotal)}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span>Delivery fee</span>
+        <span>{formatCurrency(summary.deliveryFee)}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span>Taxes</span>
+        <span>{formatCurrency(summary.taxAmount)}</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span>Discount</span>
+        <span>{formatDiscountAmount(summary.discountAmount)}</span>
+      </div>
+      {tipAmount > 0 ? (
+        <div className="flex items-center justify-between">
+          <span>Tip</span>
+          <span>{formatCurrency(tipAmount)}</span>
+        </div>
+      ) : null}
+      <div className="flex items-center justify-between font-semibold text-ink">
+        <span>Total payable</span>
+        <span>{formatCurrency(totalWithTip)}</span>
+      </div>
+    </div>
+  );
+};
+
+const formatCartItemsSummary = (items: CustomerCart["items"]) => {
+  if (!items.length) {
+    return "Order items will appear here once the cart is ready.";
+  }
+
+  const preview = items
+    .slice(0, 2)
+    .map((item) => `${item.quantity}x ${item.combo?.name ?? item.menuItem?.name ?? "Cart item"}`);
+  const extraCount = items.length - preview.length;
+
+  return extraCount > 0 ? `${preview.join(", ")} +${extraCount} more` : preview.join(", ");
+};
+
 const buildOrderRouteMarkers = (order: CustomerOrder) => [
   {
     id: `restaurant-${order.id}`,
@@ -1245,28 +1306,7 @@ export const CartPage = () => {
 
               <SurfaceCard className="space-y-4 lg:sticky lg:top-28 lg:h-fit">
                 <SectionHeading title="Order summary" description={cart.restaurant.name} />
-                <div className="space-y-3 text-sm text-ink-soft">
-                  <div className="flex items-center justify-between">
-                    <span>Subtotal</span>
-                    <span>{formatCurrency(cart.summary.subtotal)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Delivery fee</span>
-                    <span>{formatCurrency(cart.summary.deliveryFee)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Taxes</span>
-                    <span>{formatCurrency(cart.summary.taxAmount)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span>Discount</span>
-                    <span>-{formatCurrency(cart.summary.discountAmount)}</span>
-                  </div>
-                  <div className="flex items-center justify-between font-semibold text-ink">
-                    <span>Total payable</span>
-                    <span>{formatCurrency(cart.summary.payableTotal)}</span>
-                  </div>
-                </div>
+                <OrderTotalsBreakdown summary={cart.summary} />
                 <div className="flex flex-col gap-3">
                   <Link to={`/checkout?cartId=${cart.id}`} className={linkButtonClassName}>
                     Proceed to checkout
@@ -1659,17 +1699,8 @@ export const CheckoutPage = () => {
                 ) : null}
               </div>
             ))}
-            <div className="border-t border-accent/10 pt-4 text-sm font-semibold text-ink">
-              {tipAmount ? (
-                <div className="mb-2 flex items-center justify-between text-sm font-medium text-ink-soft">
-                  <span>Tip</span>
-                  <span>{formatCurrency(tipAmount)}</span>
-                </div>
-              ) : null}
-              <div className="flex items-center justify-between">
-                <span>Total</span>
-                <span>{formatCurrency(selectedCart.summary.payableTotal + tipAmount)}</span>
-              </div>
+            <div className="border-t border-accent/10 pt-4">
+              <OrderTotalsBreakdown summary={selectedCart.summary} tipAmount={tipAmount} />
             </div>
             {paymentHref ? (
               <Link to={paymentHref} className={linkButtonClassName}>
@@ -1710,6 +1741,7 @@ export const PaymentPage = () => {
   const [params] = useSearchParams();
   const [activeMethod, setActiveMethod] = useState<CheckoutPaymentTab>("CARD");
   const [carts, setCarts] = useState<CustomerCart[]>([]);
+  const [addresses, setAddresses] = useState<CustomerAddress[]>([]);
   const [availableOffers, setAvailableOffers] = useState<CustomerOffer[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingOffers, setIsLoadingOffers] = useState(false);
@@ -1754,12 +1786,20 @@ export const PaymentPage = () => {
 
   useEffect(() => {
     if (!useLiveFlow) {
+      setAddresses([]);
       return;
     }
 
     setIsLoading(true);
-    void Promise.all([getCustomerCarts(), loadSavedPaymentMethods()])
-      .then(([cartRows]) => setCarts(cartRows))
+    void Promise.all([
+      getCustomerCarts(),
+      loadSavedPaymentMethods(),
+      getCustomerAddresses().catch(() => []),
+    ])
+      .then(([cartRows, _paymentMethodRows, addressRows]) => {
+        setCarts(cartRows);
+        setAddresses(addressRows);
+      })
       .catch((error) => {
         toast.error(getApiErrorMessage(error, "Unable to load the payment summary."));
       })
@@ -1879,6 +1919,19 @@ export const PaymentPage = () => {
   const specialInstructions = params.get("notes") ?? undefined;
   const tipAmount = sanitizeTipAmount(params.get("tip"));
   const payableWithTip = (selectedCart?.summary.payableTotal ?? 0) + tipAmount;
+  const selectedAddress = addresses.find((address) => address.id === addressId) ?? null;
+  const selectedAddressLines = selectedAddress ? getCheckoutAddressLines(selectedAddress) : null;
+  const selectedAddressSummary = selectedAddress
+    ? [
+        selectedAddress.recipientName?.trim(),
+        getCheckoutAddressHeading(selectedAddress),
+        selectedAddressLines?.line1,
+        selectedAddressLines?.line2,
+      ]
+        .filter(Boolean)
+        .join(", ")
+    : null;
+  const selectedOrderSummary = selectedCart ? formatCartItemsSummary(selectedCart.items) : null;
   const selectedCardMethod =
     (useLiveFlow
       ? savedCardMethods.find((paymentMethod) => paymentMethod.id === selectedCardMethodId) ??
@@ -1958,6 +2011,10 @@ export const PaymentPage = () => {
   const walletSubtitle = useLiveFlow
     ? `${formatCurrency(user?.walletBalance ?? 0)} available for checkout.`
     : paymentModeContent.WALLET.subtitle;
+  const isDeliveryPartnerAvailable =
+    placementAvailability?.available ?? placementAvailability?.canPlaceOrder ?? false;
+  const isDeliveryPartnerExplicitlyUnavailable =
+    Boolean(placementAvailability) && !isDeliveryPartnerAvailable;
 
   useEffect(() => {
     if (!useLiveFlow || !selectedCart || !addressId) {
@@ -2529,6 +2586,19 @@ export const PaymentPage = () => {
                   />
                 </div>
               ) : null}
+              {placementAvailabilityError ? (
+                <div className="mt-3">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="px-4 py-2 text-xs"
+                    onClick={() => void loadPlacementAvailability()}
+                    disabled={isCheckingPlacementAvailability}
+                  >
+                    {isCheckingPlacementAvailability ? "Retrying..." : "Retry check"}
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -2796,7 +2866,7 @@ export const PaymentPage = () => {
         return;
       }
 
-      if (!latestPlacementAvailability.canPlaceOrder) {
+      if (!(latestPlacementAvailability.available ?? latestPlacementAvailability.canPlaceOrder)) {
         const message =
           latestPlacementAvailability.message ??
           "Unable to place this order right now because no nearby delivery partner is available.";
@@ -2895,7 +2965,7 @@ export const PaymentPage = () => {
               className={`rounded-[1.75rem] border px-5 py-4 text-sm shadow-soft ${
                 isCheckingPlacementAvailability
                   ? "border-accent/10 bg-white text-ink-soft"
-                  : placementAvailability?.canPlaceOrder
+                  : isDeliveryPartnerAvailable
                     ? "border-accent/10 bg-accent/[0.03] text-ink-soft"
                     : placementAvailabilityError
                       ? "border-accent/10 bg-white text-accent-soft"
@@ -2906,12 +2976,12 @@ export const PaymentPage = () => {
                 {isCheckingPlacementAvailability
                   ? "Checking nearby delivery partners..."
                   : placementAvailabilityError
-                    ? "Delivery availability check failed"
-                  : placementAvailability?.coverageType === "FALLBACK"
+                    ? "Unable to verify delivery coverage"
+                  : placementAvailability?.coverageType === "FALLBACK" && isDeliveryPartnerAvailable
                     ? "Nearby area order coverage confirmed"
-                    : placementAvailability?.canPlaceOrder
+                    : isDeliveryPartnerAvailable
                       ? "Nearby delivery partner coverage confirmed"
-                      : "Delivery partner currently unavailable"}
+                      : "Delivery partner unavailable"}
               </p>
               <p className="mt-1">
                 {isCheckingPlacementAvailability
@@ -2921,6 +2991,12 @@ export const PaymentPage = () => {
                   : placementAvailability?.message ??
                     "Nearby delivery partner availability will appear here once checkout details are ready."}
               </p>
+              {!isCheckingPlacementAvailability && !placementAvailabilityError && placementAvailability?.nearestPartner ? (
+                <p className="mt-2 text-xs text-ink-muted">
+                  Nearest partner {placementAvailability.nearestPartner.name} •{" "}
+                  {formatDistanceKm(placementAvailability.nearestPartner.distanceKm)} from the restaurant
+                </p>
+              ) : null}
               {!isCheckingPlacementAvailability && placementAvailability?.matchedRadiusKm ? (
                 <p className="mt-2 text-xs text-ink-muted">
                   Matched radius {formatDistanceKm(placementAvailability.matchedRadiusKm)} • Priority
@@ -2939,39 +3015,27 @@ export const PaymentPage = () => {
             </div>
             <div className="space-y-3 rounded-[1.75rem] bg-cream px-5 py-5 text-sm text-ink-soft">
               <div className="flex items-start justify-between gap-4">
+                <span>Restaurant</span>
+                <span className="max-w-[190px] text-right font-semibold text-ink">{selectedCart.restaurant.name}</span>
+              </div>
+              {selectedOrderSummary ? (
+                <div className="flex items-start justify-between gap-4">
+                  <span>Order</span>
+                  <span className="max-w-[190px] text-right text-ink-soft">{selectedOrderSummary}</span>
+                </div>
+              ) : null}
+              {selectedAddressSummary ? (
+                <div className="flex items-start justify-between gap-4">
+                  <span>Deliver to</span>
+                  <span className="max-w-[190px] text-right text-ink-soft">{selectedAddressSummary}</span>
+                </div>
+              ) : null}
+              <div className="flex items-start justify-between gap-4">
                 <span>Payment</span>
                 <span className="max-w-[190px] text-right font-semibold text-ink">{selectedPaymentSummary}</span>
               </div>
-              <div className="flex items-center justify-between">
-                <span>Subtotal</span>
-                <span>{formatCurrency(selectedCart.summary.subtotal)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Delivery fee</span>
-                <span>{formatCurrency(selectedCart.summary.deliveryFee)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Taxes</span>
-                <span>{formatCurrency(selectedCart.summary.taxAmount)}</span>
-              </div>
-              {selectedCart.summary.discountAmount > 0 ? (
-                <div className="flex items-center justify-between text-accent">
-                  <span>
-                    Offer savings
-                    {selectedCart.offer?.code ? ` (${selectedCart.offer.code})` : ""}
-                  </span>
-                  <span>-{formatCurrency(selectedCart.summary.discountAmount)}</span>
-                </div>
-              ) : null}
-              {tipAmount ? (
-                <div className="flex items-center justify-between">
-                  <span>Tip</span>
-                  <span>{formatCurrency(tipAmount)}</span>
-                </div>
-              ) : null}
-              <div className="flex items-center justify-between font-semibold text-ink">
-                <span>Total payable</span>
-                <span>{formatCurrency(payableWithTip)}</span>
+              <div className="border-t border-accent/10 pt-3">
+                <OrderTotalsBreakdown summary={selectedCart.summary} tipAmount={tipAmount} />
               </div>
             </div>
           </div>
@@ -2982,7 +3046,7 @@ export const PaymentPage = () => {
               disabled={
                 isSubmitting ||
                 isCheckingPlacementAvailability ||
-                placementAvailability?.partnerCount === 0
+                isDeliveryPartnerExplicitlyUnavailable
               }
             >
               {isSubmitting

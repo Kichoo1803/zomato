@@ -32,6 +32,7 @@ import {
   FALLBACK_ASSIGNMENT_RADIUS_KM,
   NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
   previewOrderPlacementAvailability,
+  serializeOrderPlacementAvailability,
 } from "./order-assignment.service.js";
 
 const orderInclude = {
@@ -678,7 +679,9 @@ export const ordersService = {
     },
   ) {
     const { cart } = await loadOrderPlacementContext(user, input);
-    return previewOrderPlacementAvailability(cart.restaurant);
+    return serializeOrderPlacementAvailability(
+      await previewOrderPlacementAvailability(cart.restaurant),
+    );
   },
 
   async place(
@@ -1264,12 +1267,17 @@ export const ordersService = {
     }
 
     const now = new Date();
+    const deliveryPartnerHasCoordinates = hasCoordinates({
+      latitude: deliveryPartner.currentLatitude,
+      longitude: deliveryPartner.currentLongitude,
+    });
+    const hasFreshOrLegacyLocation =
+      (deliveryPartner.lastLocationUpdatedAt &&
+        now.getTime() - new Date(deliveryPartner.lastLocationUpdatedAt).getTime() <=
+          orderDispatchService.dispatchConfig.staleLocationMinutes * 60 * 1000) ||
+      (!deliveryPartner.lastLocationUpdatedAt && deliveryPartnerHasCoordinates);
 
-    if (
-      !deliveryPartner.lastLocationUpdatedAt ||
-      now.getTime() - new Date(deliveryPartner.lastLocationUpdatedAt).getTime() >
-        orderDispatchService.dispatchConfig.staleLocationMinutes * 60 * 1000
-    ) {
+    if (!hasFreshOrLegacyLocation) {
       throw new AppError(
         StatusCodes.CONFLICT,
         "Refresh your live location before accepting a delivery request",

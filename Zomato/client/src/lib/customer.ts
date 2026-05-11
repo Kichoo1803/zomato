@@ -721,6 +721,7 @@ export type CustomerOrder = {
 };
 
 export type CustomerOrderPlacementAvailability = {
+  available: boolean;
   canPlaceOrder: boolean;
   coverageType: "PRIMARY" | "FALLBACK" | "NONE";
   matchedRadiusKm?: number | null;
@@ -728,6 +729,11 @@ export type CustomerOrderPlacementAvailability = {
   primaryRadiusKm: number;
   fallbackRadiusKm: number;
   message: string;
+  nearestPartner?: {
+    id: number;
+    name: string;
+    distanceKm: number;
+  } | null;
 };
 
 const PENDING_CUSTOMER_COUPON_STORAGE_PREFIX = "zomato-luxe-pending-coupon";
