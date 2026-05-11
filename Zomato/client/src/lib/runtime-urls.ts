@@ -2,8 +2,10 @@ const localhostHostnames = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"])
 const privateIpv4Pattern = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/;
 const devClientPorts = new Set(["5173", "5174", "4173"]);
 const LOCAL_API_SERVER_ORIGIN = "http://localhost:4000";
+const PRODUCTION_API_SERVER_ORIGIN = "https://zomato-csvi.onrender.com";
 const LOCAL_API_BASE_PATH = "/api/v1";
 const LOCAL_API_BASE_URL = `${LOCAL_API_SERVER_ORIGIN}${LOCAL_API_BASE_PATH}`;
+const PRODUCTION_API_BASE_URL = `${PRODUCTION_API_SERVER_ORIGIN}${LOCAL_API_BASE_PATH}`;
 
 const trimTrailingSlash = (value: string) => value.replace(/\/+$/, "");
 const trimLeadingSlash = (value: string) => value.replace(/^\/+/, "");
@@ -17,6 +19,14 @@ const shouldMirrorCurrentHostname = (targetUrl: URL, currentHostname: string) =>
   Boolean(currentHostname) &&
   isLocalHostname(currentHostname) &&
   localhostHostnames.has(targetUrl.hostname);
+
+const isLocalBrowserEnvironment = () => {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return isLocalHostname(window.location.hostname) || devClientPorts.has(window.location.port);
+};
 
 const getUrlResolutionBase = () =>
   typeof window === "undefined" ? LOCAL_API_SERVER_ORIGIN : window.location.origin;
@@ -40,19 +50,19 @@ const normalizeApiBasePath = (pathname: string) => {
 };
 
 const getDefaultApiBaseUrl = () => {
-  if (typeof window !== "undefined" && (import.meta.env.DEV || devClientPorts.has(window.location.port))) {
+  if (typeof window !== "undefined" && (import.meta.env.DEV || isLocalBrowserEnvironment())) {
     return `${window.location.protocol}//${window.location.hostname}:4000${LOCAL_API_BASE_PATH}`;
   }
 
-  return LOCAL_API_BASE_URL;
+  return PRODUCTION_API_BASE_URL;
 };
 
 const getDefaultRealtimeServerUrl = () => {
-  if (typeof window !== "undefined" && devClientPorts.has(window.location.port)) {
+  if (typeof window !== "undefined" && isLocalBrowserEnvironment()) {
     return `${window.location.protocol}//${window.location.hostname}:4000`;
   }
 
-  return LOCAL_API_SERVER_ORIGIN;
+  return PRODUCTION_API_SERVER_ORIGIN;
 };
 
 const resolveConfiguredUrl = (configuredUrl: string | undefined, fallbackUrl: string) => {

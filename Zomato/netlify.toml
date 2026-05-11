@@ -3,8 +3,20 @@ base = "client"
 command = "npm run build"
 publish = "dist"
 
-[context.production.environment]
+[build.environment]
 VITE_API_BASE_URL = "https://zomato-csvi.onrender.com/api/v1"
+
+[[redirects]]
+from = "/api/v1/*"
+to = "https://zomato-csvi.onrender.com/api/v1/:splat"
+status = 200
+force = true
+
+[[redirects]]
+from = "/api/*"
+to = "https://zomato-csvi.onrender.com/api/:splat"
+status = 200
+force = true
 
 [[redirects]]
 from = "/*"

@@ -31,6 +31,7 @@ app.use(
   }),
 );
 app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(compression());
 app.use(cookieParser());
 app.use(express.json({ limit: "2mb" }));

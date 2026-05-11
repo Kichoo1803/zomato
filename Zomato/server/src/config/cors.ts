@@ -31,6 +31,8 @@ export const validateCorsOrigin: CorsOptions["origin"] = (origin, callback) => {
 export const corsOptions: CorsOptions = {
   credentials: true,
   origin: validateCorsOrigin,
+  optionsSuccessStatus: 204,
+  preflightContinue: false,
 
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 

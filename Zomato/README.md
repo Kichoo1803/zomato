@@ -43,12 +43,13 @@ DATABASE_URL=mongodb+srv://...
 JWT_ACCESS_SECRET=replace-with-a-long-random-secret
 JWT_REFRESH_SECRET=replace-with-a-long-random-secret
 CLIENT_URL=https://eclectic-centaur-2eac44.netlify.app
-ALLOWED_CLIENT_ORIGINS=https://eclectic-centaur-2eac44.netlify.app
+ALLOWED_CLIENT_ORIGINS=https://eclectic-centaur-2eac44.netlify.app,https://6a018de1513ca04557f35a5f--eclectic-centaur-2eac44.netlify.app
 ```
 
 Notes:
 
 - The server already reads `PORT` from `process.env.PORT`, so Render can inject its own port.
+- `ALLOWED_CLIENT_ORIGINS` accepts a comma-separated list, and Netlify deploy-preview hostnames that follow `--eclectic-centaur-2eac44.netlify.app` are also accepted.
 - Prisma Client generation now happens during `npm run build -w server` via the server package `prebuild` hook.
 - The backend `start` command does not auto-run `prisma db push`, seed data, or local Mongo bootstrap in production.
 - `DATABASE_URL` accepts MongoDB Atlas `mongodb+srv://...` values.
@@ -69,6 +70,8 @@ VITE_API_BASE_URL=https://your-render-backend.onrender.com/api/v1
 Notes:
 
 - In production, the frontend reads `VITE_API_BASE_URL` for API calls.
+- If a hosted frontend build misses that env, the client still falls back to `https://zomato-csvi.onrender.com/api/v1` on non-localhost origins.
+- Netlify also proxies `/api/*` and `/api/v1/*` to Render as a safety net, so stale bundles do not post login requests back to the Netlify origin.
 - In local development, if `VITE_API_BASE_URL` is unset, the client falls back to `http://localhost:4000/api/v1`.
 - Netlify should serve the React SPA with a catch-all redirect to `index.html`.
 
