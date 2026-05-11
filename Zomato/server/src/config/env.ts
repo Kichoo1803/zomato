@@ -6,6 +6,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4000),
   HOST: z.string().trim().min(1).optional(),
   CLIENT_URL: z.string().url().default("http://localhost:5173"),
+  ALLOWED_CLIENT_ORIGINS: z.string().optional(),
   CORS_ORIGINS: z.string().optional(),
   DATABASE_URL: z.string().min(1),
   JWT_ACCESS_SECRET: z.string().min(32),

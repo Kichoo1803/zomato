@@ -42,8 +42,8 @@ NODE_ENV=production
 DATABASE_URL=mongodb+srv://...
 JWT_ACCESS_SECRET=replace-with-a-long-random-secret
 JWT_REFRESH_SECRET=replace-with-a-long-random-secret
-CLIENT_URL=https://your-netlify-site.netlify.app
-CORS_ORIGINS=https://your-netlify-site.netlify.app
+CLIENT_URL=https://eclectic-centaur-2eac44.netlify.app
+ALLOWED_CLIENT_ORIGINS=https://eclectic-centaur-2eac44.netlify.app
 ```
 
 Notes:
@@ -69,7 +69,7 @@ VITE_API_BASE_URL=https://your-render-backend.onrender.com/api/v1
 Notes:
 
 - In production, the frontend reads `VITE_API_BASE_URL` for API calls.
-- In local development, if `VITE_API_BASE_URL` is unset, the client still falls back to `http://localhost:4000/api`.
+- In local development, if `VITE_API_BASE_URL` is unset, the client falls back to `http://localhost:4000/api/v1`.
 - Netlify should serve the React SPA with a catch-all redirect to `index.html`.
 
 ## MongoDB Notes

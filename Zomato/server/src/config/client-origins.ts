@@ -5,6 +5,7 @@ const privateIpv4Pattern = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/;
 const LOCAL_VITE_PREVIEW_PORT = "4173";
 const LOCAL_VITE_DEV_PORT_MIN = 5173;
 const LOCAL_VITE_DEV_PORT_MAX = 5199;
+const defaultHostedClientOrigins = ["https://eclectic-centaur-2eac44.netlify.app"];
 const defaultDevClientOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
@@ -35,14 +36,14 @@ const isLocalDevelopmentPort = (port: string) => {
   return Number.isInteger(numericPort) && numericPort >= LOCAL_VITE_DEV_PORT_MIN && numericPort <= LOCAL_VITE_DEV_PORT_MAX;
 };
 
-const configuredCorsOrigins = (env.CORS_ORIGINS ?? "")
-  .split(",")
+const configuredCorsOrigins = [env.ALLOWED_CLIENT_ORIGINS, env.CORS_ORIGINS]
+  .flatMap((value) => (value ?? "").split(","))
   .map((origin) => normalizeOrigin(origin.trim()))
   .filter((origin): origin is string => Boolean(origin));
 
 const configuredOrigins = Array.from(
   new Set(
-    [env.CLIENT_URL, ...configuredCorsOrigins, ...defaultDevClientOrigins]
+    [env.CLIENT_URL, ...defaultHostedClientOrigins, ...configuredCorsOrigins, ...defaultDevClientOrigins]
       .map(normalizeOrigin)
       .filter((origin): origin is string => Boolean(origin)),
   ),

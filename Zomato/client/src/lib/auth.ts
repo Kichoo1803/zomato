@@ -76,6 +76,15 @@ const getApiErrorCode = (error: unknown) => {
 
 const getApiErrorStatus = (error: unknown) => (axios.isAxiosError(error) ? error.response?.status ?? null : null);
 
+const getApiErrorResponseMessage = (error: unknown) => {
+  if (!axios.isAxiosError(error)) {
+    return null;
+  }
+
+  const responseMessage = error.response?.data?.message;
+  return typeof responseMessage === "string" && responseMessage.trim() ? responseMessage.trim() : null;
+};
+
 const getValidationDetailMessage = (error: unknown) => {
   if (!axios.isAxiosError(error)) {
     return null;
@@ -232,13 +241,23 @@ export const getLoginErrorMessage = (error: unknown) => {
 
   const errorCode = getApiErrorCode(error);
   const statusCode = getApiErrorStatus(error);
+  const responseMessage = getApiErrorResponseMessage(error);
+  const validationDetailMessage = getValidationDetailMessage(error);
 
   if (error.code === "ERR_NETWORK") {
     return loginUnavailableMessage;
   }
 
   if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
-    return "Sign-in timed out. Please try again.";
+    return loginUnavailableMessage;
+  }
+
+  if (validationDetailMessage) {
+    return validationDetailMessage;
+  }
+
+  if (responseMessage && responseMessage.toLowerCase() !== "request validation failed") {
+    return responseMessage;
   }
 
   if (errorCode === "MISSING_CREDENTIALS" || statusCode === 400) {
@@ -264,17 +283,13 @@ export const getLoginErrorMessage = (error: unknown) => {
       "DATABASE_SCHEMA_NOT_READY",
       "PRISMA_CLIENT_OUT_OF_SYNC",
     ].includes(errorCode ?? "")
+    || [502, 503, 504].includes(statusCode ?? 0)
   ) {
     return "Server unavailable. Please try again in a moment.";
   }
 
   if (error.code === "ERR_BAD_RESPONSE" || (statusCode ?? 0) >= 500) {
-    return "Sign-in hit a temporary server issue. Please try again in a moment.";
-  }
-
-  const responseMessage = error.response?.data?.message;
-  if (typeof responseMessage === "string" && responseMessage.trim()) {
-    return responseMessage;
+    return loginUnavailableMessage;
   }
 
   return "Unable to sign in right now.";

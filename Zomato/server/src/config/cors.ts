@@ -1,4 +1,6 @@
 import type { CorsOptions } from "cors";
+import { logger } from "../lib/logger.js";
+import { env } from "./env.js";
 import { getAllowedClientOrigins, isAllowedClientOrigin } from "./client-origins.js";
 
 export const isCorsOriginAllowed = (origin?: string | null) => {
@@ -14,6 +16,13 @@ export const validateCorsOrigin: CorsOptions["origin"] = (origin, callback) => {
   if (isCorsOriginAllowed(origin)) {
     callback(null, true);
     return;
+  }
+
+  if (env.isDevelopment) {
+    logger.warn("Rejected CORS origin", {
+      origin,
+      allowedClientOrigins,
+    });
   }
 
   callback(new Error("Origin is not allowed by CORS"));

@@ -1,5 +1,5 @@
 import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from "axios";
-import { resolveApiBaseUrl } from "@/lib/runtime-urls";
+import { resolveApiBaseUrl, resolveApiRequestUrl } from "@/lib/runtime-urls";
 import { normalizeStoredAuthUser } from "@/lib/roles";
 import { useAuthStore } from "@/store/auth.store";
 
@@ -12,6 +12,14 @@ const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
 type RetriableRequestConfig = InternalAxiosRequestConfig & {
   _retryCount?: number;
   _skipAutoRetry?: boolean;
+};
+
+const logDevelopmentMessage = (message: string, context?: Record<string, unknown>) => {
+  if (!import.meta.env.DEV) {
+    return;
+  }
+
+  console.debug(message, context ?? {});
 };
 
 const delay = (durationMs: number) => new Promise((resolve) => setTimeout(resolve, durationMs));
@@ -67,8 +75,29 @@ const createApiClient = () =>
 export const publicApi = createApiClient();
 export const apiClient = createApiClient();
 
+const attachDevelopmentLogging = (client: AxiosInstance, clientName: string) => {
+  if (!import.meta.env.DEV) {
+    return;
+  }
+
+  client.interceptors.request.use((config) => {
+    const requestPath = typeof config.url === "string" ? config.url : "";
+
+    logDevelopmentMessage(`[api:${clientName}] request`, {
+      method: (config.method ?? "get").toUpperCase(),
+      url: resolveApiRequestUrl(requestPath),
+    });
+
+    return config;
+  });
+};
+
 attachRetryInterceptor(publicApi);
 attachRetryInterceptor(apiClient);
+attachDevelopmentLogging(publicApi, "public");
+attachDevelopmentLogging(apiClient, "private");
+
+logDevelopmentMessage("[api] resolved base URL", { baseURL });
 
 apiClient.interceptors.request.use((config) => {
   const token = useAuthStore.getState().accessToken;
