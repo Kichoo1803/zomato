@@ -31,6 +31,7 @@ import { orderDispatchService } from "./order-dispatch.service.js";
 import {
   FALLBACK_ASSIGNMENT_RADIUS_KM,
   NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
+  isDeliveryPartnerAvailableForOrdersStatus,
   previewOrderPlacementAvailability,
   serializeOrderPlacementAvailability,
 } from "./order-assignment.service.js";
@@ -1258,7 +1259,7 @@ export const ordersService = {
       );
     }
 
-    if (deliveryPartner.availabilityStatus !== DeliveryAvailabilityStatus.ONLINE) {
+    if (!isDeliveryPartnerAvailableForOrdersStatus(deliveryPartner.availabilityStatus)) {
       throw new AppError(
         StatusCodes.CONFLICT,
         "Go online before accepting a delivery request",

@@ -22,6 +22,7 @@ import {
   FALLBACK_ASSIGNMENT_RADIUS_KM,
   PRIMARY_ASSIGNMENT_RADIUS_KM,
   getEligibleDeliveryPartnersForRestaurant,
+  isDeliveryPartnerAvailableForOrdersStatus,
 } from "./order-assignment.service.js";
 
 const deliveryOfferOrderInclude = {
@@ -1229,7 +1230,7 @@ export const orderDispatchService = {
 
     const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(user.id);
 
-    if (partner.availabilityStatus !== DeliveryAvailabilityStatus.ONLINE) {
+    if (!isDeliveryPartnerAvailableForOrdersStatus(partner.availabilityStatus)) {
       return [];
     }
 

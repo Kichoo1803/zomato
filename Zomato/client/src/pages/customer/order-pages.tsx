@@ -1974,7 +1974,7 @@ export const PaymentPage = () => {
     } catch (error) {
       const message = getApiErrorMessage(
         error,
-        "Unable to check nearby delivery partner availability right now.",
+        "Could not verify delivery partner availability. Please retry.",
       );
 
       setPlacementAvailability(null);
@@ -2041,7 +2041,7 @@ export const PaymentPage = () => {
         if (isMounted) {
           const message = getApiErrorMessage(
             error,
-            "Unable to check nearby delivery partner availability right now.",
+            "Could not verify delivery partner availability. Please retry.",
           );
 
           setPlacementAvailability(null);
@@ -2860,7 +2860,7 @@ export const PaymentPage = () => {
       const latestPlacementAvailability = await loadPlacementAvailability();
 
       if (!latestPlacementAvailability) {
-        const message = "Unable to check nearby delivery partner availability right now.";
+        const message = "Could not verify delivery partner availability. Please retry.";
         setPaymentError(message);
         toast.error(message);
         return;
