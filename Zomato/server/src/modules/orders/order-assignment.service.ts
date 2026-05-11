@@ -6,6 +6,7 @@ import {
 import { env } from "../../config/env.js";
 import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
+import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import { calculateDistanceKm, hasCoordinates } from "../../utils/geo.js";
 
 type RestaurantAssignmentContext = {
@@ -17,6 +18,23 @@ type RestaurantAssignmentContext = {
   latitude?: number | null;
   longitude?: number | null;
 };
+
+type DeliveryAvailabilityRestaurantContext = RestaurantAssignmentContext & {
+  avgDeliveryTime?: number | null;
+  preparationTime?: number | null;
+};
+
+type DeliveryAvailabilityAddressContext = {
+  id?: number;
+  latitude?: number | null;
+  longitude?: number | null;
+};
+
+export type DeliveryAvailabilityReason =
+  | "RESTAURANT_NOT_FOUND"
+  | "RESTAURANT_COORDINATES_MISSING"
+  | "NO_DELIVERY_PARTNER_AVAILABLE"
+  | null;
 
 export type EligibleDeliveryPartner = {
   id: number;
@@ -43,6 +61,7 @@ export type OrderPlacementAvailability = {
   primaryRadiusKm: number;
   fallbackRadiusKm: number;
   message: string;
+  reason: DeliveryAvailabilityReason;
   eligiblePartners: EligibleDeliveryPartner[];
 };
 
@@ -55,6 +74,11 @@ export type PublicOrderPlacementAvailability = {
   primaryRadiusKm: number;
   fallbackRadiusKm: number;
   message: string;
+  reason: DeliveryAvailabilityReason;
+  nearestPartnerId: number | null;
+  nearestPartnerName: string | null;
+  distanceKm: number | null;
+  etaMinutes: number | null;
   nearestPartner: {
     id: number;
     name: string;
@@ -159,6 +183,7 @@ const logPreviewAvailabilityResult = (payload: {
   eligiblePartnerCount: number;
   nearestPartnerDistanceKm: number | null;
   available: boolean;
+  reason?: DeliveryAvailabilityReason;
 }) => {
   if (!env.isDevelopment) {
     return;
@@ -174,7 +199,81 @@ const logPreviewAvailabilityResult = (payload: {
     eligiblePartnerCount: payload.eligiblePartnerCount,
     nearestPartnerDistanceKm: payload.nearestPartnerDistanceKm,
     available: payload.available,
+    reason: payload.reason ?? null,
   });
+};
+
+const buildUnavailablePlacementAvailability = (
+  reason: Exclude<DeliveryAvailabilityReason, null>,
+  message: string,
+): OrderPlacementAvailability => ({
+  canPlaceOrder: false,
+  coverageType: "NONE",
+  matchedRadiusKm: null,
+  partnerCount: 0,
+  primaryRadiusKm: PRIMARY_ASSIGNMENT_RADIUS_KM,
+  fallbackRadiusKm: FALLBACK_ASSIGNMENT_RADIUS_KM,
+  message,
+  reason,
+  eligiblePartners: [],
+});
+
+const loadRestaurantAvailabilityContext = async (
+  restaurantId: number,
+): Promise<DeliveryAvailabilityRestaurantContext | null> =>
+  prisma.restaurant.findUnique({
+    where: { id: restaurantId },
+    select: {
+      id: true,
+      name: true,
+      area: true,
+      city: true,
+      state: true,
+      latitude: true,
+      longitude: true,
+      avgDeliveryTime: true,
+      preparationTime: true,
+    },
+  });
+
+const loadAddressAvailabilityContext = async (input: {
+  addressId?: number;
+  userId?: number | null;
+}): Promise<DeliveryAvailabilityAddressContext | null> => {
+  if (!input.addressId || !input.userId) {
+    return null;
+  }
+
+  return prisma.address.findFirst({
+    where: {
+      id: input.addressId,
+      userId: input.userId,
+      isServiceable: true,
+    },
+    select: {
+      id: true,
+      latitude: true,
+      longitude: true,
+    },
+  });
+};
+
+const calculatePlacementEtaMinutes = async (input: {
+  availability: OrderPlacementAvailability;
+  restaurant: DeliveryAvailabilityRestaurantContext;
+  address?: DeliveryAvailabilityAddressContext | null;
+}) => {
+  if (!input.availability.canPlaceOrder || !input.address) {
+    return null;
+  }
+
+  const intelligence = await calculateDeliveryIntelligence({
+    status: OrderStatus.PLACED,
+    restaurant: input.restaurant,
+    address: input.address,
+  });
+
+  return intelligence.estimatedDeliveryMinutes ?? null;
 };
 
 export const getEligibleDeliveryPartnersForRestaurant = async (
@@ -289,6 +388,7 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
           restaurantLatitude: restaurantCoordinates.latitude,
           restaurantLongitude: restaurantCoordinates.longitude,
           partnerId: partner.id,
+          partnerAvailabilityStatus: partner.availabilityStatus,
           partnerLatitude: partnerCoordinates.latitude,
           partnerLongitude: partnerCoordinates.longitude,
           calculatedDistanceKm: Number(distanceKm.toFixed(2)),
@@ -327,13 +427,9 @@ export const getEligibleDeliveryPartnersForRestaurant = async (
     .slice(0, maxPartners);
 };
 
-export const findNearbyAvailableDeliveryPartnerForRestaurant = async (
+export const previewOrderPlacementAvailability = async (
   restaurant: RestaurantAssignmentContext,
-  radiusKm: number,
-  options?: {
-    maxPartners?: number;
-  },
-): Promise<EligibleDeliveryPartner[]> => {
+) => {
   const restaurantCoordinates = {
     latitude: restaurant.latitude,
     longitude: restaurant.longitude,
@@ -342,125 +438,35 @@ export const findNearbyAvailableDeliveryPartnerForRestaurant = async (
   if (!hasCoordinates(restaurantCoordinates)) {
     logPreviewAvailabilityResult({
       restaurant,
-      radiusKm,
+      radiusKm: FALLBACK_ASSIGNMENT_RADIUS_KM,
       checkedPartnerCount: 0,
       eligiblePartnerCount: 0,
       nearestPartnerDistanceKm: null,
       available: false,
+      reason: "RESTAURANT_COORDINATES_MISSING",
     });
-    return [];
+
+    return buildUnavailablePlacementAvailability(
+      "RESTAURANT_COORDINATES_MISSING",
+      "Restaurant coordinates are missing. Delivery partner coverage cannot be checked yet.",
+    );
   }
 
-  const maxPartners =
-    options?.maxPartners ?? env.DELIVERY_ASSIGNMENT_MAX_BROADCAST_PARTNERS;
-  const boundingBox = buildBoundingBox(
-    restaurantCoordinates.latitude,
-    restaurantCoordinates.longitude,
-    radiusKm,
-  );
-
-  const candidates = await prisma.deliveryPartner.findMany({
-    where: {
-      isVerified: true,
-      currentLatitude: {
-        not: null,
-        gte: boundingBox.minLatitude,
-        lte: boundingBox.maxLatitude,
-      },
-      currentLongitude: {
-        not: null,
-        gte: boundingBox.minLongitude,
-        lte: boundingBox.maxLongitude,
-      },
-      user: {
-        isActive: true,
-        role: Role.DELIVERY_PARTNER,
-      },
-    },
-    select: {
-      id: true,
-      userId: true,
-      availabilityStatus: true,
-      currentLatitude: true,
-      currentLongitude: true,
-      lastLocationUpdatedAt: true,
-      updatedAt: true,
-      user: {
-        select: {
-          id: true,
-          fullName: true,
-          isActive: true,
-          opsState: true,
-          opsDistrict: true,
-        },
-      },
-    },
-    orderBy: [{ updatedAt: "desc" }, { lastLocationUpdatedAt: "desc" }],
-    take: Math.max(maxPartners * 12, 24),
-  });
-
-  const eligiblePartners = candidates
-    .filter((partner) =>
-      isDeliveryPartnerAvailableForOrdersStatus(partner.availabilityStatus),
-    )
-    .map((partner): EligibleDeliveryPartner | null => {
-      const partnerCoordinates = {
-        latitude: partner.currentLatitude,
-        longitude: partner.currentLongitude,
-      };
-
-      if (!hasCoordinates(partnerCoordinates)) {
-        return null;
-      }
-
-      const distanceKm = calculateDistanceKm(
-        restaurantCoordinates.latitude,
-        restaurantCoordinates.longitude,
-        partnerCoordinates.latitude,
-        partnerCoordinates.longitude,
-      );
-
-      if (!Number.isFinite(distanceKm) || distanceKm > radiusKm) {
-        return null;
-      }
-
-      return {
-        id: partner.id,
-        userId: partner.userId,
-        currentLatitude: partnerCoordinates.latitude,
-        currentLongitude: partnerCoordinates.longitude,
-        lastLocationUpdatedAt: partner.lastLocationUpdatedAt,
-        activeOrderCount: 0,
-        distanceKm: Number(distanceKm.toFixed(2)),
-        user: partner.user,
-      };
-    })
-    .filter((partner): partner is EligibleDeliveryPartner => partner !== null)
-    .sort((left, right) => left.distanceKm - right.distanceKm)
-    .slice(0, maxPartners);
-
-  logPreviewAvailabilityResult({
-    restaurant,
-    radiusKm,
-    checkedPartnerCount: candidates.filter((partner) =>
-      isDeliveryPartnerAvailableForOrdersStatus(partner.availabilityStatus),
-    ).length,
-    eligiblePartnerCount: eligiblePartners.length,
-    nearestPartnerDistanceKm: eligiblePartners[0]?.distanceKm ?? null,
-    available: eligiblePartners.length > 0,
-  });
-
-  return eligiblePartners;
-};
-
-export const previewOrderPlacementAvailability = async (
-  restaurant: RestaurantAssignmentContext,
-) => {
   for (const radiusKm of ORDER_ASSIGNMENT_RADII_KM) {
-    const eligiblePartners = await findNearbyAvailableDeliveryPartnerForRestaurant(
+    const eligiblePartners = await getEligibleDeliveryPartnersForRestaurant(
       restaurant,
       radiusKm,
     );
+
+    logPreviewAvailabilityResult({
+      restaurant,
+      radiusKm,
+      checkedPartnerCount: eligiblePartners.length,
+      eligiblePartnerCount: eligiblePartners.length,
+      nearestPartnerDistanceKm: eligiblePartners[0]?.distanceKm ?? null,
+      available: eligiblePartners.length > 0,
+      reason: eligiblePartners.length ? null : "NO_DELIVERY_PARTNER_AVAILABLE",
+    });
 
     if (!eligiblePartners.length) {
       continue;
@@ -478,25 +484,23 @@ export const previewOrderPlacementAvailability = async (
         radiusKm === PRIMARY_ASSIGNMENT_RADIUS_KM
           ? `${eligiblePartners.length} nearby delivery partner${eligiblePartners.length === 1 ? "" : "s"} currently cover this restaurant within ${PRIMARY_ASSIGNMENT_RADIUS_KM} km.`
           : `${eligiblePartners.length} nearby area delivery partner${eligiblePartners.length === 1 ? "" : "s"} currently cover this restaurant within ${FALLBACK_ASSIGNMENT_RADIUS_KM} km.`,
+      reason: null,
       eligiblePartners,
     } satisfies OrderPlacementAvailability;
   }
 
-  return {
-    canPlaceOrder: false,
-    coverageType: "NONE",
-    matchedRadiusKm: null,
-    partnerCount: 0,
-    primaryRadiusKm: PRIMARY_ASSIGNMENT_RADIUS_KM,
-    fallbackRadiusKm: FALLBACK_ASSIGNMENT_RADIUS_KM,
-    message: PUBLIC_NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
-    eligiblePartners: [],
-  } satisfies OrderPlacementAvailability;
+  return buildUnavailablePlacementAvailability(
+    "NO_DELIVERY_PARTNER_AVAILABLE",
+    PUBLIC_NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
+  );
 };
 
-export const serializeOrderPlacementAvailability = (
-  availability: OrderPlacementAvailability,
-): PublicOrderPlacementAvailability => {
+export const buildPublicOrderPlacementAvailability = async (input: {
+  availability: OrderPlacementAvailability;
+  restaurant: DeliveryAvailabilityRestaurantContext;
+  address?: DeliveryAvailabilityAddressContext | null;
+}): Promise<PublicOrderPlacementAvailability> => {
+  const { availability, restaurant, address } = input;
   const nearestPartner = availability.eligiblePartners[0]
     ? {
         id: availability.eligiblePartners[0].id,
@@ -504,6 +508,11 @@ export const serializeOrderPlacementAvailability = (
         distanceKm: availability.eligiblePartners[0].distanceKm,
       }
     : null;
+  const etaMinutes = await calculatePlacementEtaMinutes({
+    availability,
+    restaurant,
+    address,
+  });
 
   return {
     available: availability.canPlaceOrder,
@@ -513,9 +522,46 @@ export const serializeOrderPlacementAvailability = (
     partnerCount: availability.partnerCount,
     primaryRadiusKm: availability.primaryRadiusKm,
     fallbackRadiusKm: availability.fallbackRadiusKm,
-    message: availability.canPlaceOrder
-      ? DELIVERY_PARTNER_AVAILABLE_MESSAGE
-      : PUBLIC_NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
+    message: availability.message,
+    reason: availability.reason,
+    nearestPartnerId: nearestPartner?.id ?? null,
+    nearestPartnerName: nearestPartner?.name ?? null,
+    distanceKm: nearestPartner?.distanceKm ?? null,
+    etaMinutes,
     nearestPartner,
   };
+};
+
+export const getPublicDeliveryAvailabilityForRestaurant = async (input: {
+  restaurantId: number;
+  addressId?: number;
+  userId?: number | null;
+}): Promise<PublicOrderPlacementAvailability> => {
+  const restaurant = await loadRestaurantAvailabilityContext(input.restaurantId);
+
+  if (!restaurant) {
+    return buildPublicOrderPlacementAvailability({
+      availability: buildUnavailablePlacementAvailability(
+        "RESTAURANT_NOT_FOUND",
+        "Restaurant not found. Delivery availability cannot be checked.",
+      ),
+      restaurant: {
+        id: input.restaurantId,
+      },
+    });
+  }
+
+  const [availability, address] = await Promise.all([
+    previewOrderPlacementAvailability(restaurant),
+    loadAddressAvailabilityContext({
+      addressId: input.addressId,
+      userId: input.userId,
+    }),
+  ]);
+
+  return buildPublicOrderPlacementAvailability({
+    availability,
+    restaurant,
+    address,
+  });
 };

@@ -729,6 +729,11 @@ export type CustomerOrderPlacementAvailability = {
   primaryRadiusKm: number;
   fallbackRadiusKm: number;
   message: string;
+  reason?: string | null;
+  nearestPartnerId?: number | null;
+  nearestPartnerName?: string | null;
+  distanceKm?: number | null;
+  etaMinutes?: number | null;
   nearestPartner?: {
     id: number;
     name: string;
@@ -1118,6 +1123,27 @@ export const previewCustomerOrderPlacement = async (payload: {
       }>
     >("/orders/placement-preview", payload),
   ).availability;
+
+export const getCustomerDeliveryAvailability = async (payload: {
+  restaurantId: number;
+  addressId?: number;
+}) => {
+  const searchParams = new URLSearchParams({
+    restaurantId: String(payload.restaurantId),
+  });
+
+  if (payload.addressId) {
+    searchParams.set("addressId", String(payload.addressId));
+  }
+
+  return unwrapData(
+    await apiClient.get<
+      ApiEnvelope<{
+        availability: CustomerOrderPlacementAvailability;
+      }>
+    >(`/delivery/availability?${searchParams.toString()}`),
+  ).availability;
+};
 
 export const getCustomerOrders = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ orders: CustomerOrder[] }>>("/orders")).orders;

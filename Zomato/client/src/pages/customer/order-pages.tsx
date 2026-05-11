@@ -29,12 +29,12 @@ import {
   clearPendingCustomerCouponSelection,
   getCustomerAddresses,
   getCustomerCarts,
+  getCustomerDeliveryAvailability,
   getCustomerOrderById,
   getCustomerOrders,
   getCustomerPaymentMethods,
   getPublicOffers,
   placeCustomerOrder,
-  previewCustomerOrderPlacement,
   readPendingCustomerCouponSelection,
   removeCustomerCartItem,
   removeCustomerCartOffer,
@@ -1951,7 +1951,7 @@ export const PaymentPage = () => {
   }: {
     quietly?: boolean;
   } = {}) => {
-    if (!useLiveFlow || !selectedCart || !addressId) {
+    if (!useLiveFlow || !selectedCart) {
       setPlacementAvailability(null);
       setPlacementAvailabilityError(null);
       return null;
@@ -1964,9 +1964,9 @@ export const PaymentPage = () => {
     setPlacementAvailabilityError(null);
 
     try {
-      const availability = await previewCustomerOrderPlacement({
-        cartId: selectedCart.id,
-        addressId,
+      const availability = await getCustomerDeliveryAvailability({
+        restaurantId: selectedCart.restaurant.id,
+        addressId: addressId || undefined,
       });
       setPlacementAvailability(availability);
       setPlacementAvailabilityError(null);
@@ -2017,7 +2017,7 @@ export const PaymentPage = () => {
     Boolean(placementAvailability) && !isDeliveryPartnerAvailable;
 
   useEffect(() => {
-    if (!useLiveFlow || !selectedCart || !addressId) {
+    if (!useLiveFlow || !selectedCart) {
       setPlacementAvailability(null);
       setPlacementAvailabilityError(null);
       setIsCheckingPlacementAvailability(false);
@@ -2027,9 +2027,9 @@ export const PaymentPage = () => {
     let isMounted = true;
     setIsCheckingPlacementAvailability(true);
 
-    void previewCustomerOrderPlacement({
-      cartId: selectedCart.id,
-      addressId,
+    void getCustomerDeliveryAvailability({
+      restaurantId: selectedCart.restaurant.id,
+      addressId: addressId || undefined,
     })
       .then((availability) => {
         if (isMounted) {
@@ -2057,7 +2057,14 @@ export const PaymentPage = () => {
     return () => {
       isMounted = false;
     };
-  }, [addressId, selectedCart?.id, useLiveFlow]);
+  }, [
+    activeMethod,
+    addressId,
+    selectedCardMethodId,
+    selectedCart?.restaurant.id,
+    selectedUpiMethodId,
+    useLiveFlow,
+  ]);
 
   const eligibleCoupons = useMemo(
     () =>
@@ -2960,7 +2967,7 @@ export const PaymentPage = () => {
               {paymentError}
             </div>
           ) : null}
-          {useLiveFlow && selectedCart && addressId ? (
+          {useLiveFlow && selectedCart ? (
             <div
               className={`rounded-[1.75rem] border px-5 py-4 text-sm shadow-soft ${
                 isCheckingPlacementAvailability
@@ -2972,17 +2979,28 @@ export const PaymentPage = () => {
                       : "border-accent/10 bg-white text-accent-soft"
               }`}
             >
-              <p className="font-semibold text-ink">
-                {isCheckingPlacementAvailability
-                  ? "Checking nearby delivery partners..."
-                  : placementAvailabilityError
-                    ? "Unable to verify delivery coverage"
-                  : placementAvailability?.coverageType === "FALLBACK" && isDeliveryPartnerAvailable
-                    ? "Nearby area order coverage confirmed"
-                    : isDeliveryPartnerAvailable
-                      ? "Nearby delivery partner coverage confirmed"
-                      : "Delivery partner unavailable"}
-              </p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <p className="font-semibold text-ink">
+                  {isCheckingPlacementAvailability
+                    ? "Checking nearby delivery partners..."
+                    : placementAvailabilityError
+                      ? "Unable to verify delivery coverage"
+                    : placementAvailability?.coverageType === "FALLBACK" && isDeliveryPartnerAvailable
+                      ? "Nearby area order coverage confirmed"
+                      : isDeliveryPartnerAvailable
+                        ? "Delivery partner available nearby"
+                        : "Delivery partner unavailable"}
+                </p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="px-4 py-2 text-xs"
+                  onClick={() => void loadPlacementAvailability()}
+                  disabled={isCheckingPlacementAvailability}
+                >
+                  {isCheckingPlacementAvailability ? "Refreshing..." : "Refresh check"}
+                </Button>
+              </div>
               <p className="mt-1">
                 {isCheckingPlacementAvailability
                   ? "We're validating active riders near the restaurant before the final payment step."
@@ -2995,6 +3013,11 @@ export const PaymentPage = () => {
                 <p className="mt-2 text-xs text-ink-muted">
                   Nearest partner {placementAvailability.nearestPartner.name} •{" "}
                   {formatDistanceKm(placementAvailability.nearestPartner.distanceKm)} from the restaurant
+                </p>
+              ) : null}
+              {!isCheckingPlacementAvailability && !placementAvailabilityError && placementAvailability?.etaMinutes ? (
+                <p className="mt-2 text-xs text-ink-muted">
+                  Estimated delivery {formatEtaMinutes(placementAvailability.etaMinutes)}
                 </p>
               ) : null}
               {!isCheckingPlacementAvailability && placementAvailability?.matchedRadiusKm ? (

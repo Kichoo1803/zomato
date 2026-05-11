@@ -8,6 +8,7 @@ import { authRouter } from "../modules/auth/auth.routes.js";
 import { cartsRouter } from "../modules/carts/carts.routes.js";
 import { categoriesRouter } from "../modules/categories/categories.routes.js";
 import { combosRouter } from "../modules/combos/combos.routes.js";
+import { deliveryRouter } from "../modules/delivery/delivery.routes.js";
 import { deliveryPartnersRouter } from "../modules/delivery-partners/delivery-partners.routes.js";
 import {
   adminEventsRouter,
@@ -119,6 +120,7 @@ apiRouter.use("/menu-items", menuItemsRouter);
 apiRouter.use("/combos", combosRouter);
 apiRouter.use("/addons", addonsRouter);
 apiRouter.use("/carts", cartsRouter);
+apiRouter.use("/delivery", deliveryRouter);
 apiRouter.use("/orders", ordersRouter);
 apiRouter.use("/payments", paymentsRouter);
 apiRouter.use("/saved-payment-methods", savedPaymentMethodsRouter);

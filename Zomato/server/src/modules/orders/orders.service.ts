@@ -29,11 +29,11 @@ import {
 import { ensureDeliveryPartnerProfileByUserId } from "../delivery-partners/delivery-partner-profile.js";
 import { orderDispatchService } from "./order-dispatch.service.js";
 import {
+  buildPublicOrderPlacementAvailability,
   FALLBACK_ASSIGNMENT_RADIUS_KM,
   NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE,
   isDeliveryPartnerAvailableForOrdersStatus,
   previewOrderPlacementAvailability,
-  serializeOrderPlacementAvailability,
 } from "./order-assignment.service.js";
 
 const orderInclude = {
@@ -679,10 +679,14 @@ export const ordersService = {
       addressId: number;
     },
   ) {
-    const { cart } = await loadOrderPlacementContext(user, input);
-    return serializeOrderPlacementAvailability(
-      await previewOrderPlacementAvailability(cart.restaurant),
-    );
+    const { cart, address } = await loadOrderPlacementContext(user, input);
+    const availability = await previewOrderPlacementAvailability(cart.restaurant);
+
+    return buildPublicOrderPlacementAvailability({
+      availability,
+      restaurant: cart.restaurant,
+      address,
+    });
   },
 
   async place(
