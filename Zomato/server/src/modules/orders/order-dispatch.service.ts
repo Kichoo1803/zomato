@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import {
+  DeliveryAssignmentStatus,
   DeliveryAvailabilityStatus,
   DeliveryOfferStatus,
   NotificationType,
@@ -8,6 +9,7 @@ import {
   Role,
 } from "../../constants/enums.js";
 import { env } from "../../config/env.js";
+import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
 import {
   emitDispatchQueueUpdate,
@@ -114,6 +116,8 @@ const dispatchOrderSelect = {
   paymentMethod: true,
   totalAmount: true,
   tipAmount: true,
+  deliveryAssignmentStatus: true,
+  deliveryAssignmentUpdatedAt: true,
   assignmentRadiusKm: true,
   routeDistanceKm: true,
   estimatedDeliveryMinutes: true,
@@ -170,6 +174,10 @@ type DeliveryOfferOrder = Prisma.OrderGetPayload<{ include: typeof deliveryOffer
 
 const openDeliveryOfferStatuses = [DeliveryOfferStatus.PENDING] as const;
 const claimableOrderStatuses = [
+  OrderStatus.PLACED,
+  OrderStatus.CONFIRMED,
+  OrderStatus.ACCEPTED,
+  OrderStatus.PREPARING,
   OrderStatus.READY_FOR_PICKUP,
   OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
 ] as const;
@@ -192,8 +200,33 @@ const dispatchConfig = {
   offerTtlSeconds: env.DELIVERY_ASSIGNMENT_OFFER_TTL_SECONDS,
   staleLocationMinutes: env.DELIVERY_ASSIGNMENT_STALE_LOCATION_MINUTES,
   maxActiveOrders: env.DELIVERY_ASSIGNMENT_MAX_ACTIVE_ORDERS,
-  maxBroadcastPartners: env.DELIVERY_ASSIGNMENT_MAX_BROADCAST_PARTNERS,
+  maxBroadcastPartners: 1,
   reassignTimeoutMinutes: env.DELIVERY_ASSIGNMENT_REASSIGN_TIMEOUT_MINUTES,
+};
+
+const logDispatchAssignmentDecision = (payload: {
+  orderId: number;
+  restaurantId: number | null;
+  partnerId: number | null;
+  distanceKm?: number | null;
+  requestStatus: string;
+  finalAssignedPartnerId?: number | null;
+  note?: string | null;
+}) => {
+  if (!env.isDevelopment) {
+    return;
+  }
+
+  logger.info("Delivery assignment decision", {
+    orderId: payload.orderId,
+    restaurantId: payload.restaurantId,
+    partnerId: payload.partnerId,
+    distanceKm:
+      payload.distanceKm != null ? Number(payload.distanceKm.toFixed(2)) : null,
+    requestStatus: payload.requestStatus,
+    finalAssignedPartnerId: payload.finalAssignedPartnerId ?? null,
+    note: payload.note ?? null,
+  });
 };
 
 const buildAddressSummary = (parts: Array<string | null | undefined>) =>
@@ -213,6 +246,9 @@ const buildDispatchMeta = (
   payload: {
     eventKey: string;
     status?: string;
+    path?: string;
+    deliveryAssignmentStatus?: string;
+    deliveryRequestStatus?: string;
     offer?: {
       radiusKm: number;
       distanceKm: number | null;
@@ -223,9 +259,13 @@ const buildDispatchMeta = (
 ) =>
   JSON.stringify({
     eventKey: payload.eventKey,
+    path: payload.path ?? `/delivery/deliveries?orderId=${order.id}`,
     orderId: order.id,
     orderNumber: order.orderNumber,
     status: payload.status ?? order.status,
+    deliveryAssignmentStatus:
+      payload.deliveryAssignmentStatus ?? order.deliveryAssignmentStatus,
+    deliveryRequestStatus: payload.deliveryRequestStatus ?? null,
     customerName: order.user.fullName,
     restaurantName: order.restaurant.name,
     itemsSummary: buildItemsSummary(order.items),
@@ -283,6 +323,22 @@ const createDispatchNotification = async (
     notification,
   });
 };
+
+const updateOrderDeliveryAssignmentState = async (
+  tx: Prisma.TransactionClient | typeof prisma,
+  input: {
+    orderId: number;
+    status: DeliveryAssignmentStatus;
+    timestamp: Date;
+  },
+) =>
+  tx.order.update({
+    where: { id: input.orderId },
+    data: {
+      deliveryAssignmentStatus: input.status,
+      deliveryAssignmentUpdatedAt: input.timestamp,
+    },
+  });
 
 const getNextRadiusSequence = (lastRadiusKm?: number | null) => {
   if (lastRadiusKm == null) {
@@ -578,6 +634,14 @@ const syncOrderDispatch = async (orderId: number) => {
         : `ORDER_${order.status}`,
     });
 
+    if (order.deliveryPartnerId) {
+      await updateOrderDeliveryAssignmentState(prisma, {
+        orderId,
+        status: DeliveryAssignmentStatus.PARTNER_ACCEPTED,
+        timestamp: new Date(),
+      });
+    }
+
     return {
       orderId,
       offersCreated: 0,
@@ -637,6 +701,17 @@ const syncOrderDispatch = async (orderId: number) => {
       userIds: expiredOffers.map((offer) => offer.deliveryPartner.userId),
       deliveryPartnerIds: expiredOffers.map((offer) => offer.deliveryPartner.id),
     });
+
+    expiredOffers.forEach((offer) => {
+      logDispatchAssignmentDecision({
+        orderId,
+        restaurantId: order.restaurant.id,
+        partnerId: offer.deliveryPartner.id,
+        requestStatus: DeliveryOfferStatus.EXPIRED,
+        finalAssignedPartnerId: null,
+        note: "Delivery request expired before the partner responded.",
+      });
+    });
   }
 
   const activeOfferCount = await prisma.deliveryAssignmentOffer.count({
@@ -652,6 +727,12 @@ const syncOrderDispatch = async (orderId: number) => {
   });
 
   if (activeOfferCount > 0) {
+    await updateOrderDeliveryAssignmentState(prisma, {
+      orderId,
+      status: DeliveryAssignmentStatus.PARTNER_REQUESTED,
+      timestamp: now,
+    });
+
     return {
       orderId,
       offersCreated: 0,
@@ -682,22 +763,24 @@ const syncOrderDispatch = async (orderId: number) => {
     const expiresAt = new Date(now.getTime() + dispatchConfig.offerTtlSeconds * 1000);
 
     await prisma.$transaction(async (tx) => {
-      await tx.deliveryAssignmentOffer.createMany({
-        data: partners.map((partner) => ({
+      await tx.deliveryAssignmentOffer.create({
+        data: {
           orderId,
-          deliveryPartnerId: partner.id,
+          deliveryPartnerId: partners[0].id,
           batchNumber,
           status: DeliveryOfferStatus.PENDING,
           radiusKm,
-          distanceKm: partner.distanceKm,
+          distanceKm: partners[0].distanceKm,
           expiresAt,
-        })),
+        },
       });
 
       await tx.order.update({
         where: { id: orderId },
         data: {
           assignmentRadiusKm: radiusKm,
+          deliveryAssignmentStatus: DeliveryAssignmentStatus.PARTNER_REQUESTED,
+          deliveryAssignmentUpdatedAt: now,
         },
       });
     });
@@ -732,6 +815,8 @@ const syncOrderDispatch = async (orderId: number) => {
             .join(" • "),
           buildDispatchMeta(order, {
             eventKey: "delivery:offer:new",
+            deliveryAssignmentStatus: DeliveryAssignmentStatus.PARTNER_REQUESTED,
+            deliveryRequestStatus: DeliveryOfferStatus.PENDING,
             offer: {
               radiusKm,
               distanceKm: partner.distanceKm,
@@ -753,6 +838,18 @@ const syncOrderDispatch = async (orderId: number) => {
       deliveryPartnerIds: partners.map((partner) => partner.id),
     });
 
+    partners.forEach((partner) => {
+      logDispatchAssignmentDecision({
+        orderId,
+        restaurantId: order.restaurant.id,
+        partnerId: partner.id,
+        distanceKm: partner.distanceKm,
+        requestStatus: DeliveryOfferStatus.PENDING,
+        finalAssignedPartnerId: null,
+        note: `Delivery request sent within ${radiusKm} km dispatch radius.`,
+      });
+    });
+
     return {
       orderId,
       offersCreated: partners.length,
@@ -761,37 +858,78 @@ const syncOrderDispatch = async (orderId: number) => {
     };
   }
 
-  const cancellationResult = await cancelUnassignedOrderForDispatchFailure(orderId, {
-    cancelReasonCode:
+  await updateOrderDeliveryAssignmentState(prisma, {
+    orderId,
+    status: DeliveryAssignmentStatus.NO_PARTNER_AVAILABLE,
+    timestamp: now,
+  });
+
+  await Promise.all([
+    createDispatchNotification(
+      order.userId,
+      "No delivery partner accepted yet",
+      latestBatch?.radiusKm != null ||
+        previouslyContactedPartnerIds.length ||
+        expiredOffers.length
+        ? "We checked nearby riders, but no one has accepted the delivery request yet."
+        : "We could not find an eligible nearby delivery partner right now.",
+      JSON.stringify({
+        eventKey: "customer:delivery-assignment-unavailable",
+        path: `/orders/${orderId}`,
+        orderId,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        deliveryAssignmentStatus: DeliveryAssignmentStatus.NO_PARTNER_AVAILABLE,
+      }),
+    ),
+    createDispatchNotification(
+      order.restaurant.ownerId,
+      "No delivery partner available",
+      latestBatch?.radiusKm != null ||
+        previouslyContactedPartnerIds.length ||
+        expiredOffers.length
+        ? `${order.orderNumber} is still unassigned because nearby riders rejected or missed the request.`
+        : `${order.orderNumber} is still unassigned because no nearby eligible rider is available right now.`,
+      JSON.stringify({
+        eventKey: "owner:delivery-assignment-unavailable",
+        path: `/owner/orders?orderId=${orderId}`,
+        orderId,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        deliveryAssignmentStatus: DeliveryAssignmentStatus.NO_PARTNER_AVAILABLE,
+      }),
+      {
+        restaurantId: order.restaurant.id,
+      },
+    ),
+  ]);
+
+  emitOrderStatusUpdate({
+    orderId,
+    userId: order.userId,
+    ownerId: order.restaurant.ownerId,
+    restaurantId: order.restaurant.id,
+    status: order.status,
+    note:
       latestBatch?.radiusKm != null ||
       previouslyContactedPartnerIds.length ||
       expiredOffers.length
-        ? "NO_DELIVERY_PARTNER_ACCEPTED"
-        : "NO_DELIVERY_PARTNER_AVAILABLE",
-    cancelReason:
+        ? "No delivery partner accepted the latest nearby request."
+        : "No eligible nearby delivery partner is available right now.",
+  });
+
+  logDispatchAssignmentDecision({
+    orderId,
+    restaurantId: order.restaurant.id,
+    partnerId: null,
+    requestStatus: DeliveryAssignmentStatus.NO_PARTNER_AVAILABLE,
+    finalAssignedPartnerId: null,
+    note:
       latestBatch?.radiusKm != null ||
       previouslyContactedPartnerIds.length ||
       expiredOffers.length
-        ? "No delivery partner accepted the order."
-        : "No delivery partner available near this restaurant right now.",
-    refundedCustomerMessage:
-      latestBatch?.radiusKm != null ||
-      previouslyContactedPartnerIds.length ||
-      expiredOffers.length
-        ? "Order cancelled because no delivery partner accepted the order. Amount refunded."
-        : "Order cancelled because no delivery partner is available near this restaurant right now. Amount refunded.",
-    unpaidCustomerMessage:
-      latestBatch?.radiusKm != null ||
-      previouslyContactedPartnerIds.length ||
-      expiredOffers.length
-        ? "Order cancelled because no delivery partner accepted the order."
-        : "Order cancelled because no delivery partner is available near this restaurant right now.",
-    closedReason:
-      latestBatch?.radiusKm != null ||
-      previouslyContactedPartnerIds.length ||
-      expiredOffers.length
-        ? "NO_ELIGIBLE_DELIVERY_PARTNER_REMAINING"
-        : "NO_ELIGIBLE_DELIVERY_PARTNER_AVAILABLE",
+        ? "All nearby delivery requests were rejected or expired."
+        : "No eligible nearby partner matched the restaurant coordinates.",
   });
 
   return {
@@ -799,7 +937,7 @@ const syncOrderDispatch = async (orderId: number) => {
     offersCreated: 0,
     radiusKm: null as number | null,
     rebroadcasted: expiredOffers.length > 0,
-    cancelled: cancellationResult.cancelled,
+    cancelled: false,
   };
 };
 
@@ -827,7 +965,7 @@ const mapOfferRowsToOrders = (
     },
   }));
 
-const declineOffer = async (userId: number, orderId: number) => {
+const declineOffer = async (userId: number, orderId: number, rejectionReason?: string) => {
   const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
 
   const offer = await prisma.deliveryAssignmentOffer.findFirst({
@@ -860,7 +998,7 @@ const declineOffer = async (userId: number, orderId: number) => {
     data: {
       status: DeliveryOfferStatus.REJECTED,
       respondedAt: new Date(),
-      closedReason: "PARTNER_SKIPPED",
+      closedReason: rejectionReason?.trim() || "PARTNER_SKIPPED",
     },
   });
 
@@ -869,6 +1007,15 @@ const declineOffer = async (userId: number, orderId: number) => {
     state: DeliveryOfferStatus.REJECTED,
     userIds: [partner.userId],
     deliveryPartnerIds: [partner.id],
+  });
+
+  logDispatchAssignmentDecision({
+    orderId,
+    restaurantId: null,
+    partnerId: partner.id,
+    requestStatus: DeliveryOfferStatus.REJECTED,
+    finalAssignedPartnerId: null,
+    note: rejectionReason?.trim() || "Delivery partner rejected the request.",
   });
 
   await syncOrderDispatch(orderId);
@@ -897,7 +1044,12 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
     throw new AppError(404, "Order not found", "ORDER_NOT_FOUND");
   }
 
-  if (order.status !== OrderStatus.DELIVERY_PARTNER_ASSIGNED) {
+  if (
+    order.pickedUpAt ||
+    ([OrderStatus.PICKED_UP, OrderStatus.ON_THE_WAY, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELAYED] as OrderStatus[]).includes(
+      order.status as OrderStatus,
+    )
+  ) {
     throw new AppError(
       409,
       "This order can only be released before pickup starts",
@@ -906,6 +1058,10 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
   }
 
   const releaseNote = note?.trim() || "Delivery partner released the order before pickup.";
+  const nextOrderStatus =
+    order.status === OrderStatus.DELIVERY_PARTNER_ASSIGNED
+      ? OrderStatus.LOOKING_FOR_DELIVERY_PARTNER
+      : order.status;
 
   await prisma.$transaction(async (tx) => {
     const updatedOrder = await tx.order.updateMany({
@@ -913,12 +1069,14 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
         id: orderId,
         deletedAt: null,
         deliveryPartnerId: partner.id,
-        status: OrderStatus.DELIVERY_PARTNER_ASSIGNED,
+        pickedUpAt: null,
       },
       data: {
         deliveryPartnerId: null,
-        status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
+        status: nextOrderStatus,
         assignedAt: null,
+        deliveryAssignmentStatus: DeliveryAssignmentStatus.FINDING_PARTNER,
+        deliveryAssignmentUpdatedAt: new Date(),
       },
     });
 
@@ -934,7 +1092,7 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
       data: {
         orderId,
         actorId: userId,
-        status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
+        status: nextOrderStatus,
         note: releaseNote,
       },
     });
@@ -978,7 +1136,8 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
           eventKey: "customer:delivery-partner-released",
           orderId,
           orderNumber: releasedOrder.orderNumber,
-          status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
+          status: nextOrderStatus,
+          deliveryAssignmentStatus: DeliveryAssignmentStatus.FINDING_PARTNER,
         }),
       ),
       createDispatchNotification(
@@ -989,7 +1148,8 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
           eventKey: "owner:delivery-partner-released",
           orderId,
           orderNumber: releasedOrder.orderNumber,
-          status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
+          status: nextOrderStatus,
+          deliveryAssignmentStatus: DeliveryAssignmentStatus.FINDING_PARTNER,
         }),
         {
           restaurantId: releasedOrder.restaurant.id,
@@ -1002,7 +1162,7 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
       userId: releasedOrder.userId,
       ownerId: releasedOrder.restaurant.ownerId,
       restaurantId: releasedOrder.restaurant.id,
-      status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
+      status: nextOrderStatus,
       note: releaseNote,
     });
   }
@@ -1012,6 +1172,15 @@ const releaseAssignedOrder = async (userId: number, orderId: number, note?: stri
     state: DeliveryOfferStatus.RELEASED,
     userIds: [partner.userId],
     deliveryPartnerIds: [partner.id],
+  });
+
+  logDispatchAssignmentDecision({
+    orderId,
+    restaurantId: releasedOrder?.restaurant.id ?? null,
+    partnerId: partner.id,
+    requestStatus: DeliveryOfferStatus.RELEASED,
+    finalAssignedPartnerId: null,
+    note: releaseNote,
   });
 
   await syncOrderDispatch(orderId);
@@ -1111,6 +1280,8 @@ const rebroadcastUnassignedOrders = async () => {
           deliveryPartnerId: null,
           status: OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
           assignedAt: null,
+          deliveryAssignmentStatus: DeliveryAssignmentStatus.FINDING_PARTNER,
+          deliveryAssignmentUpdatedAt: now,
         },
       });
 
@@ -1162,6 +1333,14 @@ const rebroadcastUnassignedOrders = async () => {
       state: DeliveryOfferStatus.RELEASED,
       userIds: [deliveryPartnerUserId],
       deliveryPartnerIds: [deliveryPartnerId],
+    });
+    logDispatchAssignmentDecision({
+      orderId: order.id,
+      restaurantId: order.restaurant.id,
+      partnerId: deliveryPartnerId,
+      requestStatus: DeliveryOfferStatus.RELEASED,
+      finalAssignedPartnerId: null,
+      note: "Assigned delivery partner timed out before pickup confirmation.",
     });
     await syncOrderDispatch(order.id);
   }
@@ -1275,8 +1454,8 @@ export const orderDispatchService = {
         );
       });
   },
-  async declineOffer(userId: number, orderId: number) {
-    await declineOffer(userId, orderId);
+  async declineOffer(userId: number, orderId: number, rejectionReason?: string) {
+    await declineOffer(userId, orderId, rejectionReason);
   },
   async releaseAssignedOrder(userId: number, orderId: number, note?: string) {
     return releaseAssignedOrder(userId, orderId, note);

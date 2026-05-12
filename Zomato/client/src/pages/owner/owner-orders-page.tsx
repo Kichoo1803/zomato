@@ -56,6 +56,33 @@ const OWNER_STATUS_FILTERS = [
   "CANCELLED",
 ];
 
+const getDeliveryAssignmentTone = (status?: string | null) => {
+  switch (status) {
+    case "PARTNER_ACCEPTED":
+      return "success" as const;
+    case "NO_PARTNER_AVAILABLE":
+      return "warning" as const;
+    case "FINDING_PARTNER":
+    case "PARTNER_REQUESTED":
+    default:
+      return "info" as const;
+  }
+};
+
+const getDeliveryAssignmentLabel = (status?: string | null) => {
+  switch (status) {
+    case "PARTNER_REQUESTED":
+      return "Partner requested";
+    case "PARTNER_ACCEPTED":
+      return "Partner accepted";
+    case "NO_PARTNER_AVAILABLE":
+      return "No partner available";
+    case "FINDING_PARTNER":
+    default:
+      return "Finding partner";
+  }
+};
+
 export const OwnerOrdersPage = () => {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -281,6 +308,21 @@ export const OwnerOrdersPage = () => {
                 ),
               },
               {
+                key: "deliveryAssignment",
+                label: "Delivery",
+                render: (order) => (
+                  <div>
+                    <StatusPill
+                      label={getDeliveryAssignmentLabel(order.deliveryAssignmentStatus)}
+                      tone={getDeliveryAssignmentTone(order.deliveryAssignmentStatus)}
+                    />
+                    <p className="mt-2 text-xs text-ink-muted">
+                      {order.deliveryPartner?.user.fullName ?? "Auto dispatch"}
+                    </p>
+                  </div>
+                ),
+              },
+              {
                 key: "payment",
                 label: "Payment",
                 render: (order) => (
@@ -328,6 +370,15 @@ export const OwnerOrdersPage = () => {
                 {
                   label: "Current status",
                   value: <StatusPill label={toLabel(selectedOrder.status)} tone={getToneForStatus(selectedOrder.status)} />,
+                },
+                {
+                  label: "Delivery assignment",
+                  value: (
+                    <StatusPill
+                      label={getDeliveryAssignmentLabel(selectedOrder.deliveryAssignmentStatus)}
+                      tone={getDeliveryAssignmentTone(selectedOrder.deliveryAssignmentStatus)}
+                    />
+                  ),
                 },
                 { label: "Payment", value: `${toLabel(selectedOrder.paymentMethod)} / ${toLabel(selectedOrder.paymentStatus)}` },
                 { label: "Total", value: formatCurrency(selectedOrder.totalAmount) },
@@ -390,6 +441,10 @@ export const OwnerOrdersPage = () => {
                     label: "Prep baseline",
                     value: `${selectedOrder.restaurant.preparationTime} min prep time`,
                   },
+                  {
+                    label: "Delivery assignment note",
+                    value: getDeliveryAssignmentLabel(selectedOrder.deliveryAssignmentStatus),
+                  },
                 ]}
               />
               <div className="grid gap-4 md:grid-cols-2">
@@ -401,7 +456,7 @@ export const OwnerOrdersPage = () => {
                   ))}
                 </Select>
                 <div className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4 text-sm leading-7 text-ink-soft">
-                  Ready orders are broadcast automatically to nearby eligible riders. Owners can monitor the assignment state, but normal rider selection no longer happens manually.
+                  Ready orders are broadcast automatically to nearby eligible riders. Assignment states move from Finding partner to Partner requested to Partner accepted, or No partner available if every nearby rider rejects or expires.
                 </div>
               </div>
               <div className="flex justify-end">

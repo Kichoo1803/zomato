@@ -62,6 +62,8 @@ export type DeliveryOrder = {
   deliveryPartnerId?: number | null;
   orderNumber: string;
   status: string;
+  deliveryAssignmentStatus?: string | null;
+  deliveryAssignmentUpdatedAt?: string | null;
   paymentStatus: string;
   paymentMethod: string;
   subtotal: number;
@@ -159,8 +161,34 @@ export type DeliveryOrder = {
     expiresAt: string;
     status: string;
   } | null;
+  request?: {
+    id?: number | null;
+    orderId: number;
+    restaurantId: number;
+    deliveryPartnerId: number;
+    status: string;
+    requestedAt: string;
+    respondedAt?: string | null;
+    expiresAt?: string | null;
+    rejectionReason?: string | null;
+    distanceKm?: number | null;
+    batchNumber: number;
+  } | null;
   restaurantDistanceKm?: number | null;
+  restaurantToCustomerDistanceKm?: number | null;
+  estimatedPickupMinutes?: number | null;
+  estimatedDropoffMinutes?: number | null;
   deliveryCoverageType?: "PRIMARY" | "FALLBACK" | null;
+  isPendingRequest?: boolean;
+  isCurrentDelivery?: boolean;
+  canAccept?: boolean;
+  canReject?: boolean;
+};
+
+export type DeliveryWorkspaceData = {
+  pendingRequests: DeliveryOrder[];
+  activeDeliveries: DeliveryOrder[];
+  deliveries: DeliveryOrder[];
 };
 
 export type DeliveryNearbyRestaurant = {
@@ -219,6 +247,18 @@ export const getDeliveryRequests = async () =>
   unwrapData(await apiClient.get<ApiEnvelope<{ requests: DeliveryOrder[] }>>("/delivery-partners/requests"))
     .requests;
 
+export const getDeliveryWorkspace = async () =>
+  unwrapData(
+    await apiClient.get<ApiEnvelope<DeliveryWorkspaceData>>("/delivery-partners/deliveries"),
+  );
+
+export const getDeliveryById = async (orderId: number) =>
+  unwrapData(
+    await apiClient.get<ApiEnvelope<{ delivery: DeliveryOrder }>>(
+      `/delivery-partners/deliveries/${orderId}`,
+    ),
+  ).delivery;
+
 export const getDeliveryNearbyRestaurants = async () =>
   unwrapData(
     await apiClient.get<ApiEnvelope<{ restaurants: DeliveryNearbyRestaurant[] }>>(
@@ -228,12 +268,15 @@ export const getDeliveryNearbyRestaurants = async () =>
 
 export const acceptDeliveryRequest = async (orderId: number) =>
   unwrapData(
-    await apiClient.patch<ApiEnvelope<{ order: DeliveryOrder }>>(`/delivery-partners/requests/${orderId}/accept`),
+    await apiClient.post<ApiEnvelope<{ order: DeliveryOrder }>>(`/delivery-partners/deliveries/${orderId}/accept`),
   ).order;
 
-export const skipDeliveryRequest = async (orderId: number) =>
+export const skipDeliveryRequest = async (orderId: number, payload?: { reason?: string }) =>
   unwrapData(
-    await apiClient.patch<ApiEnvelope<void>>(`/delivery-partners/requests/${orderId}/skip`),
+    await apiClient.post<ApiEnvelope<void>>(
+      `/delivery-partners/deliveries/${orderId}/reject`,
+      payload ?? {},
+    ),
   );
 
 export const getDeliveryActiveOrders = async () =>

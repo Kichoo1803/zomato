@@ -58,6 +58,7 @@ const ownerNavItems = [
 const deliveryNavItems = [
   { to: "/delivery", label: "Overview", icon: LayoutDashboard },
   { to: "/delivery/active", label: "Active", icon: Bike },
+  { to: "/delivery/deliveries", label: "Delivery", icon: ShoppingBag },
   { to: "/delivery/notifications", label: "Notifications", icon: Bell },
   { to: "/delivery/history", label: "History", icon: ShoppingBag },
   { to: "/delivery/earnings", label: "Earnings", icon: Wallet },

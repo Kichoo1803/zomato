@@ -1,6 +1,6 @@
 import axios from "axios";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Bike, LocateFixed, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { AdminLoadingState } from "@/components/admin/admin-ui";
@@ -18,11 +18,11 @@ import { useAuth } from "@/hooks/use-auth";
 import { getApiErrorMessage } from "@/lib/auth";
 import {
   acceptDeliveryRequest as acceptDeliveryRequestApi,
-  getDeliveryActiveOrders,
+  getDeliveryById,
   getDeliveryHistory,
   getDeliveryNearbyRestaurants,
   getDeliveryProfile,
-  getDeliveryRequests,
+  getDeliveryWorkspace,
   releaseAssignedDeliveryOrder,
   skipDeliveryRequest,
   toDeliverySessionUser,
@@ -33,6 +33,7 @@ import {
   type DeliveryNearbyRestaurant,
   type DeliveryOrder,
   type DeliveryProfile,
+  type DeliveryWorkspaceData,
 } from "@/lib/delivery";
 import { deliveryStats } from "@/lib/demo-data";
 import { RefreshButton, formatCurrency, formatDateTime, getToneForStatus, toLabel } from "@/pages/admin/admin-shared";
@@ -44,6 +45,7 @@ const demoDeliveryEarnings = [
 ];
 
 const deliveryStatusTransitions: Record<string, string[]> = {
+  READY_FOR_PICKUP: ["PICKED_UP", "DELAYED"],
   DELIVERY_PARTNER_ASSIGNED: ["PICKED_UP", "DELAYED"],
   PICKED_UP: ["ON_THE_WAY", "DELAYED"],
   ON_THE_WAY: ["OUT_FOR_DELIVERY", "DELAYED"],
@@ -101,6 +103,47 @@ const buildDeliveryItemsSummary = (items: DeliveryOrder["items"]) => {
   return extraCount > 0 ? `${preview.join(", ")} +${extraCount} more` : preview.join(", ");
 };
 
+const getDeliveryRequestStatus = (order: DeliveryOrder) =>
+  order.request?.status ??
+  order.deliveryOffer?.status ??
+  (order.isCurrentDelivery ? "ACCEPTED" : order.status);
+
+const getDeliveryAssignmentStatusDescription = (status?: string | null) => {
+  switch (status) {
+    case "FINDING_PARTNER":
+      return "Finding nearby delivery partner...";
+    case "PARTNER_REQUESTED":
+      return "A nearby delivery partner has the request right now.";
+    case "PARTNER_ACCEPTED":
+      return "Delivery partner assigned.";
+    case "NO_PARTNER_AVAILABLE":
+      return "No delivery partner accepted yet.";
+    default:
+      return "Delivery assignment is updating.";
+  }
+};
+
+const getDeliveryAssignmentStatusTone = (status?: string | null) => {
+  switch (status) {
+    case "PARTNER_ACCEPTED":
+      return "success" as const;
+    case "NO_PARTNER_AVAILABLE":
+      return "warning" as const;
+    case "FINDING_PARTNER":
+    case "PARTNER_REQUESTED":
+    default:
+      return "info" as const;
+  }
+};
+
+const buildDeliverySelectionPath = (orderId: number) => `/delivery/deliveries?orderId=${orderId}`;
+
+const canReleaseDeliveryOrder = (order: DeliveryOrder) =>
+  !order.pickedUpAt &&
+  !["PICKED_UP", "ON_THE_WAY", "OUT_FOR_DELIVERY", "DELIVERED", "CANCELLED"].includes(
+    order.status.trim().toUpperCase(),
+  );
+
 const getDeliveryRequestAction = (order: DeliveryOrder, profile?: DeliveryProfile | null) => {
   if (!profile) {
     return { disabled: true, label: "Loading profile" };
@@ -110,11 +153,15 @@ const getDeliveryRequestAction = (order: DeliveryOrder, profile?: DeliveryProfil
     return { disabled: true, label: "Go online to accept" };
   }
 
-  if (!requestAcceptableStatuses.has(order.status)) {
-    return { disabled: true, label: "Awaiting pickup readiness" };
+  if (order.canAccept === false || getDeliveryRequestStatus(order) !== "PENDING") {
+    return { disabled: true, label: toLabel(getDeliveryRequestStatus(order)) };
   }
 
-  return { disabled: false, label: "Accept order" };
+  if (requestAcceptableStatuses.has(order.status)) {
+    return { disabled: false, label: "Accept order" };
+  }
+
+  return { disabled: false, label: "Accept early" };
 };
 
 const DeliveryRequestCard = ({
@@ -123,19 +170,27 @@ const DeliveryRequestCard = ({
   pendingOrderId,
   onAccept,
   onSkip,
+  onViewDetails,
 }: {
   order: DeliveryOrder;
   profile?: DeliveryProfile | null;
   pendingOrderId: number | null;
   onAccept: (orderId: number) => Promise<void>;
   onSkip: (orderId: number) => Promise<void>;
+  onViewDetails: (orderId: number) => void;
 }) => {
   const actionState = getDeliveryRequestAction(order, profile);
-  const pickupDistance = order.deliveryOffer?.distanceKm ?? order.routeDistanceKm;
+  const requestStatus = getDeliveryRequestStatus(order);
+  const pickupDistance =
+    order.request?.distanceKm ?? order.deliveryOffer?.distanceKm ?? order.routeDistanceKm;
   const restaurantDistanceKm = order.restaurantDistanceKm ?? order.deliveryOffer?.distanceKm ?? pickupDistance;
+  const restaurantToCustomerDistanceKm =
+    order.restaurantToCustomerDistanceKm ?? order.routeDistanceKm;
   const isNearbyAreaOrder =
     order.deliveryCoverageType === "FALLBACK" ||
     ((restaurantDistanceKm ?? 0) > 5 && (restaurantDistanceKm ?? 0) <= 7);
+  const canReject = order.canReject !== false && requestStatus === "PENDING";
+  const rejectLabel = requestStatus === "PENDING" ? "Reject" : toLabel(requestStatus);
 
   return (
     <div id={`delivery-order-${order.id}`} className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4">
@@ -144,15 +199,23 @@ const DeliveryRequestCard = ({
           <div className="flex flex-wrap items-center gap-3">
             <p className="font-semibold text-ink">{order.orderNumber}</p>
             <StatusPill label={toLabel(order.status)} tone={getToneForStatus(order.status)} />
+            <StatusPill label={toLabel(requestStatus)} tone={getToneForStatus(requestStatus)} />
             {isNearbyAreaOrder ? <StatusPill label="Nearby area order" tone="info" /> : null}
           </div>
           <p className="text-sm text-ink-soft">{order.restaurant.name}</p>
           <p className="text-sm text-ink-soft">{buildDeliveryItemsSummary(order.items)}</p>
+          <p className="text-sm text-ink-soft">
+            {getDeliveryAssignmentStatusDescription(order.deliveryAssignmentStatus)}
+          </p>
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="rounded-[1.25rem] bg-cream px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Pickup ETA</p>
+            <p className="mt-2 text-sm font-semibold text-ink">{formatEtaMinutes(order.estimatedPickupMinutes)}</p>
+          </div>
+          <div className="rounded-[1.25rem] bg-cream px-4 py-3">
             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">ETA</p>
-            <p className="mt-2 text-sm font-semibold text-ink">{formatEtaMinutes(order.estimatedDeliveryMinutes)}</p>
+            <p className="mt-2 text-sm font-semibold text-ink">{formatEtaMinutes(order.estimatedDropoffMinutes ?? order.estimatedDeliveryMinutes)}</p>
           </div>
           <div className="rounded-[1.25rem] bg-cream px-4 py-3">
             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Pickup distance</p>
@@ -160,17 +223,18 @@ const DeliveryRequestCard = ({
           </div>
           <div className="rounded-[1.25rem] bg-cream px-4 py-3">
             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Offer window</p>
-            <p className="mt-2 text-sm font-semibold text-ink">{formatOfferTimeRemaining(order.deliveryOffer?.expiresAt)}</p>
+            <p className="mt-2 text-sm font-semibold text-ink">{formatOfferTimeRemaining(order.request?.expiresAt ?? order.deliveryOffer?.expiresAt)}</p>
           </div>
         </div>
       </div>
       <div className="mt-4 grid gap-3 text-sm leading-7 text-ink-soft md:grid-cols-2">
         <p><span className="font-semibold text-ink">Customer:</span> {order.user.fullName}</p>
-        <p><span className="font-semibold text-ink">Payment:</span> {toLabel(order.paymentMethod)} | {formatCurrency(order.totalAmount)}</p>
+        <p><span className="font-semibold text-ink">Payment:</span> {toLabel(order.paymentMethod)} | {toLabel(order.paymentStatus)} | {formatCurrency(order.totalAmount)}</p>
         <p><span className="font-semibold text-ink">Pickup:</span> {buildDeliveryAddressSummary([order.restaurant.addressLine, order.restaurant.area, order.restaurant.city]) || order.restaurant.name}</p>
         <p><span className="font-semibold text-ink">Drop-off:</span> {buildDeliveryAddressSummary([order.address.houseNo, order.address.street, order.address.area, order.address.city])}</p>
         <p><span className="font-semibold text-ink">Restaurant area:</span> {order.restaurant.area?.trim() || order.restaurant.city}</p>
         <p><span className="font-semibold text-ink">Restaurant distance:</span> {formatDistanceKm(restaurantDistanceKm)}</p>
+        <p><span className="font-semibold text-ink">Restaurant to customer:</span> {formatDistanceKm(restaurantToCustomerDistanceKm)}</p>
       </div>
       {order.deliveryOffer ? (
         <div className="mt-4 rounded-[1.25rem] bg-cream px-4 py-3 text-sm leading-7 text-ink-soft">
@@ -195,11 +259,19 @@ const DeliveryRequestCard = ({
         <Button
           type="button"
           variant="secondary"
+          className="min-w-36"
+          onClick={() => onViewDetails(order.id)}
+        >
+          View details
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
           className="min-w-32"
           onClick={() => void onSkip(order.id)}
-          disabled={pendingOrderId === order.id}
+          disabled={!canReject || pendingOrderId === order.id}
         >
-          {pendingOrderId === order.id ? "Working..." : "Skip"}
+          {pendingOrderId === order.id ? "Working..." : rejectLabel}
         </Button>
         <Button
           type="button"
@@ -395,6 +467,7 @@ const useDeliveryWorkspace = () => {
   const [nearbyRestaurants, setNearbyRestaurants] = useState<DeliveryNearbyRestaurant[]>([]);
   const [requests, setRequests] = useState<DeliveryOrder[]>([]);
   const [activeOrders, setActiveOrders] = useState<DeliveryOrder[]>([]);
+  const [deliveries, setDeliveries] = useState<DeliveryOrder[]>([]);
   const [history, setHistory] = useState<DeliveryOrder[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isUpdatingAvailability, setIsUpdatingAvailability] = useState(false);
@@ -444,6 +517,7 @@ const useDeliveryWorkspace = () => {
         setNearbyRestaurants([]);
         setRequests([]);
         setActiveOrders([]);
+        setDeliveries([]);
         setHistory([]);
         showWorkspaceNotice(deliveryProfilePendingNotice);
         return null;
@@ -463,10 +537,9 @@ const useDeliveryWorkspace = () => {
       return;
     }
 
-    const [nearbyRestaurantRows, requestRows, activeRows, historyRows] = await Promise.allSettled([
+    const [nearbyRestaurantRows, workspaceRows, historyRows] = await Promise.allSettled([
       getDeliveryNearbyRestaurants(),
-      getDeliveryRequests(),
-      getDeliveryActiveOrders(),
+      getDeliveryWorkspace(),
       getDeliveryHistory(),
     ]);
 
@@ -476,16 +549,14 @@ const useDeliveryWorkspace = () => {
       setNearbyRestaurants([]);
     }
 
-    if (requestRows.status === "fulfilled") {
-      setRequests(requestRows.value);
-    } else if (getApiErrorCode(requestRows.reason) === "DELIVERY_PROFILE_NOT_FOUND") {
+    if (workspaceRows.status === "fulfilled") {
+      setRequests(workspaceRows.value.pendingRequests);
+      setActiveOrders(workspaceRows.value.activeDeliveries);
+      setDeliveries(workspaceRows.value.deliveries);
+    } else if (getApiErrorCode(workspaceRows.reason) === "DELIVERY_PROFILE_NOT_FOUND") {
       setRequests([]);
-    }
-
-    if (activeRows.status === "fulfilled") {
-      setActiveOrders(activeRows.value);
-    } else if (getApiErrorCode(activeRows.reason) === "DELIVERY_PROFILE_NOT_FOUND") {
       setActiveOrders([]);
+      setDeliveries([]);
     }
 
     if (historyRows.status === "fulfilled") {
@@ -497,12 +568,11 @@ const useDeliveryWorkspace = () => {
     if (
       !quietly &&
       nearbyRestaurantRows.status === "rejected" &&
-      requestRows.status === "rejected" &&
-      activeRows.status === "rejected" &&
+      workspaceRows.status === "rejected" &&
       historyRows.status === "rejected"
     ) {
       const firstError =
-        nearbyRestaurantRows.reason ?? requestRows.reason ?? activeRows.reason ?? historyRows.reason;
+        nearbyRestaurantRows.reason ?? workspaceRows.reason ?? historyRows.reason;
 
       if (getApiErrorCode(firstError) === "DELIVERY_PROFILE_NOT_FOUND") {
         showWorkspaceNotice(deliveryProfilePendingNotice);
@@ -677,10 +747,10 @@ const useDeliveryWorkspace = () => {
     setPendingOrderId(orderId);
     try {
       await skipDeliveryRequest(orderId);
-      toast.success("Delivery request skipped.");
+      toast.success("Delivery request rejected.");
       await loadData();
     } catch (error) {
-      toast.error(getApiErrorMessage(error, "Unable to skip this delivery request."));
+      toast.error(getApiErrorMessage(error, "Unable to reject this delivery request."));
     } finally {
       setPendingOrderId(null);
     }
@@ -704,6 +774,7 @@ const useDeliveryWorkspace = () => {
     profile,
     requests,
     activeOrders,
+    deliveries,
     history,
     isLoading,
     isUpdatingAvailability,
@@ -750,6 +821,7 @@ const DemoDeliveryDashboard = () => (
 );
 
 export const DeliveryDashboardPage = () => {
+  const navigate = useNavigate();
   const {
     useLiveFlow,
     profile,
@@ -786,6 +858,7 @@ export const DeliveryDashboardPage = () => {
           : [],
     [activeOrders, profile],
   );
+  const openDeliveryDetails = (orderId: number) => navigate(buildDeliverySelectionPath(orderId));
 
   if (!useLiveFlow) {
     return <DemoDeliveryDashboard />;
@@ -871,6 +944,7 @@ export const DeliveryDashboardPage = () => {
                   pendingOrderId={pendingOrderId}
                   onAccept={acceptOrder}
                   onSkip={skipOrder}
+                  onViewDetails={openDeliveryDetails}
                 />
               ))
             ) : (
@@ -878,6 +952,13 @@ export const DeliveryDashboardPage = () => {
                 No new dispatch requests are waiting right now.
               </p>
             )}
+            {requests.length ? (
+              <div className="flex justify-end">
+                <Button type="button" variant="secondary" onClick={() => navigate("/delivery/deliveries")}>
+                  Open Delivery tab
+                </Button>
+              </div>
+            ) : null}
           </div>
         </SurfaceCard>
       </div>
@@ -892,6 +973,7 @@ export const DeliveryDashboardPage = () => {
 };
 
 export const DeliveryActivePage = () => {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const {
     useLiveFlow,
@@ -901,8 +983,6 @@ export const DeliveryActivePage = () => {
     activeOrders,
     isLoading,
     pendingOrderId,
-    acceptOrder,
-    skipOrder,
     releaseOrder,
     updateOrderStatus,
     refreshLocation,
@@ -976,21 +1056,18 @@ export const DeliveryActivePage = () => {
       {requests.length ? (
         <SurfaceCard className="space-y-4">
           <SectionHeading
-            title="Available pickup requests"
-            description="Accept a ready request here to move it straight into your active delivery flow."
+            title="Pending requests moved to Delivery"
+            description="New accept or reject decisions now happen in the dedicated Delivery tab so active runs stay focused."
+            action={
+              <Button type="button" variant="secondary" onClick={() => navigate("/delivery/deliveries")}>
+                Open Delivery tab
+              </Button>
+            }
           />
-          <div className="space-y-4">
-            {requests.map((order) => (
-              <DeliveryRequestCard
-                key={order.id}
-                order={order}
-                profile={profile}
-                pendingOrderId={pendingOrderId}
-                onAccept={acceptOrder}
-                onSkip={skipOrder}
-              />
-            ))}
-          </div>
+          <p className="text-sm leading-7 text-ink-soft">
+            {requests.length} pending delivery request{requests.length === 1 ? "" : "s"} are waiting for a response.
+            Review the full order, pickup, and customer details from the Delivery tab.
+          </p>
         </SurfaceCard>
       ) : null}
 
@@ -1004,9 +1081,16 @@ export const DeliveryActivePage = () => {
                   <div className="flex flex-wrap items-center gap-3">
                     <h2 className="font-display text-4xl font-semibold text-ink">{order.orderNumber}</h2>
                     <StatusPill label={toLabel(order.status)} tone={getToneForStatus(order.status)} />
+                    <StatusPill
+                      label={toLabel(order.deliveryAssignmentStatus ?? "PARTNER_ACCEPTED")}
+                      tone={getDeliveryAssignmentStatusTone(order.deliveryAssignmentStatus)}
+                    />
                   </div>
                   <p className="text-sm text-ink-soft">
                     {order.restaurant.name} to {[order.address.area, order.address.city].filter(Boolean).join(", ")}
+                  </p>
+                  <p className="text-sm text-ink-soft">
+                    {getDeliveryAssignmentStatusDescription(order.deliveryAssignmentStatus)}
                   </p>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-3">
@@ -1042,11 +1126,19 @@ export const DeliveryActivePage = () => {
                     <p><span className="font-semibold text-ink">Pickup:</span> {order.restaurant.addressLine ?? order.restaurant.area ?? order.restaurant.city}</p>
                     <p><span className="font-semibold text-ink">Drop-off:</span> {[order.address.houseNo, order.address.street, order.address.area, order.address.city].filter(Boolean).join(", ")}</p>
                     <p><span className="font-semibold text-ink">Items:</span> {buildDeliveryItemsSummary(order.items)}</p>
-                    <p><span className="font-semibold text-ink">Payment:</span> {toLabel(order.paymentMethod)} | {formatCurrency(order.totalAmount)}</p>
+                    <p><span className="font-semibold text-ink">Payment:</span> {toLabel(order.paymentMethod)} | {toLabel(order.paymentStatus)} | {formatCurrency(order.totalAmount)}</p>
                     <p><span className="font-semibold text-ink">Customer note:</span> {order.specialInstructions ?? "No extra note shared."}</p>
                   </div>
                   <div className="space-y-3">
-                    {order.status === "DELIVERY_PARTNER_ASSIGNED" ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="w-full justify-center"
+                      onClick={() => navigate(buildDeliverySelectionPath(order.id))}
+                    >
+                      View details
+                    </Button>
+                    {canReleaseDeliveryOrder(order) ? (
                       <Button
                         type="button"
                         variant="secondary"
@@ -1087,6 +1179,356 @@ export const DeliveryActivePage = () => {
           description="Assigned orders will appear here with route map, ETA, and tip visibility."
         />
       )}
+    </div>
+  );
+};
+
+export const DeliveryRequestsPage = () => {
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const {
+    useLiveFlow,
+    profile,
+    requests,
+    activeOrders,
+    deliveries,
+    isLoading,
+    pendingOrderId,
+    acceptOrder,
+    skipOrder,
+    refreshLocation,
+    loadData,
+    isUpdatingLocation,
+    workspaceNotice,
+  } = useDeliveryWorkspace();
+  const selectedOrderId = Number(searchParams.get("orderId") ?? "0");
+  const workspaceDeliveries = useMemo(
+    () => (deliveries.length ? deliveries : [...requests, ...activeOrders]),
+    [deliveries, requests, activeOrders],
+  );
+  const [selectedDelivery, setSelectedDelivery] = useState<DeliveryOrder | null>(null);
+  const [isLoadingSelectedDelivery, setIsLoadingSelectedDelivery] = useState(false);
+  const [selectedDeliveryError, setSelectedDeliveryError] = useState<string | null>(null);
+
+  const openDeliveryDetails = (orderId: number) => {
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.set("orderId", String(orderId));
+    setSearchParams(nextSearchParams, { replace: true });
+  };
+
+  useEffect(() => {
+    if (!useLiveFlow) {
+      return;
+    }
+
+    if (!selectedOrderId) {
+      setSelectedDelivery(workspaceDeliveries[0] ?? null);
+      setSelectedDeliveryError(null);
+      setIsLoadingSelectedDelivery(false);
+      return;
+    }
+
+    const cachedDelivery =
+      workspaceDeliveries.find((order) => order.id === selectedOrderId) ?? null;
+
+    if (cachedDelivery) {
+      setSelectedDelivery(cachedDelivery);
+    }
+
+    setSelectedDeliveryError(null);
+    setIsLoadingSelectedDelivery(true);
+
+    void getDeliveryById(selectedOrderId)
+      .then((delivery) => {
+        setSelectedDelivery(delivery);
+      })
+      .catch((error) => {
+        if (!cachedDelivery) {
+          setSelectedDelivery(null);
+        }
+
+        setSelectedDeliveryError(
+          getApiErrorMessage(error, "Unable to load this delivery request right now."),
+        );
+      })
+      .finally(() => {
+        setIsLoadingSelectedDelivery(false);
+      });
+  }, [selectedOrderId, useLiveFlow, workspaceDeliveries]);
+
+  if (!useLiveFlow) {
+    return (
+      <div className="space-y-8">
+        <SectionHeading
+          eyebrow="Delivery requests"
+          title="Request queue and assigned delivery detail."
+          description="Sign in as a delivery partner to review pending requests, accepted orders, and full pickup or drop-off details."
+        />
+        <SurfaceCard>
+          <p className="text-sm leading-7 text-ink-soft">
+            This route is only available in the live delivery workspace.
+          </p>
+        </SurfaceCard>
+      </div>
+    );
+  }
+
+  if (isLoading && !workspaceDeliveries.length && !selectedDelivery) {
+    return <AdminLoadingState rows={6} />;
+  }
+
+  const selectedRequestStatus = selectedDelivery ? getDeliveryRequestStatus(selectedDelivery) : null;
+
+  return (
+    <div className="space-y-8">
+      <SectionHeading
+        eyebrow="Delivery requests"
+        title="Pending requests and accepted deliveries."
+        description="Review the full order payload before you accept, reject, or open an assigned run."
+        action={
+          <div className="flex flex-wrap gap-3">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => void refreshLocation()}
+              disabled={isUpdatingLocation}
+            >
+              {isUpdatingLocation ? "Refreshing..." : "Refresh location"}
+            </Button>
+            <RefreshButton onClick={() => void loadData()} />
+          </div>
+        }
+      />
+
+      {workspaceNotice ? <DeliveryWorkspaceNotice message={workspaceNotice} /> : null}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <DashboardStatCard label="Pending requests" value={requests.length.toString()} hint="Awaiting accept or reject" />
+        <DashboardStatCard label="Current deliveries" value={activeOrders.length.toString()} hint="Already assigned to you" />
+        <DashboardStatCard label="Open records" value={workspaceDeliveries.length.toString()} hint="Visible in your live queue" />
+      </div>
+
+      {selectedDelivery ? (
+        <SurfaceCard className="space-y-5">
+          <SectionHeading
+            title="Delivery details"
+            description="This detail view is linked from notifications and only shows your own delivery records."
+            action={
+              selectedDelivery.isCurrentDelivery ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => navigate(`/delivery/active?orderId=${selectedDelivery.id}`)}
+                >
+                  Open active run
+                </Button>
+              ) : undefined
+            }
+          />
+
+          {selectedDeliveryError ? (
+            <div className="rounded-[1.5rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              {selectedDeliveryError}
+            </div>
+          ) : null}
+
+          {isLoadingSelectedDelivery && !selectedDelivery.request ? (
+            <p className="text-sm leading-7 text-ink-soft">Loading delivery details...</p>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusPill label={toLabel(selectedDelivery.status)} tone={getToneForStatus(selectedDelivery.status)} />
+            <StatusPill label={toLabel(selectedRequestStatus ?? selectedDelivery.status)} tone={getToneForStatus(selectedRequestStatus ?? selectedDelivery.status)} />
+            <StatusPill
+              label={toLabel(selectedDelivery.deliveryAssignmentStatus ?? "FINDING_PARTNER")}
+              tone={getDeliveryAssignmentStatusTone(selectedDelivery.deliveryAssignmentStatus)}
+            />
+            <StatusPill label={toLabel(selectedDelivery.paymentStatus)} tone={getToneForStatus(selectedDelivery.paymentStatus)} />
+          </div>
+
+          <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+            <div className="space-y-4">
+              <RouteMap markers={buildDeliveryRouteMarkers(selectedDelivery, profile)} />
+              <div className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4 text-sm leading-7 text-ink-soft">
+                <p><span className="font-semibold text-ink">Pickup restaurant:</span> {selectedDelivery.restaurant.name}</p>
+                <p><span className="font-semibold text-ink">Pickup address:</span> {buildDeliveryAddressSummary([selectedDelivery.restaurant.addressLine, selectedDelivery.restaurant.area, selectedDelivery.restaurant.city]) || selectedDelivery.restaurant.name}</p>
+                <p><span className="font-semibold text-ink">Customer address:</span> {buildDeliveryAddressSummary([selectedDelivery.address.houseNo, selectedDelivery.address.street, selectedDelivery.address.landmark, selectedDelivery.address.area, selectedDelivery.address.city])}</p>
+                <p><span className="font-semibold text-ink">Order ID:</span> {selectedDelivery.id}</p>
+                <p><span className="font-semibold text-ink">Order number:</span> {selectedDelivery.orderNumber}</p>
+                <p><span className="font-semibold text-ink">Customer:</span> {selectedDelivery.user.fullName}</p>
+                <p><span className="font-semibold text-ink">Order items:</span> {buildDeliveryItemsSummary(selectedDelivery.items)}</p>
+                <p><span className="font-semibold text-ink">Total amount:</span> {formatCurrency(selectedDelivery.totalAmount)}</p>
+                <p><span className="font-semibold text-ink">Payment:</span> {toLabel(selectedDelivery.paymentMethod)} | {toLabel(selectedDelivery.paymentStatus)}</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Partner to restaurant</p>
+                  <p className="mt-2 text-sm font-semibold text-ink">{formatDistanceKm(selectedDelivery.restaurantDistanceKm ?? selectedDelivery.request?.distanceKm ?? selectedDelivery.deliveryOffer?.distanceKm)}</p>
+                </div>
+                <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Restaurant to customer</p>
+                  <p className="mt-2 text-sm font-semibold text-ink">{formatDistanceKm(selectedDelivery.restaurantToCustomerDistanceKm ?? selectedDelivery.routeDistanceKm)}</p>
+                </div>
+                <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Estimated pickup</p>
+                  <p className="mt-2 text-sm font-semibold text-ink">{formatEtaMinutes(selectedDelivery.estimatedPickupMinutes)}</p>
+                </div>
+                <div className="rounded-[1.5rem] bg-cream px-4 py-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Estimated delivery</p>
+                  <p className="mt-2 text-sm font-semibold text-ink">{formatEtaMinutes(selectedDelivery.estimatedDropoffMinutes ?? selectedDelivery.estimatedDeliveryMinutes)}</p>
+                </div>
+              </div>
+
+              <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
+                <p className="font-semibold text-ink">Assignment status</p>
+                <p className="mt-1">{getDeliveryAssignmentStatusDescription(selectedDelivery.deliveryAssignmentStatus)}</p>
+                <p><span className="font-semibold text-ink">Requested at:</span> {formatDateTime(selectedDelivery.request?.requestedAt ?? selectedDelivery.orderedAt)}</p>
+                <p><span className="font-semibold text-ink">Responded at:</span> {selectedDelivery.request?.respondedAt ? formatDateTime(selectedDelivery.request.respondedAt) : "Waiting for response"}</p>
+                <p><span className="font-semibold text-ink">Offer expires at:</span> {selectedDelivery.request?.expiresAt ? formatDateTime(selectedDelivery.request.expiresAt) : "Not time-boxed"}</p>
+                <p><span className="font-semibold text-ink">Request status:</span> {toLabel(selectedRequestStatus ?? selectedDelivery.status)}</p>
+                {selectedDelivery.request?.rejectionReason ? (
+                  <p><span className="font-semibold text-ink">Rejection reason:</span> {selectedDelivery.request.rejectionReason}</p>
+                ) : null}
+              </div>
+
+              {selectedDelivery.specialInstructions ? (
+                <div className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4 text-sm leading-7 text-ink-soft">
+                  <p className="font-semibold text-ink">Customer instructions</p>
+                  <p className="mt-1">{selectedDelivery.specialInstructions}</p>
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap justify-end gap-3">
+                {selectedRequestStatus === "PENDING" ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => void skipOrder(selectedDelivery.id)}
+                      disabled={pendingOrderId === selectedDelivery.id || selectedDelivery.canReject === false}
+                    >
+                      {pendingOrderId === selectedDelivery.id ? "Working..." : "Reject"}
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => void acceptOrder(selectedDelivery.id)}
+                      disabled={
+                        pendingOrderId === selectedDelivery.id ||
+                        getDeliveryRequestAction(selectedDelivery, profile).disabled
+                      }
+                    >
+                      {pendingOrderId === selectedDelivery.id
+                        ? "Accepting..."
+                        : getDeliveryRequestAction(selectedDelivery, profile).label}
+                    </Button>
+                  </>
+                ) : selectedDelivery.isCurrentDelivery ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => navigate(`/delivery/active?orderId=${selectedDelivery.id}`)}
+                  >
+                    Open active run
+                  </Button>
+                ) : (
+                  <Button type="button" variant="secondary" disabled>
+                    {toLabel(selectedRequestStatus ?? selectedDelivery.status)}
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </SurfaceCard>
+      ) : (
+        <EmptyState
+          title="No delivery record selected"
+          description="Choose a pending or current delivery to inspect the full order details."
+        />
+      )}
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <SurfaceCard className="space-y-4">
+          <SectionHeading
+            title="Pending delivery requests"
+            description="Only requests assigned to your authenticated delivery account appear here."
+          />
+          {requests.length ? (
+            <div className="space-y-4">
+              {requests.map((order) => (
+                <DeliveryRequestCard
+                  key={order.id}
+                  order={order}
+                  profile={profile}
+                  pendingOrderId={pendingOrderId}
+                  onAccept={acceptOrder}
+                  onSkip={skipOrder}
+                  onViewDetails={openDeliveryDetails}
+                />
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No pending requests"
+              description="New nearby delivery requests will appear here as soon as they are dispatched to you."
+            />
+          )}
+        </SurfaceCard>
+
+        <SurfaceCard className="space-y-4">
+          <SectionHeading
+            title="Accepted and current delivery"
+            description="Assigned orders remain visible here while they are still active."
+          />
+          {activeOrders.length ? (
+            <div className="space-y-3">
+              {activeOrders.map((order) => (
+                <div
+                  key={order.id}
+                  className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4"
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <p className="font-semibold text-ink">{order.orderNumber}</p>
+                        <StatusPill label={toLabel(order.status)} tone={getToneForStatus(order.status)} />
+                        <StatusPill
+                          label={toLabel(order.deliveryAssignmentStatus ?? "PARTNER_ACCEPTED")}
+                          tone={getDeliveryAssignmentStatusTone(order.deliveryAssignmentStatus)}
+                        />
+                      </div>
+                      <p className="text-sm text-ink-soft">{order.restaurant.name}</p>
+                      <p className="text-sm text-ink-soft">{buildDeliveryItemsSummary(order.items)}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => openDeliveryDetails(order.id)}
+                      >
+                        View details
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => navigate(`/delivery/active?orderId=${order.id}`)}
+                      >
+                        Open active run
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="No current delivery"
+              description="Accepted delivery requests will move here until the run is completed."
+            />
+          )}
+        </SurfaceCard>
+      </div>
     </div>
   );
 };

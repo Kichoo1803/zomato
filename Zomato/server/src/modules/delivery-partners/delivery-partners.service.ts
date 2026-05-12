@@ -1,4 +1,6 @@
+import { Prisma } from "@prisma/client";
 import {
+  DeliveryAssignmentStatus,
   DeliveryAvailabilityStatus,
   DeliveryOfferStatus,
   OrderStatus,
@@ -9,6 +11,7 @@ import { StatusCodes } from "http-status-codes";
 import { prisma } from "../../lib/prisma.js";
 import { emitDeliveryLocationUpdate, emitOrderStatusUpdate } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
+import { calculateDistanceKm } from "../../utils/geo.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import {
   areIndianPhoneNumbersEqual,
@@ -187,9 +190,145 @@ const deliveryOrderInclude = {
 } as const;
 
 const claimableDeliveryStatuses = [
+  OrderStatus.PLACED,
+  OrderStatus.CONFIRMED,
+  OrderStatus.ACCEPTED,
+  OrderStatus.PREPARING,
   OrderStatus.READY_FOR_PICKUP,
   OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
 ] as const;
+const terminalDeliveryStatuses = [
+  OrderStatus.DELIVERED,
+  OrderStatus.CANCELLED,
+  OrderStatus.REFUNDED,
+  OrderStatus.PAYMENT_FAILED,
+] as const;
+
+type DeliveryOrderRow = Prisma.OrderGetPayload<{ include: typeof deliveryOrderInclude }>;
+type DeliveryOfferRow = Prisma.DeliveryAssignmentOfferGetPayload<{
+  include: {
+    order: {
+      include: typeof deliveryOrderInclude;
+    };
+  };
+}>;
+
+const buildEstimatedMinutesFromDistance = (distanceKm?: number | null) => {
+  if (distanceKm == null || !Number.isFinite(distanceKm)) {
+    return null;
+  }
+
+  const averageSpeedKmPerHour = distanceKm > 8 ? 24 : 18;
+  return Math.max(4, Math.round((distanceKm / averageSpeedKmPerHour) * 60));
+};
+
+const calculateRestaurantToCustomerDistanceKm = (
+  order: Pick<
+    DeliveryOrderRow,
+    "restaurant" | "address"
+  >,
+) => {
+  const distanceKm = calculateDistanceKm(
+    order.restaurant.latitude,
+    order.restaurant.longitude,
+    order.address.latitude,
+    order.address.longitude,
+  );
+
+  return Number.isFinite(distanceKm) ? Number(distanceKm.toFixed(2)) : null;
+};
+
+const buildPartnerDeliveryRecord = (input: {
+  order: DeliveryOrderRow;
+  offer?: Pick<
+    DeliveryOfferRow,
+    | "id"
+    | "batchNumber"
+    | "radiusKm"
+    | "distanceKm"
+    | "offeredAt"
+    | "expiresAt"
+    | "status"
+    | "respondedAt"
+    | "acceptedAt"
+    | "closedReason"
+    | "deliveryPartnerId"
+  > | null;
+  partnerCoordinates?: {
+    currentLatitude?: number | null;
+    currentLongitude?: number | null;
+  };
+  partnerId: number;
+  isCurrentDelivery: boolean;
+}) => {
+  const partnerToRestaurantDistanceKm =
+    input.offer?.distanceKm ??
+    calculateRestaurantPickupDistanceKm(input.order.restaurant, {
+      currentLatitude:
+        input.partnerCoordinates?.currentLatitude ??
+        input.order.deliveryPartner?.currentLatitude,
+      currentLongitude:
+        input.partnerCoordinates?.currentLongitude ??
+        input.order.deliveryPartner?.currentLongitude,
+    });
+  const restaurantToCustomerDistanceKm =
+    calculateRestaurantToCustomerDistanceKm(input.order);
+  const requestStatus =
+    input.offer?.status ??
+    (input.isCurrentDelivery
+      ? DeliveryOfferStatus.ACCEPTED
+      : DeliveryOfferStatus.CANCELLED);
+
+  return {
+    ...input.order,
+    deliveryOffer: input.offer
+      ? {
+          id: input.offer.id,
+          batchNumber: input.offer.batchNumber,
+          radiusKm: input.offer.radiusKm,
+          distanceKm: input.offer.distanceKm,
+          offeredAt: input.offer.offeredAt,
+          expiresAt: input.offer.expiresAt,
+          status: input.offer.status,
+        }
+      : null,
+    request: {
+      id: input.offer?.id ?? null,
+      orderId: input.order.id,
+      restaurantId: input.order.restaurant.id,
+      deliveryPartnerId: input.offer?.deliveryPartnerId ?? input.partnerId,
+      status: requestStatus,
+      requestedAt: input.offer?.offeredAt ?? input.order.assignedAt ?? input.order.orderedAt,
+      respondedAt: input.offer?.respondedAt ?? input.offer?.acceptedAt ?? input.order.assignedAt ?? null,
+      expiresAt: input.offer?.expiresAt ?? null,
+      rejectionReason: input.offer?.closedReason ?? null,
+      distanceKm: partnerToRestaurantDistanceKm,
+      batchNumber: input.offer?.batchNumber ?? 1,
+    },
+    deliveryAssignmentStatus:
+      input.order.deliveryAssignmentStatus ?? DeliveryAssignmentStatus.FINDING_PARTNER,
+    restaurantDistanceKm: partnerToRestaurantDistanceKm,
+    restaurantToCustomerDistanceKm,
+    estimatedPickupMinutes: buildEstimatedMinutesFromDistance(
+      partnerToRestaurantDistanceKm,
+    ),
+    estimatedDropoffMinutes: input.order.estimatedDeliveryMinutes ?? null,
+    deliveryCoverageType:
+      partnerToRestaurantDistanceKm == null
+        ? null
+        : partnerToRestaurantDistanceKm > PRIMARY_ASSIGNMENT_RADIUS_KM
+          ? "FALLBACK"
+          : "PRIMARY",
+    isPendingRequest: requestStatus === DeliveryOfferStatus.PENDING,
+    isCurrentDelivery: input.isCurrentDelivery,
+    canAccept:
+      requestStatus === DeliveryOfferStatus.PENDING &&
+      input.order.deliveryPartnerId == null,
+    canReject:
+      requestStatus === DeliveryOfferStatus.PENDING &&
+      input.order.deliveryPartnerId == null,
+  };
+};
 
 const buildBoundingBox = (latitude: number, longitude: number, radiusKm: number) => {
   const latitudeDelta = radiusKm / 111;
@@ -361,6 +500,188 @@ const getNearbyRestaurantsForPartner = async (partner: {
       } => Boolean(restaurant),
     )
     .sort((left, right) => left.distanceKm - right.distanceKm);
+};
+
+const listPartnerDeliveryRecords = async (partner: {
+  id: number;
+  currentLatitude?: number | null;
+  currentLongitude?: number | null;
+}) => {
+  const now = new Date();
+  const [pendingOffers, activeOrders] = await Promise.all([
+    prisma.deliveryAssignmentOffer.findMany({
+      where: {
+        deliveryPartnerId: partner.id,
+        status: DeliveryOfferStatus.PENDING,
+        expiresAt: {
+          gt: now,
+        },
+        order: {
+          deletedAt: null,
+          deliveryPartnerId: null,
+          status: {
+            in: [...claimableDeliveryStatuses],
+          },
+        },
+      },
+      include: {
+        order: {
+          include: deliveryOrderInclude,
+        },
+      },
+      orderBy: [{ distanceKm: "asc" }, { offeredAt: "desc" }],
+    }),
+    prisma.order.findMany({
+      where: {
+        deliveryPartnerId: partner.id,
+        deletedAt: null,
+        status: {
+          notIn: [...terminalDeliveryStatuses],
+        },
+      },
+      include: deliveryOrderInclude,
+      orderBy: [{ assignedAt: "desc" }, { orderedAt: "desc" }],
+    }),
+  ]);
+
+  const acceptedOffers = activeOrders.length
+    ? await prisma.deliveryAssignmentOffer.findMany({
+        where: {
+          deliveryPartnerId: partner.id,
+          orderId: {
+            in: activeOrders.map((order) => order.id),
+          },
+          status: DeliveryOfferStatus.ACCEPTED,
+        },
+        select: {
+          id: true,
+          orderId: true,
+          deliveryPartnerId: true,
+          batchNumber: true,
+          radiusKm: true,
+          distanceKm: true,
+          offeredAt: true,
+          expiresAt: true,
+          respondedAt: true,
+          acceptedAt: true,
+          closedReason: true,
+          status: true,
+        },
+        orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }],
+      })
+    : [];
+
+  const acceptedOfferByOrderId = new Map<number, (typeof acceptedOffers)[number]>();
+  acceptedOffers.forEach((offer) => {
+    if (!acceptedOfferByOrderId.has(offer.orderId)) {
+      acceptedOfferByOrderId.set(offer.orderId, offer);
+    }
+  });
+
+  const pendingRecords = pendingOffers.map((offer) =>
+    buildPartnerDeliveryRecord({
+      order: offer.order,
+      offer,
+      partnerCoordinates: partner,
+      partnerId: partner.id,
+      isCurrentDelivery: false,
+    }),
+  );
+  const activeRecords = activeOrders.map((order) =>
+    buildPartnerDeliveryRecord({
+      order,
+      offer: acceptedOfferByOrderId.get(order.id) ?? null,
+      partnerCoordinates: partner,
+      partnerId: partner.id,
+      isCurrentDelivery: true,
+    }),
+  );
+
+  return {
+    pendingRequests: pendingRecords,
+    activeDeliveries: activeRecords,
+    deliveries: [...pendingRecords, ...activeRecords],
+  };
+};
+
+const getPartnerDeliveryRecordByOrderId = async (
+  partner: {
+    id: number;
+    currentLatitude?: number | null;
+    currentLongitude?: number | null;
+  },
+  orderId: number,
+) => {
+  const [activeOrder, acceptedOffer, latestOffer] = await Promise.all([
+    prisma.order.findFirst({
+      where: {
+        id: orderId,
+        deletedAt: null,
+        deliveryPartnerId: partner.id,
+      },
+      include: deliveryOrderInclude,
+    }),
+    prisma.deliveryAssignmentOffer.findFirst({
+      where: {
+        orderId,
+        deliveryPartnerId: partner.id,
+        status: DeliveryOfferStatus.ACCEPTED,
+      },
+      select: {
+        id: true,
+        orderId: true,
+        deliveryPartnerId: true,
+        batchNumber: true,
+        radiusKm: true,
+        distanceKm: true,
+        offeredAt: true,
+        expiresAt: true,
+        respondedAt: true,
+        acceptedAt: true,
+        closedReason: true,
+        status: true,
+      },
+      orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }],
+    }),
+    prisma.deliveryAssignmentOffer.findFirst({
+      where: {
+        orderId,
+        deliveryPartnerId: partner.id,
+      },
+      include: {
+        order: {
+          include: deliveryOrderInclude,
+        },
+      },
+      orderBy: [{ createdAt: "desc" }, { offeredAt: "desc" }],
+    }),
+  ]);
+
+  if (activeOrder) {
+    return buildPartnerDeliveryRecord({
+      order: activeOrder,
+      offer: acceptedOffer,
+      partnerCoordinates: partner,
+      partnerId: partner.id,
+      isCurrentDelivery: true,
+    });
+  }
+
+  if (!latestOffer) {
+    throw new AppError(
+      StatusCodes.NOT_FOUND,
+      "Delivery request not found",
+      "DELIVERY_REQUEST_NOT_FOUND",
+    );
+  }
+
+  return buildPartnerDeliveryRecord({
+    order: latestOffer.order,
+    offer: latestOffer,
+    partnerCoordinates: partner,
+    partnerId: partner.id,
+    isCurrentDelivery: false,
+  });
 };
 
 export const deliveryPartnersService = {
@@ -767,13 +1088,24 @@ export const deliveryPartnersService = {
     if (user.role === Role.DELIVERY_PARTNER) {
       const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(user.id);
       await syncNearbyDispatchOrdersForPartner(partner);
+      return (await listPartnerDeliveryRecords(partner)).pendingRequests;
     }
 
     return orderDispatchService.listOpenOffersForUser(user);
   },
 
-  async declineRequest(userId: number, orderId: number) {
-    await orderDispatchService.declineOffer(userId, orderId);
+  async listDeliveries(userId: number) {
+    const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
+    return listPartnerDeliveryRecords(partner);
+  },
+
+  async getDeliveryByOrderId(userId: number, orderId: number) {
+    const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
+    return getPartnerDeliveryRecordByOrderId(partner, orderId);
+  },
+
+  async declineRequest(userId: number, orderId: number, rejectionReason?: string) {
+    await orderDispatchService.declineOffer(userId, orderId, rejectionReason);
   },
 
   async releaseAssignedOrder(userId: number, orderId: number, note?: string) {
@@ -781,27 +1113,8 @@ export const deliveryPartnersService = {
   },
 
   async listActiveDeliveries(userId: number) {
-    await ensureDeliveryPartnerProfileByUserId(userId);
-
-    return prisma.order.findMany({
-      where: {
-        deliveryPartner: {
-          userId,
-        },
-        deletedAt: null,
-        status: {
-          in: [
-            OrderStatus.DELIVERY_PARTNER_ASSIGNED,
-            OrderStatus.PICKED_UP,
-            OrderStatus.ON_THE_WAY,
-            OrderStatus.OUT_FOR_DELIVERY,
-            OrderStatus.DELAYED,
-          ],
-        },
-      },
-      include: deliveryOrderInclude,
-      orderBy: { orderedAt: "desc" },
-    });
+    const { profile: partner } = await ensureDeliveryPartnerProfileByUserId(userId);
+    return (await listPartnerDeliveryRecords(partner)).activeDeliveries;
   },
 
   async listHistory(userId: number) {

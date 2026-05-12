@@ -508,6 +508,8 @@ export type AdminOrder = {
   deliveryPartnerId?: number | null;
   orderNumber: string;
   status: string;
+  deliveryAssignmentStatus?: string | null;
+  deliveryAssignmentUpdatedAt?: string | null;
   paymentStatus: string;
   paymentMethod: string;
   subtotal: number;

@@ -8,6 +8,8 @@ import {
   declineDeliveryRequest,
   deleteDeliveryPartner,
   getDeliveryProfile,
+  getDeliveryById,
+  listDeliveries,
   listActiveDeliveries,
   listDeliveryHistory,
   listNearbyRestaurants,
@@ -24,6 +26,7 @@ import {
   deliveryPartnerIdParamSchema,
   deliveryRequestOrderIdParamSchema,
   listDeliveryPartnersQuerySchema,
+  rejectDeliveryRequestSchema,
   releaseAssignedOrderSchema,
   updateAvailabilitySchema,
   updateDeliveryPartnerSchema,
@@ -61,10 +64,26 @@ deliveryPartnersRouter.delete(
   validate(deliveryPartnerIdParamSchema),
   deleteDeliveryPartner,
 );
-deliveryPartnersRouter.use(requireAuth, authorize(Role.DELIVERY_PARTNER, Role.ADMIN));
+deliveryPartnersRouter.use(requireAuth, authorize(Role.DELIVERY_PARTNER));
 deliveryPartnersRouter.get("/me", getDeliveryProfile);
 deliveryPartnersRouter.patch("/me", validate(updateMyDeliveryProfileSchema), updateMyDeliveryProfile);
 deliveryPartnersRouter.get("/nearby-restaurants", listNearbyRestaurants);
+deliveryPartnersRouter.get("/deliveries", listDeliveries);
+deliveryPartnersRouter.get(
+  "/deliveries/:orderId",
+  validate(deliveryRequestOrderIdParamSchema),
+  getDeliveryById,
+);
+deliveryPartnersRouter.post(
+  "/deliveries/:orderId/accept",
+  validate(deliveryRequestOrderIdParamSchema),
+  acceptDeliveryRequest,
+);
+deliveryPartnersRouter.post(
+  "/deliveries/:orderId/reject",
+  validate(rejectDeliveryRequestSchema),
+  declineDeliveryRequest,
+);
 deliveryPartnersRouter.get("/requests", listNewRequests);
 deliveryPartnersRouter.patch(
   "/requests/:orderId/accept",
@@ -73,7 +92,7 @@ deliveryPartnersRouter.patch(
 );
 deliveryPartnersRouter.patch(
   "/requests/:orderId/skip",
-  validate(deliveryRequestOrderIdParamSchema),
+  validate(rejectDeliveryRequestSchema),
   declineDeliveryRequest,
 );
 deliveryPartnersRouter.get("/active", listActiveDeliveries);

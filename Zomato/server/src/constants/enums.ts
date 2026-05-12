@@ -157,6 +157,15 @@ export const DeliveryOfferStatus = {
 export type DeliveryOfferStatus =
   (typeof DeliveryOfferStatus)[keyof typeof DeliveryOfferStatus];
 
+export const DeliveryAssignmentStatus = {
+  FINDING_PARTNER: "FINDING_PARTNER",
+  PARTNER_REQUESTED: "PARTNER_REQUESTED",
+  PARTNER_ACCEPTED: "PARTNER_ACCEPTED",
+  NO_PARTNER_AVAILABLE: "NO_PARTNER_AVAILABLE",
+} as const;
+export type DeliveryAssignmentStatus =
+  (typeof DeliveryAssignmentStatus)[keyof typeof DeliveryAssignmentStatus];
+
 export const NotificationType = {
   ORDER: "ORDER",
   OFFER: "OFFER",

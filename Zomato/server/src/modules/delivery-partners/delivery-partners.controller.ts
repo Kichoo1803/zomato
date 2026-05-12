@@ -95,6 +95,27 @@ export const listNewRequests = asyncHandler(async (_req, res) => {
   });
 });
 
+export const listDeliveries = asyncHandler(async (req, res) => {
+  const deliveries = await deliveryPartnersService.listDeliveries(req.user!.id);
+
+  return sendSuccess(res, {
+    message: "Delivery workspace fetched successfully",
+    data: deliveries,
+  });
+});
+
+export const getDeliveryById = asyncHandler(async (req, res) => {
+  const delivery = await deliveryPartnersService.getDeliveryByOrderId(
+    req.user!.id,
+    Number(req.params.orderId),
+  );
+
+  return sendSuccess(res, {
+    message: "Delivery details fetched successfully",
+    data: { delivery },
+  });
+});
+
 export const listNearbyRestaurants = asyncHandler(async (req, res) => {
   const restaurants = await deliveryPartnersService.listNearbyRestaurants(req.user!.id);
 
@@ -105,10 +126,14 @@ export const listNearbyRestaurants = asyncHandler(async (req, res) => {
 });
 
 export const declineDeliveryRequest = asyncHandler(async (req, res) => {
-  await deliveryPartnersService.declineRequest(req.user!.id, Number(req.params.orderId));
+  await deliveryPartnersService.declineRequest(
+    req.user!.id,
+    Number(req.params.orderId),
+    req.body.reason as string | undefined,
+  );
 
   return sendSuccess(res, {
-    message: "Delivery request skipped successfully",
+    message: "Delivery request rejected successfully",
   });
 });
 

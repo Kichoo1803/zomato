@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import {
   CatalogItemType,
+  DeliveryAssignmentStatus,
   DeliveryAvailabilityStatus,
   DeliveryOfferStatus,
   NotificationType,
@@ -12,6 +13,7 @@ import {
 import { StatusCodes } from "http-status-codes";
 import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
+import { env } from "../../config/env.js";
 import {
   emitDispatchQueueUpdate,
   emitNotification,
@@ -38,7 +40,6 @@ import {
   calculateRestaurantPickupDistanceKm,
   getCurrentDeliveryPartnerCoordinates,
   normalizeCoordinates,
-  notifyNearbyDeliveryPartnersForOrder,
 } from "../../services/delivery-partner-availability.service.js";
 
 const orderInclude = {
@@ -155,6 +156,7 @@ const deliveryStatusUpdates: OrderStatus[] = [
   OrderStatus.DELIVERED,
 ];
 const deliveryPartnerStatusTransitions: Partial<Record<OrderStatus, OrderStatus[]>> = {
+  [OrderStatus.READY_FOR_PICKUP]: [OrderStatus.PICKED_UP, OrderStatus.DELAYED],
   [OrderStatus.DELIVERY_PARTNER_ASSIGNED]: [OrderStatus.PICKED_UP, OrderStatus.DELAYED],
   [OrderStatus.PICKED_UP]: [OrderStatus.ON_THE_WAY, OrderStatus.DELAYED],
   [OrderStatus.ON_THE_WAY]: [OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELAYED],
@@ -167,6 +169,10 @@ const deliveryPartnerStatusTransitions: Partial<Record<OrderStatus, OrderStatus[
   ],
 };
 const claimableDeliveryRequestStatuses: OrderStatus[] = [
+  OrderStatus.PLACED,
+  OrderStatus.CONFIRMED,
+  OrderStatus.ACCEPTED,
+  OrderStatus.PREPARING,
   OrderStatus.READY_FOR_PICKUP,
   OrderStatus.LOOKING_FOR_DELIVERY_PARTNER,
 ];
@@ -260,6 +266,7 @@ const buildNotificationMeta = (
     orderId: order.id,
     orderNumber: order.orderNumber,
     status: payload.status ?? order.status,
+    deliveryAssignmentStatus: order.deliveryAssignmentStatus ?? null,
     customerName: order.user.fullName,
     restaurantName: order.restaurant.name,
     itemsSummary: buildItemsSummary(order.items),
@@ -551,7 +558,7 @@ const createOrderNotification = async (
 
 export const notifyAvailableDeliveryPartners = async (order: OrderWithRealtimeContext) => {
   if (order.id > 0) {
-    await notifyNearbyDeliveryPartnersForOrder(order.id);
+    await orderDispatchService.syncOrder(order.id);
     return;
   }
 
@@ -761,6 +768,8 @@ export const ordersService = {
           discountAmount,
           tipAmount,
           totalAmount,
+          deliveryAssignmentStatus: DeliveryAssignmentStatus.FINDING_PARTNER,
+          deliveryAssignmentUpdatedAt: new Date(),
           assignmentRadiusKm: placementAvailability.matchedRadiusKm,
           routeDistanceKm: deliveryIntelligence.routeDistanceKm,
           travelDurationMinutes: deliveryIntelligence.travelDurationMinutes,
@@ -934,7 +943,7 @@ export const ordersService = {
         },
       },
     );
-    await notifyNearbyDeliveryPartnersForOrder(placedOrder.id);
+    await notifyAvailableDeliveryPartners(placedOrder);
 
     emitOrderStatusUpdate({
       orderId: placedOrder.id,
@@ -1366,7 +1375,7 @@ export const ordersService = {
     if (!claimableDeliveryRequestStatuses.includes(order.status as OrderStatus)) {
       throw new AppError(
         StatusCodes.CONFLICT,
-        "This order is not ready to be accepted yet",
+        "This order is no longer accepting delivery requests",
         "DELIVERY_REQUEST_NOT_READY",
       );
     }
@@ -1440,7 +1449,16 @@ export const ordersService = {
       },
     });
 
-    const nextStatus = OrderStatus.DELIVERY_PARTNER_ASSIGNED;
+    const nextStatus =
+      ([OrderStatus.READY_FOR_PICKUP, OrderStatus.LOOKING_FOR_DELIVERY_PARTNER] as OrderStatus[]).includes(
+        order.status as OrderStatus,
+      )
+        ? OrderStatus.DELIVERY_PARTNER_ASSIGNED
+        : (order.status as OrderStatus);
+    const acceptanceNote =
+      nextStatus === OrderStatus.DELIVERY_PARTNER_ASSIGNED
+        ? "Delivery partner accepted the order."
+        : "Delivery partner accepted the order and will head to pickup once the restaurant is ready.";
     const deliveryIntelligence = await calculateDeliveryIntelligence({
       status: nextStatus,
       restaurant: order.restaurant,
@@ -1484,8 +1502,10 @@ export const ordersService = {
         },
         data: {
           deliveryPartnerId: deliveryPartner.id,
-          status: nextStatus,
+          ...(nextStatus !== order.status ? { status: nextStatus } : {}),
           assignedAt: now,
+          deliveryAssignmentStatus: DeliveryAssignmentStatus.PARTNER_ACCEPTED,
+          deliveryAssignmentUpdatedAt: now,
           assignmentRadiusKm: pendingOffer.radiusKm,
           routeDistanceKm: deliveryIntelligence.routeDistanceKm,
           travelDurationMinutes: deliveryIntelligence.travelDurationMinutes,
@@ -1509,7 +1529,7 @@ export const ordersService = {
           orderId,
           actorId: user.id,
           status: nextStatus,
-          note: "Delivery partner accepted the order.",
+          note: acceptanceNote,
         },
       });
 
@@ -1551,11 +1571,13 @@ export const ordersService = {
       acceptedOrder.userId,
       orderId,
       "Delivery partner assigned",
-      "Your order has been accepted for pickup and your rider is heading to the restaurant.",
+      nextStatus === OrderStatus.DELIVERY_PARTNER_ASSIGNED
+        ? "Your order has been accepted for pickup and your rider is heading to the restaurant."
+        : "Your rider has been assigned and will be notified as soon as pickup is ready.",
       {
         meta: buildNotificationMeta(acceptedOrder, {
           eventKey: "customer:delivery-partner-assigned",
-          status: nextStatus,
+          status: acceptedOrder.status as OrderStatus,
         }),
       },
     );
@@ -1563,11 +1585,13 @@ export const ordersService = {
       acceptedOrder.restaurant.ownerId,
       orderId,
       "Delivery partner accepted pickup",
-      `${acceptedOrder.orderNumber} was accepted by ${deliveryPartner.user.fullName} for pickup.`,
+      nextStatus === OrderStatus.DELIVERY_PARTNER_ASSIGNED
+        ? `${acceptedOrder.orderNumber} was accepted by ${deliveryPartner.user.fullName} for pickup.`
+        : `${acceptedOrder.orderNumber} was accepted by ${deliveryPartner.user.fullName} while the order is still being prepared.`,
       {
         meta: buildNotificationMeta(acceptedOrder, {
           eventKey: "owner:delivery-partner-accepted",
-          status: nextStatus,
+          status: acceptedOrder.status as OrderStatus,
         }),
         realtimeTarget: {
           restaurantId: acceptedOrder.restaurant.id,
@@ -1591,9 +1615,20 @@ export const ordersService = {
       deliveryPartnerUserId: deliveryPartner.user.id,
       restaurantId: acceptedOrder.restaurant.id,
       deliveryPartnerId: acceptedOrder.deliveryPartnerId,
-      status: nextStatus,
-      note: "Delivery partner accepted the order.",
+      status: acceptedOrder.status,
+      note: acceptanceNote,
     });
+
+    if (env.isDevelopment) {
+      logger.info("Delivery assignment accepted", {
+        orderId,
+        restaurantId: acceptedOrder.restaurant.id,
+        partnerId: deliveryPartner.id,
+        distanceKm: pickupDistanceKm,
+        requestStatus: DeliveryOfferStatus.ACCEPTED,
+        finalAssignedPartnerId: acceptedOrder.deliveryPartnerId,
+      });
+    }
 
     return acceptedOrder;
   },
@@ -1682,7 +1717,11 @@ export const ordersService = {
       order.status === OrderStatus.REFUNDED ||
       order.status === OrderStatus.PAYMENT_FAILED
         ? (order.status as OrderStatus)
-        : OrderStatus.DELIVERY_PARTNER_ASSIGNED;
+        : ([OrderStatus.READY_FOR_PICKUP, OrderStatus.LOOKING_FOR_DELIVERY_PARTNER] as OrderStatus[]).includes(
+              order.status as OrderStatus,
+            )
+          ? OrderStatus.DELIVERY_PARTNER_ASSIGNED
+          : (order.status as OrderStatus);
     const deliveryIntelligence = await calculateDeliveryIntelligence({
       status: nextStatus,
       restaurant: order.restaurant,
@@ -1698,8 +1737,10 @@ export const ordersService = {
         where: { id: orderId },
         data: {
           deliveryPartnerId,
-          status: nextStatus,
+          ...(nextStatus !== order.status ? { status: nextStatus } : {}),
           ...(nextStatus === OrderStatus.DELIVERY_PARTNER_ASSIGNED ? { assignedAt: now } : {}),
+          deliveryAssignmentStatus: DeliveryAssignmentStatus.PARTNER_ACCEPTED,
+          deliveryAssignmentUpdatedAt: now,
           assignmentRadiusKm: null,
           routeDistanceKm: deliveryIntelligence.routeDistanceKm,
           travelDurationMinutes: deliveryIntelligence.travelDurationMinutes,

@@ -71,6 +71,15 @@ export const deliveryRequestOrderIdParamSchema = {
   }),
 };
 
+export const rejectDeliveryRequestSchema = {
+  params: z.object({
+    orderId: z.coerce.number().int().positive(),
+  }),
+  body: z.object({
+    reason: z.string().trim().max(300).optional(),
+  }),
+};
+
 export const releaseAssignedOrderSchema = {
   params: z.object({
     orderId: z.coerce.number().int().positive(),

@@ -26,6 +26,33 @@ import {
   toLabel,
 } from "./admin-shared";
 
+const getDeliveryAssignmentTone = (status?: string | null) => {
+  switch (status) {
+    case "PARTNER_ACCEPTED":
+      return "success" as const;
+    case "NO_PARTNER_AVAILABLE":
+      return "warning" as const;
+    case "FINDING_PARTNER":
+    case "PARTNER_REQUESTED":
+    default:
+      return "info" as const;
+  }
+};
+
+const getDeliveryAssignmentLabel = (status?: string | null) => {
+  switch (status) {
+    case "PARTNER_REQUESTED":
+      return "Partner requested";
+    case "PARTNER_ACCEPTED":
+      return "Partner accepted";
+    case "NO_PARTNER_AVAILABLE":
+      return "No partner available";
+    case "FINDING_PARTNER":
+    default:
+      return "Finding partner";
+  }
+};
+
 export const AdminOrdersPage = () => {
   const { user } = useAuth();
   const [orders, setOrders] = useState<AdminOrder[]>([]);
@@ -149,8 +176,12 @@ export const AdminOrdersPage = () => {
                 key: "delivery",
                 label: "Delivery",
                 render: (order) => (
-                  <div>
+                  <div className="space-y-2">
                     <StatusPill label={toLabel(order.status)} tone={getToneForStatus(order.status)} />
+                    <StatusPill
+                      label={getDeliveryAssignmentLabel(order.deliveryAssignmentStatus)}
+                      tone={getDeliveryAssignmentTone(order.deliveryAssignmentStatus)}
+                    />
                     <p className="mt-2 text-xs text-ink-muted">
                       {order.deliveryPartner?.user.fullName ?? "Auto-matching rider"}
                     </p>
@@ -228,6 +259,15 @@ export const AdminOrdersPage = () => {
                 {
                   label: "Refund status",
                   value: selectedOrder.refundStatus ? toLabel(selectedOrder.refundStatus) : "Not set",
+                },
+                {
+                  label: "Delivery assignment",
+                  value: (
+                    <StatusPill
+                      label={getDeliveryAssignmentLabel(selectedOrder.deliveryAssignmentStatus)}
+                      tone={getDeliveryAssignmentTone(selectedOrder.deliveryAssignmentStatus)}
+                    />
+                  ),
                 },
                 { label: "Total", value: formatCurrency(selectedOrder.totalAmount) },
                 { label: "Tip", value: formatCurrency(selectedOrder.tipAmount) },
@@ -342,8 +382,8 @@ export const AdminOrdersPage = () => {
                 )}
                 <div className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4 text-sm leading-7 text-ink-soft">
                   Nearby, online riders are matched automatically from the restaurant pickup point.
-                  Manual rider assignment is reserved for explicit emergency overrides outside the
-                  normal admin flow.
+                  Assignment states now surface as Finding partner, Partner requested, Partner
+                  accepted, or No partner available while the normal admin flow stays intact.
                 </div>
               </div>
               <div className="rounded-[1.5rem] border border-accent/10 bg-white/60 px-4 py-4 text-sm leading-7 text-ink-soft">

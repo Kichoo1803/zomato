@@ -27,6 +27,8 @@ export type AppNotificationMeta = {
   orderId?: number;
   orderNumber?: string;
   status?: string;
+  deliveryAssignmentStatus?: string | null;
+  deliveryRequestStatus?: string | null;
   customerName?: string;
   restaurantName?: string;
   itemsSummary?: string;
@@ -97,7 +99,7 @@ export const getNotificationHref = (
       case "RESTAURANT_OWNER":
         return `/owner/orders?orderId=${meta.orderId}`;
       case "DELIVERY_PARTNER":
-        return `/delivery/active?orderId=${meta.orderId}`;
+        return `/delivery/deliveries?orderId=${meta.orderId}`;
       case "REGIONAL_MANAGER":
         return "/ops/assignments";
       case "ADMIN":

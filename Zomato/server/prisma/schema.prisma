@@ -584,6 +584,8 @@ model Order {
   discountAmount           Float                     @default(0) @map("discount_amount")
   tipAmount                Float                     @default(0) @map("tip_amount")
   totalAmount              Float                     @map("total_amount")
+  deliveryAssignmentStatus String                    @default("FINDING_PARTNER") @map("delivery_assignment_status")
+  deliveryAssignmentUpdatedAt DateTime?              @map("delivery_assignment_updated_at")
   assignmentRadiusKm       Float?                    @map("assignment_radius_km")
   routeDistanceKm          Float?                    @map("route_distance_km")
   travelDurationMinutes    Int?                      @map("travel_duration_minutes")

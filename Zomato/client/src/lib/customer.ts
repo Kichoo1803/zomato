@@ -594,6 +594,8 @@ export type CustomerOrder = {
   offerId?: number | null;
   orderNumber: string;
   status: string;
+  deliveryAssignmentStatus?: string | null;
+  deliveryAssignmentUpdatedAt?: string | null;
   paymentStatus: string;
   paymentMethod: string;
   subtotal: number;

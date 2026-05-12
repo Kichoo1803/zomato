@@ -186,6 +186,51 @@ const getOrderStatusTone = (status: string) => {
   return "info" as const;
 };
 
+const getDeliveryAssignmentTone = (status?: string | null) => {
+  switch (status) {
+    case "PARTNER_ACCEPTED":
+      return "success" as const;
+    case "NO_PARTNER_AVAILABLE":
+      return "warning" as const;
+    case "FINDING_PARTNER":
+    case "PARTNER_REQUESTED":
+    default:
+      return "info" as const;
+  }
+};
+
+const getCustomerDeliveryAssignmentLabel = (order: CustomerOrder) => {
+  if (order.deliveryPartner || order.deliveryAssignmentStatus === "PARTNER_ACCEPTED") {
+    return "Delivery partner assigned";
+  }
+
+  switch (order.deliveryAssignmentStatus) {
+    case "PARTNER_REQUESTED":
+    case "FINDING_PARTNER":
+      return "Finding nearby delivery partner";
+    case "NO_PARTNER_AVAILABLE":
+      return "No delivery partner accepted yet";
+    default:
+      return "Delivery assignment updating";
+  }
+};
+
+const getCustomerDeliveryAssignmentDescription = (order: CustomerOrder) => {
+  if (order.deliveryPartner || order.deliveryAssignmentStatus === "PARTNER_ACCEPTED") {
+    return "A delivery partner has accepted this order and live rider details will appear below.";
+  }
+
+  switch (order.deliveryAssignmentStatus) {
+    case "PARTNER_REQUESTED":
+    case "FINDING_PARTNER":
+      return "Finding nearby delivery partner...";
+    case "NO_PARTNER_AVAILABLE":
+      return "No delivery partner accepted yet.";
+    default:
+      return "Delivery assignment is updating in real time.";
+  }
+};
+
 const formatEtaMinutes = (value?: number | null) =>
   value != null ? `${value} min` : "Pending";
 
@@ -3234,7 +3279,7 @@ export const OrderSuccessPage = () => {
           </>
         }
       >
-        <SurfaceCard className="grid gap-6 lg:grid-cols-3">
+        <SurfaceCard className="grid gap-6 lg:grid-cols-2 xl:grid-cols-4">
           <div className="space-y-3">
             <Sparkles className="h-8 w-8 text-accent" />
             <h2 className="font-display text-4xl font-semibold text-ink">Order {order.orderNumber}</h2>
@@ -3245,6 +3290,18 @@ export const OrderSuccessPage = () => {
           <div className="rounded-[1.75rem] bg-cream px-5 py-5">
             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Current status</p>
             <p className="mt-2 font-display text-4xl font-semibold text-ink">{toLabel(order.status)}</p>
+          </div>
+          <div className="rounded-[1.75rem] bg-cream px-5 py-5">
+            <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Delivery assignment</p>
+            <div className="mt-2">
+              <StatusPill
+                label={getCustomerDeliveryAssignmentLabel(order)}
+                tone={getDeliveryAssignmentTone(order.deliveryAssignmentStatus)}
+              />
+            </div>
+            <p className="mt-3 text-sm text-ink-soft">
+              {getCustomerDeliveryAssignmentDescription(order)}
+            </p>
           </div>
           <div className="rounded-[1.75rem] bg-cream px-5 py-5">
             <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Delivery address</p>
@@ -3578,16 +3635,20 @@ export const OrderTrackingPage = () => {
                   <p className="font-semibold text-ink">{order.deliveryPartner?.user.fullName ?? "Assignment pending"}</p>
                   <p className="mt-2 text-sm text-ink-soft">{formatIndianPhoneDisplay(order.deliveryPartner?.user.phone) || "Phone will appear once assigned."}</p>
                 </div>
-                <StatusPill label={toLabel(order.status)} tone={getOrderStatusTone(order.status)} />
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusPill label={toLabel(order.status)} tone={getOrderStatusTone(order.status)} />
+                  <StatusPill
+                    label={getCustomerDeliveryAssignmentLabel(order)}
+                    tone={getDeliveryAssignmentTone(order.deliveryAssignmentStatus)}
+                  />
+                </div>
               </div>
               <p className="mt-3 text-sm text-ink-soft">
-                {order.status === "LOOKING_FOR_DELIVERY_PARTNER"
-                  ? "We are matching the fastest available rider for this order."
-                  : order.status === "DELAYED"
+                {order.status === "DELAYED"
                     ? `A short delay has been applied. Current delay buffer: ${order.delayMinutes} min.`
                     : order.deliveryPartner
                       ? "Your rider location appears on the map below as soon as live coordinates are available."
-                      : "Restaurant and drop-off locations are already locked for dispatch."}
+                      : getCustomerDeliveryAssignmentDescription(order)}
               </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-3">

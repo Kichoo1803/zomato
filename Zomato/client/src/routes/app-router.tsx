@@ -54,6 +54,7 @@ import {
   DeliveryDashboardPage,
   DeliveryEarningsPage,
   DeliveryHistoryPage,
+  DeliveryRequestsPage,
   DeliveryProfilePage,
 } from "@/pages/delivery/delivery-pages";
 import {
@@ -177,6 +178,7 @@ export const AppRouter = () => {
           <Route element={<DashboardLayout />}>
             <Route path="/delivery" element={<DeliveryDashboardPage />} />
             <Route path="/delivery/active" element={<DeliveryActivePage />} />
+            <Route path="/delivery/deliveries" element={<DeliveryRequestsPage />} />
             <Route path="/delivery/notifications" element={<DeliveryNotificationsPage />} />
             <Route path="/delivery/history" element={<DeliveryHistoryPage />} />
             <Route path="/delivery/earnings" element={<DeliveryEarningsPage />} />
