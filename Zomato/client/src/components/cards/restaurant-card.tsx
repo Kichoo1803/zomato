@@ -42,6 +42,7 @@ export const RestaurantCard = ({
     typeof distanceKm === "number" && Number.isFinite(distanceKm)
       ? `${distanceKm < 10 ? distanceKm.toFixed(1) : distanceKm.toFixed(0)} km away`
       : null;
+  const locationLabel = distanceLabel ?? (area.trim() || null);
 
   return (
     <div className="relative">
@@ -90,10 +91,10 @@ export const RestaurantCard = ({
               <Clock3 className="h-3.5 w-3.5 text-accent" />
               {deliveryTime} mins
             </div>
-            {distanceLabel ? (
+            {locationLabel ? (
               <div className="inline-flex items-center gap-2 rounded-full bg-accent/[0.06] px-3 py-1.5 text-xs font-semibold text-accent">
                 <MapPin className="h-3.5 w-3.5" />
-                {distanceLabel}
+                {locationLabel}
               </div>
             ) : null}
           </div>

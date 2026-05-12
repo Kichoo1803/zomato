@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { FoodType, Role } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
 import { env } from "../../config/env.js";
+import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 import {
@@ -12,7 +13,12 @@ import {
 } from "../../utils/geo.js";
 import { getPagination, getPaginationMeta } from "../../utils/pagination.js";
 import { slugify } from "../../utils/slug.js";
-import { getRegionDistrictVariants, normalizeRegionValue } from "../../utils/regions.js";
+import {
+  getRegionDistrictVariants,
+  normalizeRegionValue,
+  resolveCanonicalRegionDistrict,
+  resolveCanonicalRegionState,
+} from "../../utils/regions.js";
 import { resolveRegionIdForAssignment } from "../regions/regions.service.js";
 
 const listSelect = {
@@ -26,8 +32,10 @@ const listSelect = {
   area: true,
   city: true,
   state: true,
+  pincode: true,
   latitude: true,
   longitude: true,
+  isActive: true,
   avgRating: true,
   totalReviews: true,
   costForTwo: true,
@@ -56,6 +64,12 @@ const listSelect = {
           discountValue: true,
         },
       },
+    },
+  },
+  region: {
+    select: {
+      districtName: true,
+      stateName: true,
     },
   },
 } satisfies Prisma.RestaurantSelect;
@@ -321,6 +335,106 @@ const isValidLongitude = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= -180 && value <= 180;
 
 const normalizeDiscoverySearchText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+const stripDiacritics = (value: string) =>
+  value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+const normalizeComparableLocationText = (value?: string | null) => {
+  const normalizedValue = normalizeRegionValue(value);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const comparableValue = stripDiacritics(normalizedValue)
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[,+]/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return comparableValue || null;
+};
+const normalizeComparablePincode = (value?: string | null) => {
+  const normalizedValue = value?.replace(/\D+/g, "").trim();
+  return normalizedValue ? normalizedValue : null;
+};
+const normalizeComparableState = (state?: string | null) =>
+  normalizeComparableLocationText(resolveCanonicalRegionState(state) ?? state);
+const normalizeComparableDistrict = (state?: string | null, district?: string | null) =>
+  normalizeComparableLocationText(resolveCanonicalRegionDistrict(state, district) ?? district);
+const includesLocationText = (haystack?: string | null, needle?: string | null) => {
+  const normalizedHaystack = normalizeComparableLocationText(haystack);
+  const normalizedNeedle = normalizeComparableLocationText(needle);
+
+  if (!normalizedHaystack || !normalizedNeedle) {
+    return false;
+  }
+
+  return normalizedHaystack.includes(normalizedNeedle) || normalizedNeedle.includes(normalizedHaystack);
+};
+const hasTextValue = (value?: string | null): value is string => Boolean(normalizeRegionValue(value));
+
+type DiscoveryLocationTextContext = {
+  address: string | null;
+  area: string | null;
+  city: string | null;
+  district: string | null;
+  state: string | null;
+  pincode: string | null;
+  comparableAddress: string | null;
+  comparableArea: string | null;
+  comparableCity: string | null;
+  comparableDistrict: string | null;
+  comparableState: string | null;
+  comparablePincode: string | null;
+};
+
+type DiscoveryLocationMatchMode = "coordinates" | "location_text";
+
+const buildDiscoveryLocationTextContext = (query: Record<string, unknown>): DiscoveryLocationTextContext => {
+  const address = normalizeRegionValue(typeof query.address === "string" ? query.address : null);
+  const area = normalizeRegionValue(typeof query.area === "string" ? query.area : null);
+  const city = normalizeRegionValue(typeof query.city === "string" ? query.city : null);
+  const state = normalizeRegionValue(typeof query.state === "string" ? query.state : null);
+  const district = normalizeRegionValue(typeof query.district === "string" ? query.district : null);
+  const pincode =
+    normalizeRegionValue(typeof query.pincode === "string" ? query.pincode : null) ??
+    normalizeComparablePincode(typeof query.pincode === "string" ? query.pincode : null);
+
+  return {
+    address,
+    area,
+    city,
+    district,
+    state,
+    pincode,
+    comparableAddress: normalizeComparableLocationText(address),
+    comparableArea: normalizeComparableLocationText(area),
+    comparableCity: normalizeComparableLocationText(city),
+    comparableDistrict: normalizeComparableDistrict(state, district),
+    comparableState: normalizeComparableState(state),
+    comparablePincode: normalizeComparablePincode(pincode),
+  };
+};
+
+const hasDiscoveryLocationText = (location: DiscoveryLocationTextContext) =>
+  Boolean(
+    location.comparablePincode ||
+      location.comparableCity ||
+      location.comparableDistrict ||
+      location.comparableArea ||
+      location.comparableAddress,
+  );
+
+const buildInsensitiveContains = (value: string) => ({
+  contains: value,
+  mode: "insensitive" as const,
+});
+
+const buildInsensitiveEquals = (value: string) => ({
+  equals: value,
+  mode: "insensitive" as const,
+});
 
 const getFoodDiscoveryKeywords = (value?: string | null) => {
   const trimmedValue = value?.trim() ?? "";
@@ -334,21 +448,24 @@ const getFoodDiscoveryKeywords = (value?: string | null) => {
 
 const buildMenuItemTextClause = (value: string): Prisma.MenuItemWhereInput => ({
   OR: [
-    { name: { contains: value } },
-    { description: { contains: value } },
-    { category: { name: { contains: value } } },
+    { name: buildInsensitiveContains(value) },
+    { description: buildInsensitiveContains(value) },
+    { category: { name: buildInsensitiveContains(value) } },
   ],
 });
 
 const buildRestaurantTextSearchClause = (value: string): Prisma.RestaurantWhereInput => ({
   OR: [
-    { name: { contains: value } },
-    { area: { contains: value } },
-    { city: { contains: value } },
-    { state: { contains: value } },
-    { addressLine: { contains: value } },
-    { categoryMappings: { some: { category: { name: { contains: value } } } } },
-    { cuisineMappings: { some: { cuisine: { name: { contains: value } } } } },
+    { name: buildInsensitiveContains(value) },
+    { area: buildInsensitiveContains(value) },
+    { city: buildInsensitiveContains(value) },
+    { state: buildInsensitiveContains(value) },
+    { pincode: buildInsensitiveContains(value) },
+    { addressLine: buildInsensitiveContains(value) },
+    { owner: { is: { fullName: buildInsensitiveContains(value) } } },
+    { region: { is: { districtName: buildInsensitiveContains(value) } } },
+    { categoryMappings: { some: { category: { name: buildInsensitiveContains(value) } } } },
+    { cuisineMappings: { some: { cuisine: { name: buildInsensitiveContains(value) } } } },
     { menuItems: { some: buildMenuItemTextClause(value) } },
   ],
 });
@@ -361,14 +478,12 @@ const buildRestaurantFoodCategoryClause = (value?: string | null): Prisma.Restau
 
   return {
     OR: [
-      ...keywords.map((keyword) => ({ name: { contains: keyword } })),
+      ...keywords.map((keyword) => ({ name: buildInsensitiveContains(keyword) })),
       ...keywords.map((keyword) => ({
         categoryMappings: {
           some: {
             category: {
-              name: {
-                contains: keyword,
-              },
+              name: buildInsensitiveContains(keyword),
             },
           },
         },
@@ -377,9 +492,7 @@ const buildRestaurantFoodCategoryClause = (value?: string | null): Prisma.Restau
         cuisineMappings: {
           some: {
             cuisine: {
-              name: {
-                contains: keyword,
-              },
+              name: buildInsensitiveContains(keyword),
             },
           },
         },
@@ -480,8 +593,324 @@ const getNearbyRestaurantWhere = (
   };
 };
 
+type RestaurantDiscoveryLocationRecord = {
+  id: number;
+  name: string;
+  isActive: boolean;
+  addressLine?: string | null;
+  area?: string | null;
+  city: string;
+  state: string;
+  pincode: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  region?: {
+    districtName: string;
+    stateName: string;
+  } | null;
+};
+
+const getRestaurantDistrict = (restaurant: RestaurantDiscoveryLocationRecord) =>
+  normalizeRegionValue(restaurant.region?.districtName) ??
+  normalizeRegionValue(restaurant.city) ??
+  restaurant.city;
+
+const buildRestaurantLocationAddress = (restaurant: RestaurantDiscoveryLocationRecord) =>
+  buildAddressSearchText([
+    restaurant.addressLine,
+    restaurant.area,
+    restaurant.city,
+    getRestaurantDistrict(restaurant),
+    restaurant.state,
+    restaurant.pincode,
+  ]);
+
+const buildLocationTextCandidateWhere = (
+  location: DiscoveryLocationTextContext,
+): Prisma.RestaurantWhereInput | null => {
+  if (!hasDiscoveryLocationText(location)) {
+    return null;
+  }
+
+  const matchClauses: Prisma.RestaurantWhereInput[] = [];
+
+  if (location.pincode) {
+    matchClauses.push({ pincode: buildInsensitiveEquals(location.pincode) });
+  }
+
+  if (location.city) {
+    matchClauses.push({ city: buildInsensitiveContains(location.city) });
+  }
+
+  if (location.district) {
+    matchClauses.push({ region: { is: { districtName: buildInsensitiveContains(location.district) } } });
+  }
+
+  if (location.area) {
+    matchClauses.push({ area: buildInsensitiveContains(location.area) });
+    matchClauses.push({ addressLine: buildInsensitiveContains(location.area) });
+  }
+
+  if (location.address) {
+    matchClauses.push({ addressLine: buildInsensitiveContains(location.address) });
+  }
+
+  if (!matchClauses.length) {
+    return null;
+  }
+
+  if (!location.state) {
+    return {
+      OR: matchClauses,
+    };
+  }
+
+  return {
+    AND: [
+      {
+        OR: [
+          { state: buildInsensitiveEquals(location.state) },
+          { region: { is: { stateName: buildInsensitiveEquals(location.state) } } },
+        ],
+      },
+      {
+        OR: matchClauses,
+      },
+    ],
+  };
+};
+
+const buildRestaurantDiscoveryCandidateWhere = ({
+  allowGlobalResults,
+  baseWhere,
+  location,
+  origin,
+  radiusKm,
+}: {
+  allowGlobalResults: boolean;
+  baseWhere: Prisma.RestaurantWhereInput;
+  location: DiscoveryLocationTextContext;
+  origin: { latitude: number; longitude: number } | null;
+  radiusKm: number;
+}): Prisma.RestaurantWhereInput => {
+  if (!origin && !hasDiscoveryLocationText(location)) {
+    return baseWhere;
+  }
+
+  const locationTextWhere = buildLocationTextCandidateWhere(location);
+  const candidateClauses = [
+    ...(origin ? [getNearbyRestaurantWhere(baseWhere, origin, radiusKm)] : []),
+    ...(locationTextWhere ? [{ AND: [baseWhere, locationTextWhere] } satisfies Prisma.RestaurantWhereInput] : []),
+  ];
+
+  if (!candidateClauses.length || (!origin && !locationTextWhere && allowGlobalResults)) {
+    return baseWhere;
+  }
+
+  if (candidateClauses.length === 1) {
+    return candidateClauses[0]!;
+  }
+
+  return {
+    OR: candidateClauses,
+  };
+};
+
+const evaluateRestaurantDiscoveryLocationMatch = (
+  restaurant: RestaurantDiscoveryLocationRecord,
+  location: DiscoveryLocationTextContext,
+  origin: { latitude: number; longitude: number } | null,
+  radiusKm: number,
+) => {
+  const restaurantDistrict = getRestaurantDistrict(restaurant);
+  const restaurantAddress = buildRestaurantLocationAddress(restaurant);
+  const comparableRestaurantState = normalizeComparableState(restaurant.region?.stateName ?? restaurant.state);
+  const comparableRestaurantDistrict = normalizeComparableDistrict(
+    restaurant.region?.stateName ?? restaurant.state,
+    restaurantDistrict,
+  );
+  const comparableRestaurantCity = normalizeComparableLocationText(restaurant.city);
+  const comparableRestaurantPincode = normalizeComparablePincode(restaurant.pincode);
+
+  const coordinateRestaurant = origin && hasCoordinates(restaurant) ? restaurant : null;
+  const hasDistanceCoordinates = Boolean(origin && coordinateRestaurant);
+  const rawDistanceKm =
+    coordinateRestaurant && origin ? haversineDistanceKm(origin, coordinateRestaurant) : null;
+  const distanceKm =
+    typeof rawDistanceKm === "number" && Number.isFinite(rawDistanceKm)
+      ? Number(rawDistanceKm.toFixed(2))
+      : null;
+  const coordinateMatch = typeof distanceKm === "number" && distanceKm <= radiusKm;
+
+  const samePincode =
+    Boolean(location.comparablePincode) && location.comparablePincode === comparableRestaurantPincode;
+  const sameState =
+    Boolean(location.comparableState) && location.comparableState === comparableRestaurantState;
+  const sameDistrict =
+    Boolean(location.comparableDistrict) && location.comparableDistrict === comparableRestaurantDistrict;
+  const sameCity = Boolean(location.comparableCity) && location.comparableCity === comparableRestaurantCity;
+  const areaOverlap =
+    includesLocationText(restaurant.area, location.area) ||
+    includesLocationText(restaurant.addressLine, location.area) ||
+    includesLocationText(location.address, restaurant.area);
+  const cityMentionedInAddress =
+    includesLocationText(location.address, restaurant.city) ||
+    includesLocationText(restaurantAddress, location.city);
+  const districtMentionedInAddress =
+    includesLocationText(location.address, restaurantDistrict) ||
+    includesLocationText(restaurantAddress, location.district);
+
+  const textMatch = hasDiscoveryLocationText(location)
+    ? samePincode ||
+      (sameState && sameCity) ||
+      (sameCity && sameDistrict) ||
+      (sameState && sameDistrict && (areaOverlap || cityMentionedInAddress || districtMentionedInAddress))
+    : false;
+
+  const matchedBy: DiscoveryLocationMatchMode | null = coordinateMatch
+    ? "coordinates"
+    : textMatch
+      ? "location_text"
+      : null;
+  const matchReason = coordinateMatch
+    ? `within_${radiusKm}_km`
+    : samePincode
+      ? "same_pincode"
+      : sameState && sameCity
+        ? "same_state_city"
+        : sameCity && sameDistrict
+          ? "same_city_district"
+          : sameState && sameDistrict && areaOverlap
+            ? "same_state_district_area"
+            : sameState && sameDistrict && (cityMentionedInAddress || districtMentionedInAddress)
+              ? "same_state_district_address"
+              : "outside_selected_location";
+
+  return {
+    coordinateMatch,
+    coordinatesPresent: hasDistanceCoordinates,
+    distanceKm,
+    finalIncluded: coordinateMatch || textMatch,
+    matchReason,
+    matchedBy,
+    restaurantAddress,
+    restaurantDistrict,
+    signals: {
+      samePincode,
+      sameState,
+      sameDistrict,
+      sameCity,
+      areaOverlap,
+      cityMentionedInAddress,
+      districtMentionedInAddress,
+    },
+  };
+};
+
+const mapPublicRestaurantSummary = <
+  TRestaurant extends Prisma.RestaurantGetPayload<{ select: typeof listSelect }> & {
+    distanceKm?: number | null;
+    matchedBy?: DiscoveryLocationMatchMode | null;
+    matchingMenuItems?: Prisma.MenuItemGetPayload<{ select: typeof searchMatchMenuItemSelect }>[] | undefined;
+  },
+>(
+  restaurant: TRestaurant,
+) => ({
+  id: restaurant.id,
+  name: restaurant.name,
+  slug: restaurant.slug,
+  description: restaurant.description,
+  coverImage: restaurant.coverImage,
+  logoImage: restaurant.logoImage,
+  addressLine: restaurant.addressLine,
+  address: buildRestaurantLocationAddress(restaurant),
+  area: restaurant.area,
+  city: restaurant.city,
+  district: getRestaurantDistrict(restaurant),
+  state: restaurant.state,
+  pincode: restaurant.pincode,
+  latitude: restaurant.latitude,
+  longitude: restaurant.longitude,
+  distanceKm: restaurant.distanceKm ?? null,
+  status: restaurant.isActive ? "ACTIVE" : "INACTIVE",
+  avgRating: restaurant.avgRating,
+  totalReviews: restaurant.totalReviews,
+  costForTwo: restaurant.costForTwo,
+  avgDeliveryTime: restaurant.avgDeliveryTime,
+  preparationTime: restaurant.preparationTime,
+  isVegOnly: restaurant.isVegOnly,
+  isFeatured: restaurant.isFeatured,
+  cuisineMappings: restaurant.cuisineMappings,
+  offers: restaurant.offers,
+  ...(restaurant.matchingMenuItems ? { matchingMenuItems: restaurant.matchingMenuItems } : {}),
+  ...(env.isDevelopment && restaurant.matchedBy ? { matchedBy: restaurant.matchedBy } : {}),
+});
+
+const mapPublicRestaurantDetail = <
+  TRestaurant extends Prisma.RestaurantGetPayload<{ select: typeof publicDetailSelect }> & {
+    distanceKm?: number | null;
+    matchedBy?: DiscoveryLocationMatchMode | null;
+  },
+>(
+  restaurant: TRestaurant,
+) => ({
+  ...mapPublicRestaurantSummary(restaurant),
+  openingTime: restaurant.openingTime,
+  closingTime: restaurant.closingTime,
+  categoryMappings: restaurant.categoryMappings,
+  operatingHours: restaurant.operatingHours,
+  menuCategories: restaurant.menuCategories,
+  combos: restaurant.combos,
+  reviews: restaurant.reviews,
+});
+
+const logRestaurantDiscoveryDecision = ({
+  finalIncluded,
+  location,
+  matchReason,
+  matchedBy,
+  restaurant,
+  searchMatched,
+  distanceKm,
+  coordinatesPresent,
+}: {
+  finalIncluded: boolean;
+  location: DiscoveryLocationTextContext;
+  matchReason: string;
+  matchedBy: DiscoveryLocationMatchMode | null;
+  restaurant: RestaurantDiscoveryLocationRecord;
+  searchMatched: boolean;
+  distanceKm: number | null;
+  coordinatesPresent: boolean;
+}) => {
+  if (!env.isDevelopment) {
+    return;
+  }
+
+  logger.info("Restaurant discovery evaluated", {
+    restaurantId: restaurant.id,
+    restaurantName: restaurant.name,
+    status: restaurant.isActive ? "ACTIVE" : "INACTIVE",
+    restaurantCity: restaurant.city,
+    restaurantDistrict: getRestaurantDistrict(restaurant),
+    restaurantState: restaurant.state,
+    restaurantPincode: restaurant.pincode,
+    restaurantCoordinatesPresent: hasCoordinates(restaurant),
+    userCity: location.city,
+    userDistrict: location.district,
+    userState: location.state,
+    userPincode: location.pincode,
+    userCoordinatesPresent: coordinatesPresent,
+    distanceKm,
+    matchedBy,
+    searchQueryMatch: searchMatched,
+    finalDecision: finalIncluded ? "included" : "excluded",
+    reason: matchReason,
+  });
+};
+
 const buildListWhere = (query: Record<string, unknown>): Prisma.RestaurantWhereInput => {
-  const clauses: Prisma.RestaurantWhereInput[] = [{ isActive: true }];
+  const clauses: Prisma.RestaurantWhereInput[] = [{ isActive: true }, { owner: { is: { isActive: true } } }];
 
   const search = typeof query.search === "string" ? query.search.trim() : "";
   if (search) {
@@ -498,15 +927,15 @@ const buildListWhere = (query: Record<string, unknown>): Prisma.RestaurantWhereI
   if (cuisine) {
     const cuisines = cuisine.split(",").map((item) => item.trim()).filter(Boolean);
     clauses.push({
-      cuisineMappings: {
-        some: {
-          cuisine: {
-            name: {
-              in: cuisines,
+      OR: cuisines.map((name) => ({
+        cuisineMappings: {
+          some: {
+            cuisine: {
+              name: buildInsensitiveEquals(name),
             },
           },
         },
-      },
+      })),
     });
   }
 
@@ -648,13 +1077,16 @@ export const restaurantsService = {
     const where = buildListWhere(query);
     const orderBy = getRestaurantOrderBy(typeof query.sort === "string" ? query.sort : undefined);
     const origin = getDiscoveryOrigin(query);
+    const location = buildDiscoveryLocationTextContext(query);
+    const hasTextLocation = hasDiscoveryLocationText(location);
     const includeMenuMatches = shouldIncludeMenuMatches(query, search, foodCategory);
     const menuItemMatchWhere = buildMenuItemMatchWhere({
       foodCategory,
       search,
     });
+    const hasLocationContext = Boolean(origin || hasTextLocation);
 
-    if (!origin && !allowGlobalResults) {
+    if (!hasLocationContext && !allowGlobalResults) {
       return {
         restaurants: [],
         meta: {
@@ -670,7 +1102,7 @@ export const restaurantsService = {
       };
     }
 
-    if (!origin && allowGlobalResults) {
+    if (!hasLocationContext && allowGlobalResults) {
       if (includeMenuMatches) {
         const [total, globalRestaurantsWithMatches] = await Promise.all([
           prisma.restaurant.count({ where }),
@@ -692,10 +1124,12 @@ export const restaurantsService = {
         ]);
 
         return {
-          restaurants: globalRestaurantsWithMatches.map(({ menuItems, ...restaurant }) => ({
-            ...restaurant,
-            matchingMenuItems: menuItems,
-          })),
+          restaurants: globalRestaurantsWithMatches.map(({ menuItems, ...restaurant }) =>
+            mapPublicRestaurantSummary({
+              ...restaurant,
+              matchingMenuItems: menuItems,
+            }),
+          ),
           meta: {
             ...getPaginationMeta({
               total,
@@ -721,7 +1155,7 @@ export const restaurantsService = {
       ]);
 
       return {
-        restaurants: globalRestaurants,
+        restaurants: globalRestaurants.map((restaurant) => mapPublicRestaurantSummary(restaurant)),
         meta: {
           ...getPaginationMeta({
             total,
@@ -735,43 +1169,18 @@ export const restaurantsService = {
       };
     }
 
-    if (!origin) {
-      throw new AppError(StatusCodes.BAD_REQUEST, "Discovery location is required", "DISCOVERY_LOCATION_REQUIRED");
-    }
-
     const radiusKm = getDiscoveryRadiusKm(query.radiusKm);
-    const discoveryOrigin = origin;
-    const nearbyRestaurantWhere = getNearbyRestaurantWhere(where, discoveryOrigin, radiusKm);
-
-    const buildDistanceFilteredRows = <TRestaurant extends { latitude: number | null; longitude: number | null }>(
-      restaurants: TRestaurant[],
-    ) =>
-      restaurants.flatMap((restaurant) => {
-        if (!hasCoordinates(restaurant)) {
-          return [];
-        }
-
-        const distanceKm = haversineDistanceKm(discoveryOrigin, restaurant);
-        if (distanceKm > radiusKm) {
-          return [];
-        }
-
-        return [
-          {
-            ...restaurant,
-            distanceKm: Number(distanceKm.toFixed(2)),
-          },
-        ];
-      });
-
-    let restaurants:
-      | Awaited<ReturnType<typeof prisma.restaurant.findMany>>
-      | Array<Record<string, unknown>> = [];
-    let total = 0;
+    const discoveryCandidateWhere = buildRestaurantDiscoveryCandidateWhere({
+      allowGlobalResults,
+      baseWhere: where,
+      location,
+      origin,
+      radiusKm,
+    });
 
     if (includeMenuMatches) {
-      const nearbyRestaurantsWithMatches = await prisma.restaurant.findMany({
-        where: nearbyRestaurantWhere,
+      const discoveryRestaurantsWithMatches = await prisma.restaurant.findMany({
+        where: discoveryCandidateWhere,
         select: {
           ...listSelect,
           menuItems: {
@@ -784,28 +1193,90 @@ export const restaurantsService = {
         orderBy,
       });
 
-      const filteredRestaurants = buildDistanceFilteredRows(nearbyRestaurantsWithMatches);
-      restaurants = filteredRestaurants
-        .slice(pagination.skip, pagination.skip + pagination.limit)
-        .map(({ menuItems, ...restaurant }) => ({
-          ...restaurant,
-          matchingMenuItems: menuItems,
-        }));
-      total = filteredRestaurants.length;
-    } else {
-      const nearbyRestaurants = await prisma.restaurant.findMany({
-        where: nearbyRestaurantWhere,
-        select: listSelect,
-        orderBy,
+      const filteredRestaurants = discoveryRestaurantsWithMatches.flatMap(({ menuItems, ...restaurant }) => {
+        const discoveryMatch = evaluateRestaurantDiscoveryLocationMatch(restaurant, location, origin, radiusKm);
+        const searchMatched = true;
+
+        logRestaurantDiscoveryDecision({
+          finalIncluded: discoveryMatch.finalIncluded,
+          location,
+          matchReason: discoveryMatch.matchReason,
+          matchedBy: discoveryMatch.matchedBy,
+          restaurant,
+          searchMatched,
+          distanceKm: discoveryMatch.distanceKm,
+          coordinatesPresent: Boolean(origin),
+        });
+
+        if (!discoveryMatch.finalIncluded) {
+          return [];
+        }
+
+        return [
+          mapPublicRestaurantSummary({
+            ...restaurant,
+            distanceKm: discoveryMatch.distanceKm,
+            matchedBy: discoveryMatch.matchedBy,
+            matchingMenuItems: menuItems,
+          }),
+        ];
       });
 
-      const filteredRestaurants = buildDistanceFilteredRows(nearbyRestaurants);
-      restaurants = filteredRestaurants.slice(pagination.skip, pagination.skip + pagination.limit);
-      total = filteredRestaurants.length;
+      const total = filteredRestaurants.length;
+
+      return {
+        restaurants: filteredRestaurants.slice(pagination.skip, pagination.skip + pagination.limit),
+        meta: {
+          ...getPaginationMeta({
+            total,
+            page: pagination.page,
+            limit: pagination.limit,
+          }),
+          appliedRadiusKm: radiusKm,
+          isLocationFiltered: true,
+          requiresLocation: false,
+        },
+      };
     }
 
+    const discoveryRestaurants = await prisma.restaurant.findMany({
+      where: discoveryCandidateWhere,
+      select: listSelect,
+      orderBy,
+    });
+
+    const filteredRestaurants = discoveryRestaurants.flatMap((restaurant) => {
+      const discoveryMatch = evaluateRestaurantDiscoveryLocationMatch(restaurant, location, origin, radiusKm);
+      const searchMatched = true;
+
+      logRestaurantDiscoveryDecision({
+        finalIncluded: discoveryMatch.finalIncluded,
+        location,
+        matchReason: discoveryMatch.matchReason,
+        matchedBy: discoveryMatch.matchedBy,
+        restaurant,
+        searchMatched,
+        distanceKm: discoveryMatch.distanceKm,
+        coordinatesPresent: Boolean(origin),
+      });
+
+      if (!discoveryMatch.finalIncluded) {
+        return [];
+      }
+
+      return [
+        mapPublicRestaurantSummary({
+          ...restaurant,
+          distanceKm: discoveryMatch.distanceKm,
+          matchedBy: discoveryMatch.matchedBy,
+        }),
+      ];
+    });
+
+    const total = filteredRestaurants.length;
+
     return {
-      restaurants,
+      restaurants: filteredRestaurants.slice(pagination.skip, pagination.skip + pagination.limit),
       meta: {
         ...getPaginationMeta({
           total,
@@ -814,6 +1285,7 @@ export const restaurantsService = {
         }),
         appliedRadiusKm: radiusKm,
         isLocationFiltered: true,
+        requiresLocation: false,
       },
     };
   },
@@ -848,23 +1320,46 @@ export const restaurantsService = {
   },
 
   async getBySlug(slug: string, query: Record<string, unknown> = {}) {
-    const restaurant = await prisma.restaurant.findUnique({
-      where: { slug },
+    const restaurant = await prisma.restaurant.findFirst({
+      where: {
+        slug,
+        isActive: true,
+        owner: {
+          is: {
+            isActive: true,
+          },
+        },
+      },
       select: publicDetailSelect,
     });
 
-    if (!restaurant || !restaurant.isActive) {
+    if (!restaurant) {
       throw new AppError(StatusCodes.NOT_FOUND, "Restaurant not found", "RESTAURANT_NOT_FOUND");
     }
 
     const origin = getDiscoveryOrigin(query);
-    if (!origin) {
-      return restaurant;
+    const location = buildDiscoveryLocationTextContext(query);
+    const hasLocationContext = Boolean(origin || hasDiscoveryLocationText(location));
+
+    if (!hasLocationContext) {
+      return mapPublicRestaurantDetail(restaurant);
     }
 
     const radiusKm = getDiscoveryRadiusKm(query.radiusKm);
+    const discoveryMatch = evaluateRestaurantDiscoveryLocationMatch(restaurant, location, origin, radiusKm);
 
-    if (!hasCoordinates(restaurant)) {
+    logRestaurantDiscoveryDecision({
+      finalIncluded: discoveryMatch.finalIncluded,
+      location,
+      matchReason: discoveryMatch.matchReason,
+      matchedBy: discoveryMatch.matchedBy,
+      restaurant,
+      searchMatched: true,
+      distanceKm: discoveryMatch.distanceKm,
+      coordinatesPresent: Boolean(origin),
+    });
+
+    if (!discoveryMatch.finalIncluded) {
       throw new AppError(
         StatusCodes.NOT_FOUND,
         "This restaurant is not available for the selected delivery location.",
@@ -872,19 +1367,11 @@ export const restaurantsService = {
       );
     }
 
-    const distanceKm = haversineDistanceKm(origin, restaurant);
-    if (distanceKm > radiusKm) {
-      throw new AppError(
-        StatusCodes.NOT_FOUND,
-        "This restaurant is not available for the selected delivery location.",
-        "RESTAURANT_NOT_SERVICEABLE_FOR_LOCATION",
-      );
-    }
-
-    return {
+    return mapPublicRestaurantDetail({
       ...restaurant,
-      distanceKm: Number(distanceKm.toFixed(2)),
-    };
+      distanceKm: discoveryMatch.distanceKm,
+      matchedBy: discoveryMatch.matchedBy,
+    });
   },
 
   async listForOwner(userId: number, view: "summary" | "detail" = "detail") {

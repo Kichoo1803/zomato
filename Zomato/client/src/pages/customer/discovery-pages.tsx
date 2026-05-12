@@ -224,6 +224,25 @@ const formatLocationText = (...parts: Array<string | null | undefined>) =>
     .join(", ");
 
 const normalizeSearchText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+const getSelectedLocationCoordinates = (selectedLocation?: SelectedDiscoveryLocation | null) =>
+  typeof selectedLocation?.latitude === "number" &&
+  Number.isFinite(selectedLocation.latitude) &&
+  typeof selectedLocation?.longitude === "number" &&
+  Number.isFinite(selectedLocation.longitude)
+    ? {
+        latitude: selectedLocation.latitude,
+        longitude: selectedLocation.longitude,
+      }
+    : undefined;
+const buildSelectedLocationQuery = (selectedLocation?: SelectedDiscoveryLocation | null) => ({
+  ...(getSelectedLocationCoordinates(selectedLocation) ?? {}),
+  ...(selectedLocation?.address?.trim() ? { address: selectedLocation.address.trim() } : {}),
+  ...(selectedLocation?.area?.trim() ? { area: selectedLocation.area.trim() } : {}),
+  ...(selectedLocation?.city?.trim() ? { city: selectedLocation.city.trim() } : {}),
+  ...(selectedLocation?.district?.trim() ? { district: selectedLocation.district.trim() } : {}),
+  ...(selectedLocation?.state?.trim() ? { state: selectedLocation.state.trim() } : {}),
+  ...(selectedLocation?.pincode?.trim() ? { pincode: selectedLocation.pincode.trim() } : {}),
+});
 
 const getRestaurantOfferTitle = (restaurant: Pick<CustomerRestaurantSummary, "offers">) =>
   restaurant.offers[0]?.offer.title ?? restaurant.offers[0]?.offer.code ?? undefined;
@@ -258,7 +277,7 @@ const mapLiveRestaurantCard = (restaurant: CustomerRestaurantSummary): Restauran
   slug: restaurant.slug,
   name: restaurant.name,
   image: restaurant.coverImage ?? "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?auto=format&fit=crop&w=1200&q=80",
-  area: formatLocationText(restaurant.area, restaurant.city, restaurant.state),
+  area: formatLocationText(restaurant.area, restaurant.city, restaurant.district, restaurant.state),
   addressSummary: restaurant.addressLine?.trim() || undefined,
   cuisineLabel:
     restaurant.cuisineMappings.map((mapping) => mapping.cuisine.name).join(" • ") || "Curated menu",
@@ -956,12 +975,7 @@ const useRestaurantCatalogue = (
       ...(normalizedFoodCategory ? { foodCategory: normalizedFoodCategory } : {}),
       ...(includeMenuMatches && (normalizedSearch || normalizedFoodCategory) ? { includeMenuMatches: true } : {}),
       ...(allowGlobalResults ? { allowGlobalResults: true } : {}),
-      ...(selectedLocation
-        ? {
-            latitude: selectedLocation.latitude,
-            longitude: selectedLocation.longitude,
-          }
-        : {}),
+      ...buildSelectedLocationQuery(selectedLocation),
       limit,
     })
       .then((catalogue) => {
@@ -1000,6 +1014,12 @@ const useRestaurantCatalogue = (
     normalizedFoodCategory,
     normalizedSearch,
     reloadToken,
+    selectedLocation?.address,
+    selectedLocation?.area,
+    selectedLocation?.city,
+    selectedLocation?.district,
+    selectedLocation?.state,
+    selectedLocation?.pincode,
     selectedLocation?.latitude,
     selectedLocation?.longitude,
     selectedLocation?.updatedAt,
@@ -1228,14 +1248,7 @@ export const RestaurantListingPage = () => {
         canManageSavedLocation={canManageSavedLocation}
         open={isLocationModalOpen}
         initialAddress={selectedLocation?.address}
-        initialCoordinates={
-          selectedLocation
-            ? {
-                latitude: selectedLocation.latitude,
-                longitude: selectedLocation.longitude,
-              }
-            : null
-        }
+        initialCoordinates={getSelectedLocationCoordinates(selectedLocation) ?? null}
         isLoadingSavedAddresses={isLoadingSavedAddresses}
         isResolvingCurrentLocation={isResolvingCurrentLocation}
         isSavingManualLocation={isSavingManualLocation}
@@ -1828,14 +1841,7 @@ export const SearchResultsPage = () => {
         canManageSavedLocation={canManageSavedLocation}
         open={isLocationModalOpen}
         initialAddress={selectedLocation?.address}
-        initialCoordinates={
-          selectedLocation
-            ? {
-                latitude: selectedLocation.latitude,
-                longitude: selectedLocation.longitude,
-              }
-            : null
-        }
+        initialCoordinates={getSelectedLocationCoordinates(selectedLocation) ?? null}
         isLoadingSavedAddresses={isLoadingSavedAddresses}
         isResolvingCurrentLocation={isResolvingCurrentLocation}
         isSavingManualLocation={isSavingManualLocation}
@@ -1939,10 +1945,7 @@ export const RestaurantDetailsPage = () => {
     setLoadErrorMessage(undefined);
     setIsLoading(true);
 
-    void getPublicRestaurantBySlug(slug, {
-      latitude: selectedLocation.latitude,
-      longitude: selectedLocation.longitude,
-    })
+    void getPublicRestaurantBySlug(slug, buildSelectedLocationQuery(selectedLocation))
       .then((restaurant) => {
         if (isMounted) {
           setLiveRestaurant(restaurant);
@@ -2809,14 +2812,7 @@ export const RestaurantDetailsPage = () => {
           canManageSavedLocation={canManageSavedLocation}
           open={isLocationModalOpen}
           initialAddress={selectedLocation?.address}
-          initialCoordinates={
-            selectedLocation
-              ? {
-                  latitude: selectedLocation.latitude,
-                  longitude: selectedLocation.longitude,
-                }
-              : null
-          }
+          initialCoordinates={getSelectedLocationCoordinates(selectedLocation) ?? null}
           isLoadingSavedAddresses={isLoadingSavedAddresses}
           isResolvingCurrentLocation={isResolvingCurrentLocation}
           isSavingManualLocation={isSavingManualLocation}
@@ -2913,14 +2909,7 @@ export const RestaurantDetailsPage = () => {
         canManageSavedLocation={canManageSavedLocation}
         open={isLocationModalOpen}
         initialAddress={selectedLocation?.address}
-        initialCoordinates={
-          selectedLocation
-            ? {
-                latitude: selectedLocation.latitude,
-                longitude: selectedLocation.longitude,
-              }
-            : null
-        }
+        initialCoordinates={getSelectedLocationCoordinates(selectedLocation) ?? null}
         isLoadingSavedAddresses={isLoadingSavedAddresses}
         isResolvingCurrentLocation={isResolvingCurrentLocation}
         isSavingManualLocation={isSavingManualLocation}

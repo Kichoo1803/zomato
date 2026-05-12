@@ -26,6 +26,7 @@ import {
   getBrowserCoordinates,
   getBrowserGeolocationPermissionState,
   getCustomerLocationErrorMessage,
+  hasCustomerAddressLocationDetails,
   hasCustomerAddressCoordinates,
   readStoredCustomerActiveLocation,
   resolvePreferredCustomerActiveLocation,
@@ -240,6 +241,7 @@ const useDiscoveryLocationState = (): DiscoveryLocationContextValue => {
       const resolvedLocation = await reverseGeocodeCustomerLocation(coordinates).catch(() => null);
 
       persistLocation({
+        ...(resolvedLocation ?? {}),
         latitude: coordinates.latitude,
         longitude: coordinates.longitude,
         address:
@@ -276,8 +278,7 @@ const useDiscoveryLocationState = (): DiscoveryLocationContextValue => {
       const resolvedLocation = await geocodeCustomerLocation(address);
 
       persistLocation({
-        latitude: resolvedLocation.latitude,
-        longitude: resolvedLocation.longitude,
+        ...resolvedLocation,
         address: resolvedLocation.address.trim() || address.trim(),
         isTemporary: true,
         source: "manual",
@@ -302,6 +303,7 @@ const useDiscoveryLocationState = (): DiscoveryLocationContextValue => {
       const resolvedLocation = await reverseGeocodeCustomerLocation(coordinates).catch(() => null);
 
       persistLocation({
+        ...(resolvedLocation ?? {}),
         latitude: coordinates.latitude,
         longitude: coordinates.longitude,
         address:
@@ -323,8 +325,8 @@ const useDiscoveryLocationState = (): DiscoveryLocationContextValue => {
   };
 
   const useSavedAddress = async (address: CustomerAddress) => {
-    if (!hasCustomerAddressCoordinates(address)) {
-      const message = "This saved address needs location details before it can be used for nearby restaurant search.";
+    if (!hasCustomerAddressLocationDetails(address)) {
+      const message = "This saved address needs fuller location details before it can be used for nearby restaurant search.";
       setErrorMessage(message);
       toast.error(message);
       return false;
@@ -334,7 +336,9 @@ const useDiscoveryLocationState = (): DiscoveryLocationContextValue => {
     toast.success(
       address.isDefault
         ? "Nearby restaurants updated from your default saved address."
-        : "Nearby restaurants updated from the selected saved address.",
+        : hasCustomerAddressCoordinates(address)
+          ? "Nearby restaurants updated from the selected saved address."
+          : "Nearby restaurants updated from the selected saved address using text-area matching.",
     );
     return true;
   };
@@ -611,8 +615,8 @@ export const LocationSelectionModal = ({
         {activeTab === "saved" ? (
           <div className="space-y-5">
             <div className="rounded-[1.5rem] border border-accent/10 bg-accent/[0.03] px-4 py-4 text-sm leading-7 text-ink-soft">
-              Your default or last selected saved address is used automatically on load when coordinates are
-              available. Choose another saved address here only when you want to switch delivery areas.
+              Your default or last selected saved address is used automatically on load when enough location details
+              are available. Choose another saved address here only when you want to switch delivery areas.
             </div>
 
             {isLoadingSavedAddresses ? (
@@ -623,7 +627,8 @@ export const LocationSelectionModal = ({
               <div className="grid gap-4">
                 {savedAddresses.map((address) => {
                   const isSelected = selectedLocationAddressId === address.id;
-                  const isUsable = hasCustomerAddressCoordinates(address);
+                  const isUsable = hasCustomerAddressLocationDetails(address);
+                  const hasPreciseCoordinates = hasCustomerAddressCoordinates(address);
 
                   return (
                     <div
@@ -639,6 +644,9 @@ export const LocationSelectionModal = ({
                             {address.isDefault ? <StatusPill label="Default" tone="info" /> : null}
                             {isSelected ? <StatusPill label="Selected" tone="success" /> : null}
                             {!isUsable ? <StatusPill label="Location needed" tone="warning" /> : null}
+                            {isUsable && !hasPreciseCoordinates ? (
+                              <StatusPill label="Text match only" tone="neutral" />
+                            ) : null}
                           </div>
                           <p className="text-sm leading-7 text-ink-soft">
                             {buildCustomerAddressSummary(address) ||

@@ -303,17 +303,20 @@ export const AdminRestaurantsPage = () => {
             <IndianPhoneInput label="Phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
             <Input label="Opening time" value={form.openingTime} onChange={(event) => setForm({ ...form, openingTime: event.target.value })} placeholder="12:00" />
             <Input label="Closing time" value={form.closingTime} onChange={(event) => setForm({ ...form, closingTime: event.target.value })} placeholder="23:00" />
-            <Input label="Area" value={form.area} onChange={(event) => setForm({ ...form, area: event.target.value })} />
+            <Input label="Area / city zone" value={form.area} onChange={(event) => setForm({ ...form, area: event.target.value })} required />
             <Input label="City" value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} required />
-            <Input label="State" value={form.state} onChange={(event) => setForm({ ...form, state: event.target.value })} />
-            <Input label="Pincode" value={form.pincode} onChange={(event) => setForm({ ...form, pincode: event.target.value })} />
+            <Input label="State" value={form.state} onChange={(event) => setForm({ ...form, state: event.target.value })} required />
+            <Input label="Pincode" value={form.pincode} onChange={(event) => setForm({ ...form, pincode: event.target.value })} required />
             <Input label="Cost for two" type="number" min="0" value={form.costForTwo} onChange={(event) => setForm({ ...form, costForTwo: event.target.value })} />
             <Input label="Average delivery time" type="number" min="10" value={form.avgDeliveryTime} onChange={(event) => setForm({ ...form, avgDeliveryTime: event.target.value })} />
             <Input label="Preparation time" type="number" min="5" value={form.preparationTime} onChange={(event) => setForm({ ...form, preparationTime: event.target.value })} />
             <Input label="Latitude" type="number" step="any" value={form.latitude} onChange={(event) => setForm({ ...form, latitude: event.target.value })} placeholder="12.9716" />
             <Input label="Longitude" type="number" step="any" value={form.longitude} onChange={(event) => setForm({ ...form, longitude: event.target.value })} placeholder="77.5946" />
           </div>
-          <Input label="Address line" value={form.addressLine} onChange={(event) => setForm({ ...form, addressLine: event.target.value })} />
+          <Input label="Full address" value={form.addressLine} onChange={(event) => setForm({ ...form, addressLine: event.target.value })} required />
+          <p className="text-xs text-ink-muted">
+            Save the fullest address you have. If coordinates are blank, discovery can still fall back to area, city, district-region, state, and PIN matching.
+          </p>
           <Input label="Cover image URL" value={form.coverImage} onChange={(event) => setForm({ ...form, coverImage: event.target.value })} />
           <Input label="Logo image URL" value={form.logoImage} onChange={(event) => setForm({ ...form, logoImage: event.target.value })} />
           <Textarea label="Description" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />

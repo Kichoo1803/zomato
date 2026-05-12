@@ -6,6 +6,12 @@ const discoveryLocationQuerySchema = z.object({
   latitude: z.coerce.number().min(-90).max(90).optional(),
   longitude: z.coerce.number().min(-180).max(180).optional(),
   radiusKm: z.coerce.number().min(0).optional(),
+  address: z.string().trim().max(255).optional(),
+  area: z.string().trim().max(120).optional(),
+  city: z.string().trim().max(120).optional(),
+  district: z.string().trim().max(120).optional(),
+  state: z.string().trim().max(120).optional(),
+  pincode: z.string().trim().max(20).optional(),
 });
 
 export const listRestaurantsSchema = {

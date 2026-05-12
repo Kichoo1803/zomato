@@ -158,6 +158,46 @@ export const buildAddressSearchText = (parts: Array<string | null | undefined>) 
     .filter(Boolean)
     .join(", ");
 
+type NominatimAddress = Partial<Record<string, string>>;
+
+const normalizeTextValue = (value?: string | null) => {
+  const trimmedValue = value?.trim();
+  return trimmedValue ? trimmedValue : null;
+};
+
+const pickFirstAddressValue = (...values: Array<string | undefined>) => {
+  for (const value of values) {
+    const normalizedValue = normalizeTextValue(value);
+    if (normalizedValue) {
+      return normalizedValue;
+    }
+  }
+
+  return null;
+};
+
+const extractLocationLookupFields = (address?: NominatimAddress | null) => ({
+  area: pickFirstAddressValue(
+    address?.neighbourhood,
+    address?.suburb,
+    address?.quarter,
+    address?.residential,
+    address?.hamlet,
+    address?.locality,
+    address?.road,
+  ),
+  city: pickFirstAddressValue(
+    address?.city,
+    address?.town,
+    address?.village,
+    address?.municipality,
+    address?.city_district,
+  ),
+  district: pickFirstAddressValue(address?.state_district, address?.county, address?.region),
+  state: pickFirstAddressValue(address?.state, address?.union_territory),
+  pincode: pickFirstAddressValue(address?.postcode),
+});
+
 export const resolveAddressText = async (addressText: string) => {
   const normalized = addressText.trim();
   if (!normalized) {
@@ -186,6 +226,7 @@ export const resolveAddressText = async (addressText: string) => {
       lat?: string;
       lon?: string;
       display_name?: string;
+      address?: NominatimAddress;
     }>;
     const result = payload[0];
 
@@ -204,6 +245,7 @@ export const resolveAddressText = async (addressText: string) => {
       latitude,
       longitude,
       address: result.display_name?.trim() || normalized,
+      ...extractLocationLookupFields(result.address),
     };
   } catch {
     return null;
@@ -248,6 +290,7 @@ export const reverseGeocodeCoordinates = async (latitude: number, longitude: num
 
     const payload = (await response.json()) as {
       display_name?: string;
+      address?: NominatimAddress;
     };
 
     const address = payload.display_name?.trim();
@@ -259,6 +302,7 @@ export const reverseGeocodeCoordinates = async (latitude: number, longitude: num
       latitude,
       longitude,
       address,
+      ...extractLocationLookupFields(payload.address),
     };
   } catch {
     return null;

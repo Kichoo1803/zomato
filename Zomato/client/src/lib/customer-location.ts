@@ -36,8 +36,8 @@ const isValidStoredActiveLocation = (
     location.address.trim().length >= 3 &&
     location.isTemporary === true &&
     ["gps", "map", "manual", "default", "saved"].includes(location.source ?? "") &&
-    isValidCoordinate(location.latitude, -90, 90) &&
-    isValidCoordinate(location.longitude, -180, 180)
+    ((location.latitude == null && location.longitude == null) ||
+      (isValidCoordinate(location.latitude, -90, 90) && isValidCoordinate(location.longitude, -180, 180)))
   );
 };
 
@@ -45,6 +45,15 @@ export const hasCustomerAddressCoordinates = (
   address?: CustomerAddress | null,
 ): address is CustomerAddress & { latitude: number; longitude: number } =>
   Boolean(address && isValidCoordinate(address.latitude, -90, 90) && isValidCoordinate(address.longitude, -180, 180));
+
+export const hasCustomerAddressLocationDetails = (address?: CustomerAddress | null) =>
+  Boolean(
+    address &&
+      (buildCustomerAddressSummary(address) ||
+        address.city?.trim() ||
+        address.state?.trim() ||
+        address.pincode?.trim()),
+  );
 
 export const buildCustomerAddressSummary = (address: CustomerAddress) =>
   formatLocationText(address.title, address.houseNo, address.street, address.area, address.city, address.state, address.pincode) ||
@@ -55,14 +64,19 @@ export const createCustomerActiveLocationFromAddress = (
   address: CustomerAddress,
   source: CustomerActiveLocationSource = address.isDefault ? "default" : "saved",
 ): CustomerActiveLocation | null => {
-  if (!hasCustomerAddressCoordinates(address)) {
+  if (!hasCustomerAddressLocationDetails(address)) {
     return null;
   }
 
   return {
-    latitude: address.latitude,
-    longitude: address.longitude,
+    latitude: address.latitude ?? null,
+    longitude: address.longitude ?? null,
     address: buildCustomerAddressSummary(address) || address.city,
+    area: address.area ?? null,
+    city: address.city,
+    district: null,
+    state: address.state,
+    pincode: address.pincode,
     isTemporary: true,
     source,
     updatedAt: new Date().toISOString(),
@@ -100,9 +114,7 @@ const getSortableTimestamp = (value?: string | null) => {
 
 const getMostRecentlyUpdatedSearchableAddress = (addresses: CustomerAddress[]) =>
   [...addresses]
-    .filter((address): address is CustomerAddress & { latitude: number; longitude: number } =>
-      hasCustomerAddressCoordinates(address),
-    )
+    .filter((address) => hasCustomerAddressLocationDetails(address))
     .sort((left, right) => {
       const updatedDifference = getSortableTimestamp(right.updatedAt) - getSortableTimestamp(left.updatedAt);
       if (updatedDifference !== 0) {
@@ -124,6 +136,11 @@ export const areCustomerActiveLocationsEqual = (
   left?.address === right?.address &&
   left?.addressId === right?.addressId &&
   left?.label === right?.label &&
+  left?.area === right?.area &&
+  left?.city === right?.city &&
+  left?.district === right?.district &&
+  left?.state === right?.state &&
+  left?.pincode === right?.pincode &&
   left?.latitude === right?.latitude &&
   left?.longitude === right?.longitude &&
   left?.source === right?.source;
@@ -137,7 +154,7 @@ export const resolvePreferredCustomerActiveLocation = (
   }
 
   const defaultAddress =
-    savedAddresses.find((address) => address.isDefault && hasCustomerAddressCoordinates(address)) ?? null;
+    savedAddresses.find((address) => address.isDefault && hasCustomerAddressLocationDetails(address)) ?? null;
 
   if (defaultAddress) {
     return createCustomerActiveLocationFromAddress(defaultAddress, "default");
@@ -148,7 +165,7 @@ export const resolvePreferredCustomerActiveLocation = (
     (storedLocation.source === "default" || storedLocation.source === "saved")
   ) {
     const matchingAddress = savedAddresses.find((address) => address.id === storedLocation.addressId);
-    if (matchingAddress && hasCustomerAddressCoordinates(matchingAddress)) {
+    if (matchingAddress && hasCustomerAddressLocationDetails(matchingAddress)) {
       return createCustomerActiveLocationFromAddress(
         matchingAddress,
         matchingAddress.isDefault ? "default" : "saved",

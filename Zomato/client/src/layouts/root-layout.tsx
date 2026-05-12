@@ -19,6 +19,20 @@ import { Footer } from "@/components/navigation/footer";
 import { MobileBottomNav } from "@/components/navigation/mobile-bottom-nav";
 import { Navbar } from "@/components/navigation/navbar";
 
+const getSelectedLocationCoordinates = (selectedLocation?: {
+  latitude?: number | null;
+  longitude?: number | null;
+} | null) =>
+  typeof selectedLocation?.latitude === "number" &&
+  Number.isFinite(selectedLocation.latitude) &&
+  typeof selectedLocation?.longitude === "number" &&
+  Number.isFinite(selectedLocation.longitude)
+    ? {
+        latitude: selectedLocation.latitude,
+        longitude: selectedLocation.longitude,
+      }
+    : null;
+
 const RootLayoutContent = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -151,14 +165,7 @@ const RootLayoutContent = () => {
       <LocationSelectionModal
         canManageSavedLocation={canManageSavedLocation}
         initialAddress={selectedLocation?.address}
-        initialCoordinates={
-          selectedLocation
-            ? {
-                latitude: selectedLocation.latitude,
-                longitude: selectedLocation.longitude,
-              }
-            : null
-        }
+        initialCoordinates={getSelectedLocationCoordinates(selectedLocation)}
         isLoadingSavedAddresses={isLoadingSavedAddresses}
         isResolvingCurrentLocation={isResolvingCurrentLocation}
         isSavingManualLocation={isSavingManualLocation}

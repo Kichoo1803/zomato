@@ -52,16 +52,21 @@ export type CustomerRestaurantSummary = {
   id: number;
   name: string;
   slug: string;
+  status?: string;
   description?: string | null;
   coverImage?: string | null;
   logoImage?: string | null;
+  address?: string | null;
   addressLine?: string | null;
   area?: string | null;
   city: string;
+  district?: string | null;
   state: string;
+  pincode?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   distanceKm?: number | null;
+  matchedBy?: "coordinates" | "location_text";
   avgRating: number;
   totalReviews: number;
   costForTwo: number;
@@ -561,6 +566,12 @@ export type PublicRestaurantQuery = {
   allowGlobalResults?: boolean;
   latitude?: number;
   longitude?: number;
+  address?: string;
+  area?: string;
+  city?: string;
+  district?: string;
+  state?: string;
+  pincode?: string;
   radiusKm?: number;
   page?: number;
   limit?: number;
@@ -580,9 +591,14 @@ export type PublicRestaurantCatalogue = {
 };
 
 export type CustomerLocationLookup = {
-  latitude: number;
-  longitude: number;
+  latitude?: number | null;
+  longitude?: number | null;
   address: string;
+  area?: string | null;
+  city?: string | null;
+  district?: string | null;
+  state?: string | null;
+  pincode?: string | null;
 };
 
 export type CustomerOrder = {
@@ -846,7 +862,10 @@ export const reverseGeocodeCustomerLocation = async (payload: {
 
 export const getPublicRestaurantBySlug = async (
   slug: string,
-  params?: Pick<PublicRestaurantQuery, "latitude" | "longitude" | "radiusKm">,
+  params?: Pick<
+    PublicRestaurantQuery,
+    "latitude" | "longitude" | "address" | "area" | "city" | "district" | "state" | "pincode" | "radiusKm"
+  >,
 ) =>
   unwrapData(
     await publicApi.get<ApiEnvelope<{ restaurant: CustomerRestaurantDetail }>>(`/restaurants/${slug}`, {

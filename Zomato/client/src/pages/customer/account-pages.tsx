@@ -36,6 +36,7 @@ import {
   createCustomerActiveLocationFromAddress,
   getBrowserCoordinates,
   getCustomerLocationErrorMessage,
+  hasCustomerAddressLocationDetails,
   hasCustomerAddressCoordinates,
   readStoredCustomerActiveLocation,
   resolvePreferredCustomerActiveLocation,
@@ -470,10 +471,16 @@ const getAddressLines = (address: CustomerAddress) => ({
 const getAddressLocationStatus = (address: CustomerAddress) =>
   hasCustomerAddressCoordinates(address)
     ? {
-        label: "Ready for search",
+        label: "Precise for search",
         tone: "success" as const,
         message: "This address has usable coordinates and can drive nearby restaurant discovery.",
       }
+    : hasCustomerAddressLocationDetails(address)
+      ? {
+          label: "Ready for search",
+          tone: "info" as const,
+          message: "This address can still drive nearby discovery through text-area matching.",
+        }
     : {
         label: "Location needed",
         tone: "warning" as const,
@@ -484,6 +491,17 @@ const getAddressCoordinateSummary = (address: CustomerAddress) =>
   hasCustomerAddressCoordinates(address)
     ? `${address.latitude.toFixed(5)}, ${address.longitude.toFixed(5)}`
     : "Coordinates not set";
+
+const getResolvedLocationCoordinates = (location?: { latitude?: number | null; longitude?: number | null } | null) =>
+  typeof location?.latitude === "number" &&
+  Number.isFinite(location.latitude) &&
+  typeof location?.longitude === "number" &&
+  Number.isFinite(location.longitude)
+    ? {
+        latitude: location.latitude,
+        longitude: location.longitude,
+      }
+    : null;
 
 const hasResolvedFormCoordinates = (values: { latitude?: number; longitude?: number }) =>
   typeof values.latitude === "number" &&
@@ -601,11 +619,14 @@ const AddressFormModal = ({
 
     try {
       const resolvedLocation = await geocodeCustomerLocation(searchText);
+      const resolvedCoordinates = getResolvedLocationCoordinates(resolvedLocation);
+
+      if (!resolvedCoordinates) {
+        throw new Error("Address lookup did not return usable coordinates.");
+      }
+
       attachResolvedLocation(
-        {
-          latitude: resolvedLocation.latitude,
-          longitude: resolvedLocation.longitude,
-        },
+        resolvedCoordinates,
         resolvedLocation.address.trim() || searchText,
       );
 
@@ -613,7 +634,10 @@ const AddressFormModal = ({
         toast.success("Address details matched to a delivery location.");
       }
 
-      return resolvedLocation;
+      return {
+        ...resolvedLocation,
+        ...resolvedCoordinates,
+      };
     } catch (error) {
       const message = getApiErrorMessage(error, "Unable to match this address yet. Try the map pin instead.");
       setLocationError(message);
@@ -674,12 +698,13 @@ const AddressFormModal = ({
 
     if (!hasResolvedFormCoordinates(values)) {
       const resolvedLocation = await resolveTypedAddress({ silently: true });
+      const resolvedCoordinates = getResolvedLocationCoordinates(resolvedLocation);
 
-      if (resolvedLocation) {
+      if (resolvedCoordinates) {
         nextValues = {
           ...form.getValues(),
-          latitude: resolvedLocation.latitude,
-          longitude: resolvedLocation.longitude,
+          latitude: resolvedCoordinates.latitude,
+          longitude: resolvedCoordinates.longitude,
         };
       }
     }
@@ -695,10 +720,14 @@ const AddressFormModal = ({
             <div>
               <p className="text-xs uppercase tracking-[0.24em] text-ink-muted">Location details</p>
               <p className="mt-2 text-sm leading-7 text-ink-soft">
-                Nearby restaurant search only works when this address has valid latitude and longitude coordinates.
+                Nearby restaurant search works best with coordinates, but area, city, state, and PIN matching can
+                still be used when coordinates are missing.
               </p>
             </div>
-            <StatusPill label={hasCoordinates ? "Ready for search" : "Location needed"} tone={hasCoordinates ? "success" : "warning"} />
+            <StatusPill
+              label={hasCoordinates ? "Precise search" : "Text fallback ready"}
+              tone={hasCoordinates ? "success" : "info"}
+            />
           </div>
 
           <Tabs
@@ -757,7 +786,8 @@ const AddressFormModal = ({
           {activeLocationTab === "manual" ? (
             <div className="space-y-4 rounded-[1.5rem] border border-accent/10 bg-white px-4 py-4">
               <p className="text-sm leading-7 text-ink-soft">
-                Fill the address form below, then resolve coordinates from the typed address. If matching fails, switch to the map tab.
+                Fill the address form below, then resolve coordinates from the typed address for better distance
+                accuracy. If matching fails, you can still save the address and rely on text-area fallback.
               </p>
               <div className="flex flex-wrap justify-end gap-3">
                 <Button
@@ -776,7 +806,8 @@ const AddressFormModal = ({
             <div className="rounded-[1.25rem] bg-white px-4 py-4 text-sm leading-7 text-ink-soft">
               <p className="font-semibold text-ink">Resolved location</p>
               <p className="mt-2">
-                {resolvedLocationLabel || "No coordinates attached yet. Use current location, map pin, or resolve the typed address."}
+                {resolvedLocationLabel ||
+                  "No coordinates attached yet. Use current location, a map pin, or typed-address matching for better distance accuracy."}
               </p>
             </div>
             <div className="rounded-[1.25rem] bg-white px-4 py-4 text-sm leading-7 text-ink-soft">
@@ -872,7 +903,7 @@ const AddressFormModal = ({
             <p className="mt-1 text-xs text-ink-soft">
               {hasCoordinates
                 ? "This address will become the active delivery location for restaurant discovery."
-                : "We will try to resolve coordinates on save, but food search stays blocked until the location is matched."}
+                : "This address can still become the active delivery location now. Adding coordinates improves nearby distance accuracy."}
             </p>
           </div>
           <input type="checkbox" className="h-4 w-4 accent-[rgb(139,30,36)]" {...form.register("useForSearch")} />
@@ -2244,7 +2275,7 @@ export const SavedAddressesPage = () => {
     const nextLocation = createCustomerActiveLocationFromAddress(address, source);
 
     if (!nextLocation) {
-      toast.error("Add location details to this address before using it for nearby restaurant search.");
+      toast.error("Add fuller location details to this address before using it for nearby restaurant search.");
       return false;
     }
 
@@ -2348,12 +2379,10 @@ export const SavedAddressesPage = () => {
 
       await loadAddresses({ quietly: true });
 
-      if (shouldUseForSearch && hasCustomerAddressCoordinates(savedAddress)) {
+      if (shouldUseForSearch) {
         persistActiveLocation(savedAddress, savedAddress.isDefault ? "default" : "saved");
-      } else if (shouldUseForSearch && !hasCustomerAddressCoordinates(savedAddress)) {
-        toast.success("Address saved. Add location details before using it for nearby restaurant search.");
       } else if (activeLocation?.addressId === savedAddress.id) {
-        if (hasCustomerAddressCoordinates(savedAddress)) {
+        if (hasCustomerAddressLocationDetails(savedAddress)) {
           persistActiveLocation(savedAddress, savedAddress.isDefault ? "default" : "saved");
         } else {
           clearActiveLocation();
@@ -2382,9 +2411,13 @@ export const SavedAddressesPage = () => {
       const updatedAddress = await updateCustomerAddress(address.id, { isDefault: true });
       await loadAddresses({ quietly: true });
 
-      if (hasCustomerAddressCoordinates(updatedAddress)) {
+      if (hasCustomerAddressLocationDetails(updatedAddress)) {
         persistActiveLocation({ ...updatedAddress, isDefault: true }, "default");
-        toast.success("Default address updated and linked to nearby restaurant search.");
+        toast.success(
+          hasCustomerAddressCoordinates(updatedAddress)
+            ? "Default address updated and linked to nearby restaurant search."
+            : "Default address updated and linked to nearby restaurant search using text-area matching.",
+        );
       } else {
         toast.success("Default address updated. Add location details before using it for nearby restaurant search.");
       }
@@ -2396,7 +2429,7 @@ export const SavedAddressesPage = () => {
   };
 
   const handleUseForSearch = (address: CustomerAddress) => {
-    if (!hasCustomerAddressCoordinates(address)) {
+    if (!hasCustomerAddressLocationDetails(address)) {
       toast.error("Add location details to this address before using it for nearby restaurant search.");
       setSelectedAddress(address);
       setShouldUseSelectedAddressForSearch(true);
@@ -2405,7 +2438,11 @@ export const SavedAddressesPage = () => {
     }
 
     if (persistActiveLocation(address, address.isDefault ? "default" : "saved")) {
-      toast.success("Nearby restaurant search now uses this saved address.");
+      toast.success(
+        hasCustomerAddressCoordinates(address)
+          ? "Nearby restaurant search now uses this saved address."
+          : "Nearby restaurant search now uses this saved address through text-area matching.",
+      );
     }
   };
 
@@ -2422,8 +2459,8 @@ export const SavedAddressesPage = () => {
 
       if (activeLocation?.addressId === deleteTarget.id) {
         const replacementAddress =
-          nextAddresses.find((address) => address.isDefault && hasCustomerAddressCoordinates(address)) ??
-          nextAddresses.find((address) => hasCustomerAddressCoordinates(address));
+          nextAddresses.find((address) => address.isDefault && hasCustomerAddressLocationDetails(address)) ??
+          nextAddresses.find((address) => hasCustomerAddressLocationDetails(address));
 
         if (replacementAddress) {
           persistActiveLocation(replacementAddress, replacementAddress.isDefault ? "default" : "saved");
@@ -2534,7 +2571,8 @@ export const SavedAddressesPage = () => {
                     </p>
                     {!hasCustomerAddressCoordinates(address) ? (
                       <p className="text-sm leading-7 text-ink-soft">
-                        This saved address remains editable and usable at checkout, but restaurant discovery stays blocked until coordinates are attached.
+                        Restaurant discovery can still use this saved address through text-area matching. Add
+                        coordinates for better nearby distance accuracy.
                       </p>
                     ) : null}
                   </div>
@@ -2547,11 +2585,7 @@ export const SavedAddressesPage = () => {
                       onClick={() => handleUseForSearch(address)}
                       disabled={activeAddressId === address.id}
                     >
-                      {hasCustomerAddressCoordinates(address)
-                        ? activeAddressId === address.id
-                          ? "Using for search"
-                          : "Use for search"
-                        : "Add location details"}
+                      {activeAddressId === address.id ? "Using for search" : "Use for search"}
                     </Button>
                     <Button type="button" variant="ghost" className="px-3 py-2 text-xs" onClick={() => handleEditAddress(address)}>
                       <Edit3 className="mr-2 h-4 w-4" />
