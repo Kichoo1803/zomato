@@ -245,11 +245,6 @@ const useDiscoveryLocationState = (): DiscoveryLocationContextValue => {
         address:
           resolvedLocation?.address?.trim() ||
           `Location near ${coordinates.latitude.toFixed(4)}, ${coordinates.longitude.toFixed(4)}`,
-        area: resolvedLocation?.area ?? null,
-        city: resolvedLocation?.city ?? null,
-        district: resolvedLocation?.district ?? null,
-        state: resolvedLocation?.state ?? null,
-        pincode: resolvedLocation?.pincode ?? null,
         isTemporary: true,
         source: "gps",
       });
@@ -284,11 +279,6 @@ const useDiscoveryLocationState = (): DiscoveryLocationContextValue => {
         latitude: resolvedLocation.latitude,
         longitude: resolvedLocation.longitude,
         address: resolvedLocation.address.trim() || address.trim(),
-        area: resolvedLocation.area ?? null,
-        city: resolvedLocation.city ?? null,
-        district: resolvedLocation.district ?? null,
-        state: resolvedLocation.state ?? null,
-        pincode: resolvedLocation.pincode ?? null,
         isTemporary: true,
         source: "manual",
       });
@@ -317,11 +307,6 @@ const useDiscoveryLocationState = (): DiscoveryLocationContextValue => {
         address:
           resolvedLocation?.address?.trim() ||
           `Pinned location near ${coordinates.latitude.toFixed(4)}, ${coordinates.longitude.toFixed(4)}`,
-        area: resolvedLocation?.area ?? null,
-        city: resolvedLocation?.city ?? null,
-        district: resolvedLocation?.district ?? null,
-        state: resolvedLocation?.state ?? null,
-        pincode: resolvedLocation?.pincode ?? null,
         isTemporary: true,
         source: "map",
       });

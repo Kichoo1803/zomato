@@ -13,58 +13,6 @@ const OSRM_ROUTE_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
 const NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search";
 const NOMINATIM_REVERSE_ENDPOINT = "https://nominatim.openstreetmap.org/reverse";
 
-const pickFirstAddressValue = (
-  address: Record<string, string | undefined>,
-  keys: string[],
-) => {
-  for (const key of keys) {
-    const value = address[key]?.trim();
-    if (value) {
-      return value;
-    }
-  }
-
-  return null;
-};
-
-const mapNominatimAddressFields = (address?: Record<string, string | undefined> | null) => {
-  if (!address) {
-    return {
-      area: null,
-      city: null,
-      district: null,
-      state: null,
-      pincode: null,
-    };
-  }
-
-  return {
-    area: pickFirstAddressValue(address, [
-      "suburb",
-      "neighbourhood",
-      "quarter",
-      "city_district",
-      "residential",
-      "hamlet",
-    ]),
-    city: pickFirstAddressValue(address, [
-      "city",
-      "town",
-      "municipality",
-      "village",
-      "county",
-    ]),
-    district: pickFirstAddressValue(address, [
-      "county",
-      "state_district",
-      "district",
-      "region",
-    ]),
-    state: pickFirstAddressValue(address, ["state", "union_territory"]),
-    pincode: pickFirstAddressValue(address, ["postcode"]),
-  };
-};
-
 const toCoordinateNumber = (value?: number | string | null) => {
   if (value === null || value === undefined) {
     return Number.NaN;
@@ -238,7 +186,6 @@ export const resolveAddressText = async (addressText: string) => {
       lat?: string;
       lon?: string;
       display_name?: string;
-      address?: Record<string, string | undefined>;
     }>;
     const result = payload[0];
 
@@ -253,17 +200,10 @@ export const resolveAddressText = async (addressText: string) => {
       return null;
     }
 
-    const addressFields = mapNominatimAddressFields(result.address);
-
     return {
       latitude,
       longitude,
       address: result.display_name?.trim() || normalized,
-      area: addressFields.area,
-      city: addressFields.city,
-      district: addressFields.district,
-      state: addressFields.state,
-      pincode: addressFields.pincode,
     };
   } catch {
     return null;
@@ -308,7 +248,6 @@ export const reverseGeocodeCoordinates = async (latitude: number, longitude: num
 
     const payload = (await response.json()) as {
       display_name?: string;
-      address?: Record<string, string | undefined>;
     };
 
     const address = payload.display_name?.trim();
@@ -316,17 +255,10 @@ export const reverseGeocodeCoordinates = async (latitude: number, longitude: num
       return null;
     }
 
-    const addressFields = mapNominatimAddressFields(payload.address);
-
     return {
       latitude,
       longitude,
       address,
-      area: addressFields.area,
-      city: addressFields.city,
-      district: addressFields.district,
-      state: addressFields.state,
-      pincode: addressFields.pincode,
     };
   } catch {
     return null;
