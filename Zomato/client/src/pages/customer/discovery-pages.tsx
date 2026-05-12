@@ -225,6 +225,25 @@ const formatLocationText = (...parts: Array<string | null | undefined>) =>
 
 const normalizeSearchText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 
+const buildSelectedLocationQuery = (
+  selectedLocation?: SelectedDiscoveryLocation | null,
+) => {
+  if (!selectedLocation) {
+    return {};
+  }
+
+  return {
+    latitude: selectedLocation.latitude,
+    longitude: selectedLocation.longitude,
+    address: selectedLocation.address,
+    area: selectedLocation.area ?? undefined,
+    city: selectedLocation.city ?? undefined,
+    district: selectedLocation.district ?? undefined,
+    state: selectedLocation.state ?? undefined,
+    pincode: selectedLocation.pincode ?? undefined,
+  };
+};
+
 const getRestaurantOfferTitle = (restaurant: Pick<CustomerRestaurantSummary, "offers">) =>
   restaurant.offers[0]?.offer.title ?? restaurant.offers[0]?.offer.code ?? undefined;
 
@@ -956,12 +975,7 @@ const useRestaurantCatalogue = (
       ...(normalizedFoodCategory ? { foodCategory: normalizedFoodCategory } : {}),
       ...(includeMenuMatches && (normalizedSearch || normalizedFoodCategory) ? { includeMenuMatches: true } : {}),
       ...(allowGlobalResults ? { allowGlobalResults: true } : {}),
-      ...(selectedLocation
-        ? {
-            latitude: selectedLocation.latitude,
-            longitude: selectedLocation.longitude,
-          }
-        : {}),
+      ...buildSelectedLocationQuery(selectedLocation),
       limit,
     })
       .then((catalogue) => {
@@ -1057,7 +1071,9 @@ export const RestaurantListingPage = () => {
     errorMessage: catalogueErrorMessage,
     isLoading,
     retry,
-  } = useRestaurantCatalogue(appliedSearch, selectedLocation);
+  } = useRestaurantCatalogue(appliedSearch, selectedLocation, {
+    includeMenuMatches: Boolean(appliedSearch),
+  });
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
   const [activeCategory, setActiveCategory] = useState("All");
   const [page, setPage] = useState(1);
@@ -1939,10 +1955,7 @@ export const RestaurantDetailsPage = () => {
     setLoadErrorMessage(undefined);
     setIsLoading(true);
 
-    void getPublicRestaurantBySlug(slug, {
-      latitude: selectedLocation.latitude,
-      longitude: selectedLocation.longitude,
-    })
+    void getPublicRestaurantBySlug(slug, buildSelectedLocationQuery(selectedLocation))
       .then((restaurant) => {
         if (isMounted) {
           setLiveRestaurant(restaurant);

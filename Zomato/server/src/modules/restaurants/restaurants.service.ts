@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { FoodType, Role } from "../../constants/enums.js";
 import { StatusCodes } from "http-status-codes";
 import { env } from "../../config/env.js";
+import { logger } from "../../lib/logger.js";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../utils/app-error.js";
 import {
@@ -26,8 +27,10 @@ const listSelect = {
   area: true,
   city: true,
   state: true,
+  pincode: true,
   latitude: true,
   longitude: true,
+  isActive: true,
   avgRating: true,
   totalReviews: true,
   costForTwo: true,
@@ -35,6 +38,11 @@ const listSelect = {
   preparationTime: true,
   isVegOnly: true,
   isFeatured: true,
+  region: {
+    select: {
+      districtName: true,
+    },
+  },
   cuisineMappings: {
     select: {
       cuisine: {
@@ -322,6 +330,366 @@ const isValidLongitude = (value: unknown): value is number =>
 
 const normalizeDiscoverySearchText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 
+const stripDiacritics = (value: string) =>
+  value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+
+const normalizeComparableText = (value?: string | null) => {
+  const normalizedValue = value?.trim();
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const comparableValue = stripDiacritics(normalizedValue)
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/,+/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return comparableValue || null;
+};
+
+const normalizeComparablePincode = (value?: string | null) => {
+  const normalizedValue = value?.replace(/\D+/g, "").trim();
+  return normalizedValue ? normalizedValue : null;
+};
+
+const buildComparableValueSet = (
+  values: Array<string | null | undefined>,
+  options?: { useStateAliases?: boolean; useDistrictAliases?: boolean },
+) => {
+  const variants = new Set<string>();
+
+  values.forEach((value) => {
+    const trimmedValue = value?.trim();
+    if (!trimmedValue) {
+      return;
+    }
+
+    const candidateValues = new Set<string>([trimmedValue]);
+
+    if (options?.useStateAliases) {
+      getRegionStateVariants(trimmedValue).forEach((variant) => candidateValues.add(variant));
+    }
+
+    if (options?.useDistrictAliases) {
+      getRegionDistrictVariants(trimmedValue).forEach((variant) => candidateValues.add(variant));
+    }
+
+    candidateValues.forEach((candidateValue) => {
+      const comparableValue = normalizeComparableText(candidateValue);
+      if (comparableValue) {
+        variants.add(comparableValue);
+      }
+    });
+  });
+
+  return variants;
+};
+
+const doComparableSetsOverlap = (leftValues: Set<string>, rightValues: Set<string>) =>
+  [...leftValues].some((value) => rightValues.has(value));
+
+const isComparableValueContainedInText = (values: Set<string>, text?: string | null) => {
+  const comparableText = normalizeComparableText(text);
+
+  if (!comparableText) {
+    return false;
+  }
+
+  return [...values].some((value) => comparableText.includes(value));
+};
+
+const buildRestaurantSearchText = (restaurant: {
+  name: string;
+  slug: string;
+  addressLine?: string | null;
+  area?: string | null;
+  city: string;
+  state: string;
+  pincode: string;
+  region?: {
+    districtName?: string | null;
+  } | null;
+  cuisineMappings: Array<{
+    cuisine: {
+      name: string;
+    };
+  }>;
+}) =>
+  normalizeComparableText(
+    [
+      restaurant.name,
+      restaurant.slug,
+      restaurant.addressLine,
+      restaurant.area,
+      restaurant.city,
+      restaurant.region?.districtName,
+      restaurant.state,
+      restaurant.pincode,
+      ...restaurant.cuisineMappings.map((mapping) => mapping.cuisine.name),
+    ].filter(Boolean).join(" "),
+  ) ?? "";
+
+const buildMenuItemSearchText = (menuItem: {
+  name: string;
+  description?: string | null;
+  category: {
+    name: string;
+  };
+}) =>
+  normalizeComparableText(
+    [menuItem.name, menuItem.description, menuItem.category.name].filter(Boolean).join(" "),
+  ) ?? "";
+
+const restaurantMatchesSearchText = (
+  restaurant: {
+    name: string;
+    slug: string;
+    addressLine?: string | null;
+    area?: string | null;
+    city: string;
+    state: string;
+    pincode: string;
+    region?: {
+      districtName?: string | null;
+    } | null;
+    cuisineMappings: Array<{
+      cuisine: {
+        name: string;
+      };
+    }>;
+    menuItems?: Array<{
+      name: string;
+      description?: string | null;
+      category: {
+        name: string;
+      };
+    }>;
+  },
+  search?: string,
+) => {
+  const normalizedSearch = normalizeComparableText(search);
+
+  if (!normalizedSearch) {
+    return true;
+  }
+
+  if (buildRestaurantSearchText(restaurant).includes(normalizedSearch)) {
+    return true;
+  }
+
+  return (restaurant.menuItems ?? []).some((menuItem) =>
+    buildMenuItemSearchText(menuItem).includes(normalizedSearch),
+  );
+};
+
+const menuItemMatchesDiscoveryFilters = (
+  menuItem: {
+    name: string;
+    description?: string | null;
+    category: {
+      name: string;
+    };
+  },
+  input: {
+    search?: string;
+    foodCategory?: string;
+  },
+) => {
+  const menuItemSearchText = buildMenuItemSearchText(menuItem);
+  const normalizedSearch = normalizeComparableText(input.search);
+
+  if (normalizedSearch && !menuItemSearchText.includes(normalizedSearch)) {
+    return false;
+  }
+
+  const foodKeywords = getFoodDiscoveryKeywords(input.foodCategory)
+    .map((keyword) => normalizeComparableText(keyword))
+    .filter((keyword): keyword is string => Boolean(keyword));
+
+  if (!foodKeywords.length) {
+    return true;
+  }
+
+  return foodKeywords.some((keyword) => menuItemSearchText.includes(keyword));
+};
+
+const restaurantMatchesFoodCategory = (
+  restaurant: {
+    name: string;
+    addressLine?: string | null;
+    area?: string | null;
+    city: string;
+    state: string;
+    pincode: string;
+    region?: {
+      districtName?: string | null;
+    } | null;
+    cuisineMappings: Array<{
+      cuisine: {
+        name: string;
+      };
+    }>;
+    menuItems?: Array<{
+      name: string;
+      description?: string | null;
+      category: {
+        name: string;
+      };
+    }>;
+  },
+  foodCategory?: string,
+) => {
+  const foodKeywords = getFoodDiscoveryKeywords(foodCategory)
+    .map((keyword) => normalizeComparableText(keyword))
+    .filter((keyword): keyword is string => Boolean(keyword));
+
+  if (!foodKeywords.length) {
+    return true;
+  }
+
+  const restaurantSearchText = buildRestaurantSearchText(restaurant);
+  if (foodKeywords.some((keyword) => restaurantSearchText.includes(keyword))) {
+    return true;
+  }
+
+  return (restaurant.menuItems ?? []).some((menuItem) =>
+    foodKeywords.some((keyword) => buildMenuItemSearchText(menuItem).includes(keyword)),
+  );
+};
+
+const buildDiscoveryLocationContext = (query: Record<string, unknown>) => ({
+  address: typeof query.address === "string" ? query.address.trim() : "",
+  area: typeof query.area === "string" ? query.area.trim() : "",
+  city: typeof query.city === "string" ? query.city.trim() : "",
+  district: typeof query.district === "string" ? query.district.trim() : "",
+  state: typeof query.state === "string" ? query.state.trim() : "",
+  pincode: typeof query.pincode === "string" ? query.pincode.trim() : "",
+});
+
+const hasDiscoveryLocationText = (location: ReturnType<typeof buildDiscoveryLocationContext>) =>
+  Boolean(
+    location.address ||
+      location.area ||
+      location.city ||
+      location.district ||
+      location.state ||
+      location.pincode,
+  );
+
+const buildLocationTextProfile = (input: {
+  address?: string | null;
+  area?: string | null;
+  city?: string | null;
+  district?: string | null;
+  state?: string | null;
+  pincode?: string | null;
+}) => ({
+  comparableAddress: normalizeComparableText(input.address),
+  pincode: normalizeComparablePincode(input.pincode),
+  stateValues: buildComparableValueSet([input.state], { useStateAliases: true }),
+  localityValues: buildComparableValueSet(
+    [input.area, input.city, input.district],
+    { useDistrictAliases: true },
+  ),
+});
+
+const matchesRestaurantByLocationText = (
+  restaurant: {
+    addressLine?: string | null;
+    area?: string | null;
+    city: string;
+    state: string;
+    pincode: string;
+    region?: {
+      districtName?: string | null;
+    } | null;
+  },
+  location: ReturnType<typeof buildDiscoveryLocationContext>,
+) => {
+  const restaurantProfile = buildLocationTextProfile({
+    address: buildAddressSearchText([
+      restaurant.addressLine,
+      restaurant.area,
+      restaurant.city,
+      restaurant.region?.districtName,
+      restaurant.state,
+      restaurant.pincode,
+    ]),
+    area: restaurant.area,
+    city: restaurant.city,
+    district: restaurant.region?.districtName,
+    state: restaurant.state,
+    pincode: restaurant.pincode,
+  });
+  const userProfile = buildLocationTextProfile(location);
+
+  if (restaurantProfile.pincode && userProfile.pincode && restaurantProfile.pincode === userProfile.pincode) {
+    return true;
+  }
+
+  if (
+    restaurantProfile.stateValues.size &&
+    userProfile.stateValues.size &&
+    !doComparableSetsOverlap(restaurantProfile.stateValues, userProfile.stateValues)
+  ) {
+    return false;
+  }
+
+  if (
+    restaurantProfile.localityValues.size &&
+    userProfile.localityValues.size &&
+    doComparableSetsOverlap(restaurantProfile.localityValues, userProfile.localityValues)
+  ) {
+    return true;
+  }
+
+  if (isComparableValueContainedInText(restaurantProfile.localityValues, location.address)) {
+    return true;
+  }
+
+  if (isComparableValueContainedInText(userProfile.localityValues, restaurant.addressLine)) {
+    return true;
+  }
+
+  if (restaurantProfile.pincode && location.address.includes(restaurantProfile.pincode)) {
+    return true;
+  }
+
+  return false;
+};
+
+const logRestaurantDiscoveryDecision = (payload: {
+  restaurantId: number;
+  restaurantName: string;
+  status: string;
+  restaurantCity: string;
+  restaurantDistrict?: string | null;
+  restaurantState: string;
+  restaurantPincode?: string | null;
+  userCity?: string | null;
+  userDistrict?: string | null;
+  userState?: string | null;
+  userPincode?: string | null;
+  coordinatesPresent: {
+    restaurant: boolean;
+    user: boolean;
+  };
+  distanceKm?: number | null;
+  searchQueryMatched: boolean;
+  included: boolean;
+  reason: string;
+}) => {
+  if (!env.isDevelopment) {
+    return;
+  }
+
+  logger.info("Restaurant discovery decision", payload);
+};
+
 const getFoodDiscoveryKeywords = (value?: string | null) => {
   const trimmedValue = value?.trim() ?? "";
   if (!trimmedValue) {
@@ -480,17 +848,40 @@ const getNearbyRestaurantWhere = (
   };
 };
 
-const buildListWhere = (query: Record<string, unknown>): Prisma.RestaurantWhereInput => {
-  const clauses: Prisma.RestaurantWhereInput[] = [{ isActive: true }];
+const buildDiscoveryRestaurantSelect = (includeMenuMatches: boolean) =>
+  ({
+    ...listSelect,
+    ...(includeMenuMatches
+      ? {
+          menuItems: {
+            where: { isAvailable: true },
+            orderBy: [{ isRecommended: "desc" }, { createdAt: "desc" }],
+            select: searchMatchMenuItemSelect,
+          },
+        }
+      : {}),
+  }) satisfies Prisma.RestaurantSelect;
+
+const buildListWhere = (
+  query: Record<string, unknown>,
+  options: {
+    includeSearch?: boolean;
+    includeFoodCategory?: boolean;
+  } = {},
+): Prisma.RestaurantWhereInput => {
+  const clauses: Prisma.RestaurantWhereInput[] = [
+    { isActive: true },
+    { owner: { is: { isActive: true } } },
+  ];
 
   const search = typeof query.search === "string" ? query.search.trim() : "";
-  if (search) {
+  if ((options.includeSearch ?? true) && search) {
     clauses.push(buildRestaurantTextSearchClause(search));
   }
 
   const foodCategory = typeof query.foodCategory === "string" ? query.foodCategory.trim() : "";
   const foodCategoryClause = buildRestaurantFoodCategoryClause(foodCategory);
-  if (foodCategoryClause) {
+  if ((options.includeFoodCategory ?? true) && foodCategoryClause) {
     clauses.push(foodCategoryClause);
   }
 
