@@ -1,4 +1,4 @@
-type GeoPoint = {
+export type GeoPoint = {
   latitude?: number | string | null;
   longitude?: number | string | null;
 };
@@ -13,7 +13,7 @@ const OSRM_ROUTE_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
 const NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search";
 const NOMINATIM_REVERSE_ENDPOINT = "https://nominatim.openstreetmap.org/reverse";
 
-const toCoordinateNumber = (value?: number | string | null) => {
+export const toCoordinateNumber = (value?: number | string | null) => {
   if (value === null || value === undefined) {
     return Number.NaN;
   }
@@ -24,9 +24,9 @@ const toCoordinateNumber = (value?: number | string | null) => {
 
   return Number(value);
 };
-const isValidLatitude = (value: number) =>
+export const isValidLatitude = (value: number) =>
   Number.isFinite(value) && value >= -90 && value <= 90;
-const isValidLongitude = (value: number) =>
+export const isValidLongitude = (value: number) =>
   Number.isFinite(value) && value >= -180 && value <= 180;
 
 export const hasCoordinates = (
@@ -85,6 +85,30 @@ export const haversineDistanceKm = (
     destination.latitude,
     destination.longitude,
   );
+
+export const isWithinRadiusKm = (
+  origin?: GeoPoint | null,
+  destination?: GeoPoint | null,
+  radiusKm?: number | string | null,
+) => {
+  if (!hasCoordinates(origin) || !hasCoordinates(destination)) {
+    return false;
+  }
+
+  const normalizedRadiusKm = toCoordinateNumber(radiusKm);
+  if (!Number.isFinite(normalizedRadiusKm) || normalizedRadiusKm < 0) {
+    return false;
+  }
+
+  const distanceKm = calculateDistanceKm(
+    origin.latitude,
+    origin.longitude,
+    destination.latitude,
+    destination.longitude,
+  );
+
+  return Number.isFinite(distanceKm) && distanceKm <= normalizedRadiusKm;
+};
 
 const estimateTravelDurationMinutes = (distanceKm: number) => {
   const averageSpeedKmPerHour = distanceKm > 8 ? 24 : 18;

@@ -450,9 +450,13 @@ export const DiscoveryLocationNotice = ({
     : isBootstrappingLocation
       ? "If a default or previously selected address is available, nearby restaurants will load automatically."
       : "Use a saved address, your current location, or enter an address manually. Restaurants stay hidden until a location is selected.";
-  const helperText = isBootstrappingLocation
-    ? "Saved delivery locations are checked first so you do not have to choose an address every time."
-    : "Nearby restaurants appear only after the delivery area is resolved.";
+  const helperText = selectedLocation
+    ? selectedLocation.latitude != null && selectedLocation.longitude != null
+      ? "Nearby restaurants are being checked from your resolved delivery coordinates."
+      : "Using your saved delivery area details while coordinates are being matched."
+    : isBootstrappingLocation
+      ? "Saved delivery locations are checked first so you do not have to choose an address every time."
+      : "Nearby restaurants appear only after the delivery area is resolved.";
 
   return (
     <SurfaceCard>

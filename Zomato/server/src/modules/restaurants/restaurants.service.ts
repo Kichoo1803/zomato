@@ -1,5 +1,9 @@
 import { Prisma } from "@prisma/client";
 import { FoodType, Role } from "../../constants/enums.js";
+import {
+  CUSTOMER_RESTAURANT_RADIUS_KM,
+  MAX_CUSTOMER_RESTAURANT_RADIUS_KM,
+} from "../../constants/location.js";
 import { StatusCodes } from "http-status-codes";
 import { env } from "../../config/env.js";
 import { logger } from "../../lib/logger.js";
@@ -8,9 +12,13 @@ import { AppError } from "../../utils/app-error.js";
 import {
   buildAddressSearchText,
   geocodeAddressText,
-  hasCoordinates,
-  haversineDistanceKm,
 } from "../../utils/geo.js";
+import {
+  buildBoundingBoxFromCoordinates,
+  getLatLngFromRestaurant,
+  getLatLngFromUserLocation,
+  getRoundedDistanceKm,
+} from "../../utils/location.js";
 import { getPagination, getPaginationMeta } from "../../utils/pagination.js";
 import { slugify } from "../../utils/slug.js";
 import {
@@ -306,15 +314,6 @@ const getRestaurantOrderBy = (sort?: string): Prisma.RestaurantOrderByWithRelati
   }
 };
 
-const DEFAULT_DISCOVERY_RADIUS_KM = Math.min(
-  env.RESTAURANT_DISCOVERY_DEFAULT_RADIUS_KM,
-  env.RESTAURANT_DISCOVERY_MAX_RADIUS_KM,
-);
-const MAX_DISCOVERY_RADIUS_KM = Math.max(
-  env.RESTAURANT_DISCOVERY_DEFAULT_RADIUS_KM,
-  env.RESTAURANT_DISCOVERY_MAX_RADIUS_KM,
-);
-const KILOMETERS_PER_LATITUDE_DEGREE = 111.32;
 const MENU_MATCH_LIMIT_PER_RESTAURANT = 4;
 const FOOD_DISCOVERY_KEYWORDS: Record<string, string[]> = {
   biryani: ["Biryani", "Dum", "Rice"],
@@ -327,12 +326,6 @@ const FOOD_DISCOVERY_KEYWORDS: Record<string, string[]> = {
   desserts: ["Dessert", "Desserts", "Sweet", "Sweets", "Cake", "Cheesecake", "Brownie", "Pastry", "Payasam"],
   beverages: ["Beverage", "Beverages", "Drink", "Drinks", "Coffee", "Tea", "Juice", "Shake", "Soda", "Kaapi"],
 };
-
-const isValidLatitude = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value >= -90 && value <= 90;
-
-const isValidLongitude = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value >= -180 && value <= 180;
 
 const normalizeDiscoverySearchText = (value?: string | null) => value?.trim().toLowerCase() ?? "";
 const stripDiacritics = (value: string) =>
@@ -372,7 +365,6 @@ const includesLocationText = (haystack?: string | null, needle?: string | null) 
 
   return normalizedHaystack.includes(normalizedNeedle) || normalizedNeedle.includes(normalizedHaystack);
 };
-const hasTextValue = (value?: string | null): value is string => Boolean(normalizeRegionValue(value));
 
 type DiscoveryLocationTextContext = {
   address: string | null;
@@ -535,23 +527,16 @@ const buildMenuItemMatchWhere = ({
 };
 
 const getDiscoveryOrigin = (query: Record<string, unknown>) => {
-  if (!isValidLatitude(query.latitude) || !isValidLongitude(query.longitude)) {
-    return null;
-  }
-
-  return {
-    latitude: query.latitude,
-    longitude: query.longitude,
-  };
+  return getLatLngFromUserLocation(query);
 };
 
 const getDiscoveryRadiusKm = (radiusKm: unknown) => {
   const requestedRadiusKm =
     typeof radiusKm === "number" && Number.isFinite(radiusKm) && radiusKm >= 0
       ? radiusKm
-      : DEFAULT_DISCOVERY_RADIUS_KM;
+      : CUSTOMER_RESTAURANT_RADIUS_KM;
 
-  return Math.min(requestedRadiusKm, MAX_DISCOVERY_RADIUS_KM);
+  return Math.min(requestedRadiusKm, MAX_CUSTOMER_RESTAURANT_RADIUS_KM);
 };
 
 const shouldIncludeMenuMatches = (
@@ -565,12 +550,7 @@ const getNearbyRestaurantWhere = (
   origin: { latitude: number; longitude: number },
   radiusKm: number,
 ): Prisma.RestaurantWhereInput => {
-  const latitudeDelta = radiusKm / KILOMETERS_PER_LATITUDE_DEGREE;
-  const safeLongitudeDivisor = Math.max(
-    Math.cos((origin.latitude * Math.PI) / 180) * KILOMETERS_PER_LATITUDE_DEGREE,
-    0.01,
-  );
-  const longitudeDelta = radiusKm / safeLongitudeDivisor;
+  const boundingBox = buildBoundingBoxFromCoordinates(origin, radiusKm);
 
   return {
     AND: [
@@ -578,15 +558,15 @@ const getNearbyRestaurantWhere = (
       {
         latitude: {
           not: null,
-          gte: origin.latitude - latitudeDelta,
-          lte: origin.latitude + latitudeDelta,
+          gte: boundingBox.minLatitude,
+          lte: boundingBox.maxLatitude,
         },
       },
       {
         longitude: {
           not: null,
-          gte: Math.max(-180, origin.longitude - longitudeDelta),
-          lte: Math.min(180, origin.longitude + longitudeDelta),
+          gte: boundingBox.minLongitude,
+          lte: boundingBox.maxLongitude,
         },
       },
     ],
@@ -732,15 +712,11 @@ const evaluateRestaurantDiscoveryLocationMatch = (
   const comparableRestaurantCity = normalizeComparableLocationText(restaurant.city);
   const comparableRestaurantPincode = normalizeComparablePincode(restaurant.pincode);
 
-  const coordinateRestaurant = origin && hasCoordinates(restaurant) ? restaurant : null;
-  const hasDistanceCoordinates = Boolean(origin && coordinateRestaurant);
-  const rawDistanceKm =
-    coordinateRestaurant && origin ? haversineDistanceKm(origin, coordinateRestaurant) : null;
-  const distanceKm =
-    typeof rawDistanceKm === "number" && Number.isFinite(rawDistanceKm)
-      ? Number(rawDistanceKm.toFixed(2))
-      : null;
+  const restaurantCoordinates = getLatLngFromRestaurant(restaurant);
+  const hasDistanceCoordinates = Boolean(origin && restaurantCoordinates);
+  const distanceKm = getRoundedDistanceKm(origin, restaurantCoordinates);
   const coordinateMatch = typeof distanceKm === "number" && distanceKm <= radiusKm;
+  const canUseTextFallback = !origin || !restaurantCoordinates;
 
   const samePincode =
     Boolean(location.comparablePincode) && location.comparablePincode === comparableRestaurantPincode;
@@ -760,7 +736,7 @@ const evaluateRestaurantDiscoveryLocationMatch = (
     includesLocationText(location.address, restaurantDistrict) ||
     includesLocationText(restaurantAddress, location.district);
 
-  const textMatch = hasDiscoveryLocationText(location)
+  const textMatch = canUseTextFallback && hasDiscoveryLocationText(location)
     ? samePincode ||
       (sameState && sameCity) ||
       (sameCity && sameDistrict) ||
@@ -784,7 +760,9 @@ const evaluateRestaurantDiscoveryLocationMatch = (
             ? "same_state_district_area"
             : sameState && sameDistrict && (cityMentionedInAddress || districtMentionedInAddress)
               ? "same_state_district_address"
-              : "outside_selected_location";
+              : origin && restaurantCoordinates
+                ? "outside_radius"
+                : "outside_selected_location";
 
   return {
     coordinateMatch,
@@ -867,42 +845,54 @@ const mapPublicRestaurantDetail = <
 const logRestaurantDiscoveryDecision = ({
   finalIncluded,
   location,
+  origin,
   matchReason,
   matchedBy,
   restaurant,
+  radiusKm,
+  searchQuery,
   searchMatched,
   distanceKm,
-  coordinatesPresent,
 }: {
   finalIncluded: boolean;
   location: DiscoveryLocationTextContext;
+  origin: { latitude: number; longitude: number } | null;
   matchReason: string;
   matchedBy: DiscoveryLocationMatchMode | null;
   restaurant: RestaurantDiscoveryLocationRecord;
+  radiusKm: number | null;
+  searchQuery: string | null;
   searchMatched: boolean;
   distanceKm: number | null;
-  coordinatesPresent: boolean;
 }) => {
   if (!env.isDevelopment) {
     return;
   }
 
+  const restaurantCoordinates = getLatLngFromRestaurant(restaurant);
+
   logger.info("Restaurant discovery evaluated", {
     restaurantId: restaurant.id,
     restaurantName: restaurant.name,
     status: restaurant.isActive ? "ACTIVE" : "INACTIVE",
+    restaurantLatitude: restaurantCoordinates?.latitude ?? null,
+    restaurantLongitude: restaurantCoordinates?.longitude ?? null,
     restaurantCity: restaurant.city,
     restaurantDistrict: getRestaurantDistrict(restaurant),
     restaurantState: restaurant.state,
     restaurantPincode: restaurant.pincode,
-    restaurantCoordinatesPresent: hasCoordinates(restaurant),
+    restaurantCoordinatesPresent: Boolean(restaurantCoordinates),
+    userLatitude: origin?.latitude ?? null,
+    userLongitude: origin?.longitude ?? null,
     userCity: location.city,
     userDistrict: location.district,
     userState: location.state,
     userPincode: location.pincode,
-    userCoordinatesPresent: coordinatesPresent,
+    userCoordinatesPresent: Boolean(origin),
     distanceKm,
+    radiusKm,
     matchedBy,
+    searchQuery,
     searchQueryMatch: searchMatched,
     finalDecision: finalIncluded ? "included" : "excluded",
     reason: matchReason,
@@ -1095,7 +1085,7 @@ export const restaurantsService = {
             page: pagination.page,
             limit: pagination.limit,
           }),
-          appliedRadiusKm: DEFAULT_DISCOVERY_RADIUS_KM,
+          appliedRadiusKm: CUSTOMER_RESTAURANT_RADIUS_KM,
           isLocationFiltered: false,
           requiresLocation: true,
         },
@@ -1195,17 +1185,19 @@ export const restaurantsService = {
 
       const filteredRestaurants = discoveryRestaurantsWithMatches.flatMap(({ menuItems, ...restaurant }) => {
         const discoveryMatch = evaluateRestaurantDiscoveryLocationMatch(restaurant, location, origin, radiusKm);
-        const searchMatched = true;
+        const searchMatched = Boolean(search);
 
         logRestaurantDiscoveryDecision({
           finalIncluded: discoveryMatch.finalIncluded,
           location,
+          origin,
           matchReason: discoveryMatch.matchReason,
           matchedBy: discoveryMatch.matchedBy,
           restaurant,
+          radiusKm,
+          searchQuery: search || null,
           searchMatched,
           distanceKm: discoveryMatch.distanceKm,
-          coordinatesPresent: Boolean(origin),
         });
 
         if (!discoveryMatch.finalIncluded) {
@@ -1222,10 +1214,21 @@ export const restaurantsService = {
         ];
       });
 
-      const total = filteredRestaurants.length;
+      const sortedRestaurants = [...filteredRestaurants].sort((left, right) => {
+        const leftDistance = typeof left.distanceKm === "number" ? left.distanceKm : Number.POSITIVE_INFINITY;
+        const rightDistance =
+          typeof right.distanceKm === "number" ? right.distanceKm : Number.POSITIVE_INFINITY;
+
+        if (leftDistance !== rightDistance) {
+          return leftDistance - rightDistance;
+        }
+
+        return left.name.localeCompare(right.name);
+      });
+      const total = sortedRestaurants.length;
 
       return {
-        restaurants: filteredRestaurants.slice(pagination.skip, pagination.skip + pagination.limit),
+        restaurants: sortedRestaurants.slice(pagination.skip, pagination.skip + pagination.limit),
         meta: {
           ...getPaginationMeta({
             total,
@@ -1247,17 +1250,19 @@ export const restaurantsService = {
 
     const filteredRestaurants = discoveryRestaurants.flatMap((restaurant) => {
       const discoveryMatch = evaluateRestaurantDiscoveryLocationMatch(restaurant, location, origin, radiusKm);
-      const searchMatched = true;
+      const searchMatched = Boolean(search);
 
       logRestaurantDiscoveryDecision({
         finalIncluded: discoveryMatch.finalIncluded,
         location,
+        origin,
         matchReason: discoveryMatch.matchReason,
         matchedBy: discoveryMatch.matchedBy,
         restaurant,
+        radiusKm,
+        searchQuery: search || null,
         searchMatched,
         distanceKm: discoveryMatch.distanceKm,
-        coordinatesPresent: Boolean(origin),
       });
 
       if (!discoveryMatch.finalIncluded) {
@@ -1273,10 +1278,21 @@ export const restaurantsService = {
       ];
     });
 
-    const total = filteredRestaurants.length;
+    const sortedRestaurants = [...filteredRestaurants].sort((left, right) => {
+      const leftDistance = typeof left.distanceKm === "number" ? left.distanceKm : Number.POSITIVE_INFINITY;
+      const rightDistance =
+        typeof right.distanceKm === "number" ? right.distanceKm : Number.POSITIVE_INFINITY;
+
+      if (leftDistance !== rightDistance) {
+        return leftDistance - rightDistance;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
+    const total = sortedRestaurants.length;
 
     return {
-      restaurants: filteredRestaurants.slice(pagination.skip, pagination.skip + pagination.limit),
+      restaurants: sortedRestaurants.slice(pagination.skip, pagination.skip + pagination.limit),
       meta: {
         ...getPaginationMeta({
           total,
@@ -1351,12 +1367,14 @@ export const restaurantsService = {
     logRestaurantDiscoveryDecision({
       finalIncluded: discoveryMatch.finalIncluded,
       location,
+      origin,
       matchReason: discoveryMatch.matchReason,
       matchedBy: discoveryMatch.matchedBy,
       restaurant,
+      radiusKm,
+      searchQuery: null,
       searchMatched: true,
       distanceKm: discoveryMatch.distanceKm,
-      coordinatesPresent: Boolean(origin),
     });
 
     if (!discoveryMatch.finalIncluded) {

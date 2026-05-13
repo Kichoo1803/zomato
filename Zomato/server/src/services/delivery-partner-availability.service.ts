@@ -1,9 +1,21 @@
 import { NotificationType, OrderStatus, Role } from "../constants/enums.js";
+import {
+  DELIVERY_PARTNER_PICKUP_RADIUS_KM,
+  ORDER_ASSIGNMENT_RADII_KM,
+  PRIMARY_DELIVERY_PARTNER_PICKUP_RADIUS_KM,
+} from "../constants/location.js";
 import { env } from "../config/env.js";
 import { logger } from "../lib/logger.js";
 import { prisma } from "../lib/prisma.js";
 import { notificationsService } from "../modules/notifications/notifications.service.js";
-import { calculateDistanceKm } from "../utils/geo.js";
+import { toCoordinateNumber } from "../utils/geo.js";
+import {
+  buildBoundingBoxFromCoordinates,
+  getLatLngFromDeliveryPartner,
+  getLatLngFromRestaurant,
+  getRoundedDistanceKm,
+  normalizeCoordinates as normalizeLatLngCoordinates,
+} from "../utils/location.js";
 
 type CoordinateValue = number | string | null | undefined;
 
@@ -106,9 +118,6 @@ type DeliveryPartnerSkipReason =
   | "DISTANCE_UNAVAILABLE"
   | "OUTSIDE_RADIUS";
 
-const DEFAULT_PRIMARY_ASSIGNMENT_RADIUS_KM = 5;
-const DEFAULT_FALLBACK_ASSIGNMENT_RADIUS_KM = 7;
-const DEFAULT_PARTNER_NEARBY_RESTAURANT_RADIUS_KM = 2;
 const DISTANCE_TOLERANCE_KM = 0.05;
 
 const ACTIVE_DELIVERY_STATUSES = [
@@ -119,6 +128,8 @@ const ACTIVE_DELIVERY_STATUSES = [
   OrderStatus.DELAYED,
 ] as const;
 
+export { ORDER_ASSIGNMENT_RADII_KM };
+
 const availableDeliveryPartnerStatuses = new Set<string>([
   "ONLINE",
   "AVAILABLE",
@@ -127,37 +138,17 @@ const availableDeliveryPartnerStatuses = new Set<string>([
   "READY",
 ]);
 
-const parseConfiguredRadiiKm = (value?: string | null) => {
-  const radiiKm = (value ?? "")
-    .split(",")
-    .map((entry) => Number(entry.trim()))
-    .filter((entry) => Number.isFinite(entry) && entry > 0)
-    .sort((left, right) => left - right);
-
-  return [...new Set(radiiKm)];
-};
-
-const configuredAssignmentRadiiKm = parseConfiguredRadiiKm(
-  process.env.DELIVERY_ASSIGNMENT_RADII_KM,
-);
-
-export const ORDER_ASSIGNMENT_RADII_KM =
-  configuredAssignmentRadiiKm.length > 0
-    ? configuredAssignmentRadiiKm
-    : [DEFAULT_PRIMARY_ASSIGNMENT_RADIUS_KM, DEFAULT_FALLBACK_ASSIGNMENT_RADIUS_KM];
-
 export const PRIMARY_ASSIGNMENT_RADIUS_KM =
-  ORDER_ASSIGNMENT_RADII_KM[0] ?? DEFAULT_PRIMARY_ASSIGNMENT_RADIUS_KM;
+  PRIMARY_DELIVERY_PARTNER_PICKUP_RADIUS_KM;
 
 export const FALLBACK_ASSIGNMENT_RADIUS_KM =
-  ORDER_ASSIGNMENT_RADII_KM[ORDER_ASSIGNMENT_RADII_KM.length - 1] ??
-  DEFAULT_FALLBACK_ASSIGNMENT_RADIUS_KM;
+  DELIVERY_PARTNER_PICKUP_RADIUS_KM;
 
 export const PARTNER_NEARBY_RESTAURANT_RADIUS_KM =
-  DEFAULT_PARTNER_NEARBY_RESTAURANT_RADIUS_KM;
+  DELIVERY_PARTNER_PICKUP_RADIUS_KM;
 
 export const DELIVERY_PARTNER_AVAILABLE_MESSAGE =
-  "Delivery partners available near this restaurant";
+  "Delivery partner available nearby";
 export const PUBLIC_NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE =
   "No delivery partner available near this restaurant";
 export const NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE =
@@ -165,20 +156,6 @@ export const NO_DELIVERY_PARTNER_AVAILABLE_MESSAGE =
 
 const normalizeDeliveryPartnerAvailabilityStatus = (value?: string | null) =>
   value?.trim().replace(/\s+/g, "_").toUpperCase() ?? "";
-
-const buildBoundingBox = (latitude: number, longitude: number, radiusKm: number) => {
-  const expandedRadiusKm = radiusKm + DISTANCE_TOLERANCE_KM;
-  const latitudeDelta = expandedRadiusKm / 111;
-  const longitudeDivisor = Math.max(Math.cos((latitude * Math.PI) / 180), 0.2);
-  const longitudeDelta = expandedRadiusKm / (111 * longitudeDivisor);
-
-  return {
-    minLatitude: latitude - latitudeDelta,
-    maxLatitude: latitude + latitudeDelta,
-    minLongitude: longitude - longitudeDelta,
-    maxLongitude: longitude + longitudeDelta,
-  };
-};
 
 const buildUnavailablePlacementAvailability = (
   reason: Exclude<DeliveryAvailabilityReason, null>,
@@ -278,73 +255,44 @@ const logDeliveryCoverageDecision = (payload: {
     return;
   }
 
+  const restaurantCoordinates = getLatLngFromRestaurant(payload.restaurant);
+
   logger.info("Delivery partner restaurant coverage evaluated", {
     restaurantId: payload.restaurant.id ?? null,
-    restaurantLatitude: toNumberCoordinate(payload.restaurant.latitude),
-    restaurantLongitude: toNumberCoordinate(payload.restaurant.longitude),
+    restaurantName: payload.restaurant.name ?? null,
+    restaurantLatitude: restaurantCoordinates?.latitude ?? null,
+    restaurantLongitude: restaurantCoordinates?.longitude ?? null,
     radiusKm: payload.radiusKm,
     partnerId: payload.partner?.id ?? null,
     partnerUserId: payload.partner?.userId ?? null,
+    partnerName: payload.partner?.user.fullName ?? null,
     partnerAvailabilityStatus: payload.partner?.availabilityStatus ?? null,
     partnerLatitude: payload.partnerCoordinates?.latitude ?? null,
     partnerLongitude: payload.partnerCoordinates?.longitude ?? null,
     calculatedDistanceKm:
       payload.distanceKm != null ? Number(payload.distanceKm.toFixed(2)) : null,
     activeOrderCount: payload.activeOrderCount ?? null,
+    finalAvailability: payload.reasonSkipped ? "unavailable" : "available",
     reasonSkipped: payload.reasonSkipped ?? null,
   });
 };
 
-export const toNumberCoordinate = (value?: CoordinateValue) => {
-  if (value === null || value === undefined) {
-    return Number.NaN;
-  }
-
-  if (typeof value === "string" && !value.trim()) {
-    return Number.NaN;
-  }
-
-  return Number(value);
-};
+export const toNumberCoordinate = toCoordinateNumber;
 
 export const isValidCoordinate = (
   latitude?: CoordinateValue,
   longitude?: CoordinateValue,
-) => {
-  const normalizedLatitude = toNumberCoordinate(latitude);
-  const normalizedLongitude = toNumberCoordinate(longitude);
-
-  return (
-    Number.isFinite(normalizedLatitude) &&
-    normalizedLatitude >= -90 &&
-    normalizedLatitude <= 90 &&
-    Number.isFinite(normalizedLongitude) &&
-    normalizedLongitude >= -180 &&
-    normalizedLongitude <= 180
-  );
-};
+) => Boolean(normalizeLatLngCoordinates({ latitude, longitude }));
 
 export const normalizeCoordinates = (
   input?: CoordinateInput | null,
-): { latitude: number; longitude: number } | null => {
-  if (!input || !isValidCoordinate(input.latitude, input.longitude)) {
-    return null;
-  }
-
-  return {
-    latitude: toNumberCoordinate(input.latitude),
-    longitude: toNumberCoordinate(input.longitude),
-  };
-};
+) => normalizeLatLngCoordinates(input);
 
 export const getCurrentDeliveryPartnerCoordinates = (partner: {
   currentLatitude?: CoordinateValue;
   currentLongitude?: CoordinateValue;
 }) =>
-  normalizeCoordinates({
-    latitude: partner.currentLatitude,
-    longitude: partner.currentLongitude,
-  });
+  getLatLngFromDeliveryPartner(partner);
 
 export const isDeliveryPartnerAvailableForOrdersStatus = (value?: string | null) =>
   availableDeliveryPartnerStatuses.has(
@@ -358,21 +306,10 @@ export const calculateRestaurantPickupDistanceKm = (
     currentLongitude?: CoordinateValue;
   },
 ) => {
-  const restaurantCoordinates = normalizeCoordinates(restaurant);
+  const restaurantCoordinates = getLatLngFromRestaurant(restaurant);
   const partnerCoordinates = getCurrentDeliveryPartnerCoordinates(partner);
 
-  if (!restaurantCoordinates || !partnerCoordinates) {
-    return null;
-  }
-
-  const distanceKm = calculateDistanceKm(
-    restaurantCoordinates.latitude,
-    restaurantCoordinates.longitude,
-    partnerCoordinates.latitude,
-    partnerCoordinates.longitude,
-  );
-
-  return Number.isFinite(distanceKm) ? Number(distanceKm.toFixed(2)) : null;
+  return getRoundedDistanceKm(restaurantCoordinates, partnerCoordinates);
 };
 
 export const getRestaurantAvailabilityContext = async (
@@ -405,7 +342,7 @@ export const findAvailableDeliveryPartnersNearRestaurant = async (
   },
 ): Promise<EligibleDeliveryPartner[]> => {
   const restaurant = await resolveRestaurantContext(restaurantInput);
-  const restaurantCoordinates = normalizeCoordinates(restaurant);
+  const restaurantCoordinates = getLatLngFromRestaurant(restaurant);
 
   if (!restaurant || !restaurantCoordinates) {
     logDeliveryCoverageDecision({
@@ -418,10 +355,10 @@ export const findAvailableDeliveryPartnersNearRestaurant = async (
     return [];
   }
 
-  const boundingBox = buildBoundingBox(
-    restaurantCoordinates.latitude,
-    restaurantCoordinates.longitude,
+  const boundingBox = buildBoundingBoxFromCoordinates(
+    restaurantCoordinates,
     radiusKm,
+    DISTANCE_TOLERANCE_KM,
   );
 
   const candidates = await prisma.deliveryPartner.findMany({
@@ -507,14 +444,12 @@ export const findAvailableDeliveryPartnersNearRestaurant = async (
       } else if (activeOrderCount >= env.DELIVERY_ASSIGNMENT_MAX_ACTIVE_ORDERS) {
         reasonSkipped = "AT_CAPACITY";
       } else {
-        const rawDistanceKm = calculateDistanceKm(
-          restaurantCoordinates.latitude,
-          restaurantCoordinates.longitude,
-          partnerCoordinates.latitude,
-          partnerCoordinates.longitude,
+        const rawDistanceKm = getRoundedDistanceKm(
+          restaurantCoordinates,
+          partnerCoordinates,
         );
 
-        if (!Number.isFinite(rawDistanceKm)) {
+        if (rawDistanceKm == null) {
           reasonSkipped = "DISTANCE_UNAVAILABLE";
         } else {
           distanceKm = rawDistanceKm;
@@ -591,7 +526,7 @@ export const getEligibleDeliveryPartnersForRestaurant =
 export const previewRestaurantDeliveryAvailability = async (
   restaurant: RestaurantAvailabilityContext,
 ) => {
-  const restaurantCoordinates = normalizeCoordinates(restaurant);
+  const restaurantCoordinates = getLatLngFromRestaurant(restaurant);
 
   if (!restaurantCoordinates) {
     if (env.isDevelopment) {
@@ -630,7 +565,7 @@ export const previewRestaurantDeliveryAvailability = async (
       message:
         eligiblePartners.length === 1
           ? `${DELIVERY_PARTNER_AVAILABLE_MESSAGE} within ${radiusKm} km.`
-          : `${eligiblePartners.length} delivery partners available near this restaurant within ${radiusKm} km.`,
+          : `${eligiblePartners.length} delivery partners available nearby within ${radiusKm} km.`,
       reason: null,
       eligiblePartners,
     } satisfies OrderPlacementAvailability;
@@ -670,10 +605,10 @@ export const getNearbyRestaurantsForDeliveryPartner = async (
     return [];
   }
 
-  const boundingBox = buildBoundingBox(
-    partnerCoordinates.latitude,
-    partnerCoordinates.longitude,
+  const boundingBox = buildBoundingBoxFromCoordinates(
+    partnerCoordinates,
     radiusKm,
+    DISTANCE_TOLERANCE_KM,
   );
 
   const restaurants = await prisma.restaurant.findMany({

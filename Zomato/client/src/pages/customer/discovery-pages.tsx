@@ -948,6 +948,7 @@ const useRestaurantCatalogue = (
   const [hasResolvedRestaurants, setHasResolvedRestaurants] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLocationFiltered, setIsLocationFiltered] = useState(false);
+  const [requiresResolvedLocation, setRequiresResolvedLocation] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const normalizedSearch = search?.trim() ?? "";
   const normalizedFoodCategory = foodCategory?.trim() ?? "";
@@ -960,6 +961,7 @@ const useRestaurantCatalogue = (
       setHasResolvedRestaurants(true);
       setErrorMessage(null);
       setIsLocationFiltered(false);
+      setRequiresResolvedLocation(true);
       return () => {
         isMounted = false;
       };
@@ -969,6 +971,7 @@ const useRestaurantCatalogue = (
     setHasResolvedRestaurants(false);
     setErrorMessage(null);
     setIsLocationFiltered(Boolean(selectedLocation));
+    setRequiresResolvedLocation(false);
 
     void getPublicRestaurantCatalogue({
       ...(normalizedSearch ? { search: normalizedSearch } : {}),
@@ -982,12 +985,14 @@ const useRestaurantCatalogue = (
         if (isMounted) {
           setLiveRestaurants(catalogue.restaurants);
           setIsLocationFiltered(Boolean(catalogue.meta.isLocationFiltered));
+          setRequiresResolvedLocation(Boolean(catalogue.meta.requiresLocation));
         }
       })
       .catch((error) => {
         if (isMounted) {
           setLiveRestaurants([]);
           setIsLocationFiltered(false);
+          setRequiresResolvedLocation(false);
           setErrorMessage(
             getApiErrorMessage(
               error,
@@ -1046,6 +1051,7 @@ const useRestaurantCatalogue = (
     errorMessage,
     isLoading: (Boolean(selectedLocation) || allowGlobalResults) && !hasResolvedRestaurants,
     isLocationFiltered,
+    requiresResolvedLocation,
     retry: () => setReloadToken((currentValue) => currentValue + 1),
   };
 };
@@ -1076,6 +1082,7 @@ export const RestaurantListingPage = () => {
     categories,
     errorMessage: catalogueErrorMessage,
     isLoading,
+    requiresResolvedLocation,
     retry,
   } = useRestaurantCatalogue(appliedSearch, selectedLocation);
   const { favoriteIdSet, isFavoritePending, toggleFavorite } = useCustomerFavorites();
@@ -1196,12 +1203,12 @@ export const RestaurantListingPage = () => {
 
       {isBootstrappingLocation ? (
         <SurfaceCard>
-          <p className="text-sm leading-7 text-ink-soft">Checking your default and saved delivery addresses.</p>
+          <p className="text-sm leading-7 text-ink-soft">Resolving delivery area...</p>
         </SurfaceCard>
       ) : needsLocation ? (
         <EmptyState
           title="Select a location to browse nearby restaurants"
-          description="Use a saved address, your current location, or enter a delivery address manually. Nearby restaurants will appear only after the address is resolved."
+          description="Use a saved address, your current location, or enter a delivery address manually so we can resolve nearby restaurants."
         />
       ) : catalogueErrorMessage && !filteredRestaurants.length ? (
         <SurfaceCard className="space-y-4">
@@ -1214,8 +1221,13 @@ export const RestaurantListingPage = () => {
         </SurfaceCard>
       ) : isLoading && !filteredRestaurants.length ? (
         <SurfaceCard>
-          <p className="text-sm leading-7 text-ink-soft">Finding the restaurants that can serve your nearby area.</p>
+          <p className="text-sm leading-7 text-ink-soft">Resolving delivery area...</p>
         </SurfaceCard>
+      ) : requiresResolvedLocation ? (
+        <EmptyState
+          title="We couldn't resolve this delivery area yet"
+          description="Try your current location, switch to another saved address, or enter a fuller delivery address so nearby restaurants can be checked."
+        />
       ) : filteredRestaurants.length ? (
         <>
           <div className="grid gap-6 lg:grid-cols-2">

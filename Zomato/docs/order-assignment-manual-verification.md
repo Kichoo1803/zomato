@@ -1,114 +1,90 @@
-# Order Assignment Manual Verification
+# Nearby Discovery And Pickup Verification
 
-Verify these flows against a restaurant with valid latitude/longitude and delivery partners whose live location is fresh.
+Verify these flows against real backend data with fresh restaurant coordinates and fresh delivery-partner live locations.
 
-API check:
+API checks:
+- `GET /api/v1/restaurants?...selected location query...`
 - `GET /api/v1/delivery/availability?restaurantId=<id>`
-- Optional for checkout ETA: `GET /api/v1/delivery/availability?restaurantId=<id>&addressId=<id>`
+- Optional ETA check: `GET /api/v1/delivery/availability?restaurantId=<id>&addressId=<id>`
+
+Default radii:
+- Customer restaurant discovery: `10 km`
+- Delivery partner pickup assignment: `3 km`
 
 ## Preconditions
 
-- Restaurant has coordinates saved.
-- Delivery partners are verified and active.
-- Use partner availability `ONLINE` for eligible riders.
-- Keep at least one separate partner busy with an active assigned order to confirm exclusion.
+- Restaurant is `ACTIVE`.
+- Restaurant owner account is active.
+- Delivery partner is approved, active, online, and not already busy with another active delivery.
+- Delivery partner live location is fresh.
+- Customer selected delivery location is saved with coordinates, or has enough text fields for fallback matching.
 
-## Scenario A: Partner Within 5 km
+## Test Case A
 
-1. Place one available partner within 5 km of the restaurant.
-2. Open checkout and payment with a valid cart and serviceable address.
-3. Confirm the payment page shows successful nearby partner coverage.
-4. Confirm `GET /api/v1/delivery/availability?restaurantId=<id>&addressId=<id>` returns `available: true`.
-5. Use the payment page refresh check button and confirm the result stays available.
-6. Complete the order.
-7. Confirm the customer success page shows `Finding nearby delivery partner...` while assignment is pending.
-8. Confirm the restaurant owner sees the order immediately, even before rider acceptance.
-9. Confirm only the nearest eligible <= 5 km partner receives the delivery request first.
-10. Confirm partners outside 5 km do not see the order.
+Customer nearby restaurant discovery in Nagercoil or Kanyakumari.
+
+1. Set the customer delivery location to a Nagercoil or Kanyakumari address.
+2. Use restaurant `SSS` with coordinates `8.1699, 76.4221`.
+3. Keep the restaurant status `ACTIVE`.
+4. Open the customer Restaurants page.
+5. Confirm the backend returns the restaurant within the nearby results when the selected location is within `10 km`.
 
 Expected:
-- Order is created successfully.
-- Payment is not blocked.
-- `assignmentRadiusKm` is `5`.
-- `deliveryAssignmentStatus` moves from `FINDING_PARTNER` to `PARTNER_REQUESTED`.
+- `SSS` appears on the customer Restaurants page.
+- The restaurant is sorted with other nearby results by nearest distance first when coordinates are available.
+- The page does not show `No nearby restaurants found in your area`.
 
-## Scenario B: Partner Between 5 km and 7 km
+## Test Case B
 
-1. Ensure no partner is within 5 km.
-2. Place one available partner between 5 km and 7 km.
-3. Open payment for a valid cart and address.
-4. Confirm fallback coverage is shown and the order can still be placed.
-5. Confirm `GET /api/v1/delivery/availability?restaurantId=<id>&addressId=<id>` returns `available: true` with fallback coverage.
-6. Confirm the eligible partner sees:
-   - `Nearby area order`
-   - restaurant area/name
-   - distance from restaurant
+Nearby delivery partner availability within `0.2 km` to `3 km`.
+
+1. Keep one approved online delivery partner within `0.2 km` to `3 km` of the restaurant pickup point.
+2. Open checkout or payment for that restaurant with a valid cart.
+3. Confirm the payment page shows `Checking nearby delivery partners...` while the backend check is running.
+4. Confirm the payment page changes to `Delivery partner available nearby`.
+5. Confirm `GET /api/v1/delivery/availability?restaurantId=<id>&addressId=<id>` returns `available: true`.
+6. Place the order.
+7. Confirm the order enters delivery assignment without showing `delivery partner unavailable`.
 
 Expected:
-- Order is created successfully.
-- Only 5-7 km eligible partners receive the request.
-- `assignmentRadiusKm` is `7`.
+- Checkout is allowed.
+- The nearest eligible partner is selected first.
+- Partner distance is measured from `partner live location <-> restaurant pickup location`.
 
-## Scenario C: No Partner Within 7 km
+## Test Case C
 
-1. Ensure there are no eligible partners within 7 km.
-2. Open payment for a valid cart and address.
+Delivery partner farther than `3 km`.
+
+1. Move every otherwise eligible delivery partner beyond `3 km` from the restaurant pickup point.
+2. Refresh checkout delivery availability.
 3. Confirm `GET /api/v1/delivery/availability?restaurantId=<id>&addressId=<id>` returns `available: false`.
-4. Attempt to complete payment/order placement.
 
 Expected:
-- User sees: `No delivery partner available near this restaurant right now. Please try again later.`
-- No order is created.
-- No payment row is captured for the attempted placement.
+- Checkout shows `No delivery partner available near this restaurant`.
+- The partner is not selected for pickup assignment.
+- No pickup request is sent to partners beyond the configured pickup radius.
 
-## Scenario C1: Toggle Online Or Move Out Of Radius
+## Test Case D
 
-1. Start with one verified online partner inside 1 km of the restaurant.
-2. Open payment and confirm availability is shown.
-3. Switch the partner to `OFFLINE` or move the live location outside the allowed radius.
-4. Refresh the payment page or use the refresh check button.
+Restaurant farther than `10 km` from the selected customer location.
 
-Expected:
-- `GET /api/v1/delivery/availability?restaurantId=<id>&addressId=<id>` reflects the latest backend state.
-- Payment shows the unavailable warning after the partner moves offline or out of range.
-- Refreshing the page keeps the same backend-driven result.
-
-## Scenario D: Partner Rejects, Next Partner Accepts
-
-1. Seed at least two eligible partners within the allowed 7 km range.
-2. Place the order.
-3. Reject the request from the first partner.
-4. Confirm the next eligible partner receives the request.
-5. Accept from the second partner.
-6. Confirm the delivery partner can open `Delivery` and view the full order details page.
-7. Confirm the customer and restaurant owner both show `Partner accepted`.
+1. Pick a restaurant more than `10 km` away from the customer delivery location.
+2. Refresh the Restaurants page.
 
 Expected:
-- The rejecting partner does not receive the same order again.
-- The next eligible partner receives the order.
-- Order status moves to `DELIVERY_PARTNER_ASSIGNED`.
-- Payment remains paid, not refunded.
-- `deliveryAssignmentStatus` ends at `PARTNER_ACCEPTED`.
+- The restaurant does not appear in the nearby customer list.
+- If no other matches exist, the page shows `No nearby restaurants found in your area`.
 
-## Scenario E: No Partner Accepts
+## Extra Checks
 
-1. Seed exactly one eligible partner, or have every eligible partner reject/expire.
-2. Place the order.
-3. Reject or let expire the final eligible offer.
-
+1. Test one saved address without coordinates but with city, district, state, or pincode filled in.
 Expected:
-- Order is not auto-cancelled by dispatch failure alone.
-- `deliveryAssignmentStatus` becomes `NO_PARTNER_AVAILABLE`.
-- Customer success/tracking shows `No delivery partner accepted yet.`
-- Restaurant owner, admin, and regional manager views show `No partner available`.
+The backend falls back to text-area matching instead of silently hiding all restaurants.
 
-## Scenario F: Delivery Notification Deep Link
-
-1. Place an order with at least one eligible rider.
-2. Open the delivery partner notification center after the request arrives.
-3. Click `View delivery`.
-
+2. Test one restaurant without valid coordinates but with valid address fields.
 Expected:
-- The link opens `/delivery/deliveries?orderId=<id>`.
-- The page shows the actual delivery request tied to that notification.
-- If the request was already accepted, rejected, or expired, the detail view shows the correct status and does not allow duplicate actions.
+The backend can still use text fallback when customer coordinates are unavailable.
+
+3. Test one online partner with missing or stale live location.
+Expected:
+The partner is excluded and development logs explain whether the reason was missing coordinates or stale location.

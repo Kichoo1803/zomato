@@ -12,6 +12,7 @@ import { prisma } from "../../lib/prisma.js";
 import { emitDeliveryLocationUpdate, emitOrderStatusUpdate } from "../../socket/index.js";
 import { AppError } from "../../utils/app-error.js";
 import { calculateDistanceKm } from "../../utils/geo.js";
+import { buildBoundingBoxFromCoordinates } from "../../utils/location.js";
 import { calculateDeliveryIntelligence } from "../../utils/order-intelligence.js";
 import {
   areIndianPhoneNumbersEqual,
@@ -330,19 +331,6 @@ const buildPartnerDeliveryRecord = (input: {
   };
 };
 
-const buildBoundingBox = (latitude: number, longitude: number, radiusKm: number) => {
-  const latitudeDelta = radiusKm / 111;
-  const longitudeDivisor = Math.max(Math.cos((latitude * Math.PI) / 180), 0.2);
-  const longitudeDelta = radiusKm / (111 * longitudeDivisor);
-
-  return {
-    minLatitude: latitude - latitudeDelta,
-    maxLatitude: latitude + latitudeDelta,
-    minLongitude: longitude - longitudeDelta,
-    maxLongitude: longitude + longitudeDelta,
-  };
-};
-
 const parseTimeToMinutes = (value?: string | null) => {
   const normalizedValue = value?.trim();
   if (!normalizedValue) {
@@ -398,9 +386,8 @@ const syncNearbyDispatchOrdersForPartner = async (partner: {
     return;
   }
 
-  const boundingBox = buildBoundingBox(
-    partnerCoordinates.latitude,
-    partnerCoordinates.longitude,
+  const boundingBox = buildBoundingBoxFromCoordinates(
+    partnerCoordinates,
     FALLBACK_ASSIGNMENT_RADIUS_KM,
   );
   const candidateOrders = await prisma.order.findMany({

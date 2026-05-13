@@ -3030,13 +3030,9 @@ export const PaymentPage = () => {
                     ? "Checking nearby delivery partners..."
                     : placementAvailabilityError
                       ? "Unable to verify delivery coverage"
-                    : placementAvailability?.coverageType === "FALLBACK" && isDeliveryPartnerAvailable
-                      ? "Delivery partners available in the nearby service area"
                       : isDeliveryPartnerAvailable
-                        ? placementAvailability?.partnerCount === 1
-                          ? "Delivery partner available near this restaurant"
-                          : "Delivery partners available near this restaurant"
-                        : "No delivery partners available near this restaurant"}
+                        ? "Delivery partner available nearby"
+                        : "No delivery partner available near this restaurant"}
                 </p>
                 <Button
                   type="button"
